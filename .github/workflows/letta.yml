@@ -6,13 +6,6 @@
 #   3. issue 正文含 @letta-code
 # 开新话题:评论 @letta-code [--new]
 #
-# 仓库代码不用 letta 自己 clone:actions/checkout 在每个 job 开始时
-# 把仓库 fresh checkout 到容器内(/home/runner/work/...),letta 进程工作在该目录,
-# 改完 push 用 checkout 自动配好的 GITHUB_TOKEN。每次触发 = 自动拉最新代码。
-#
-# LLM:Z.ai GLM 直连(letta 原生支持,env var 已从 0.31.14 源码核实)
-#   ZAI_API_KEY + ZAI_BASE_URL(默认 https://api.z.ai/api/paas/v4)
-#   模型:letta_args 里 -m glm-5.3-flash
 
 name: Letta Code
 
@@ -24,8 +17,6 @@ on:
 
 jobs:
   letta:
-    # job 级过滤:runner 是独占资源,无关评论会占住它,必须在 job 层先挡掉
-    # (action 内部还有权限校验:仅写权限协作者可触发)
     if: >-
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@letta-code')) ||
       (github.event_name == 'issues' && github.event.label.name == 'letta-code') ||
@@ -45,19 +36,11 @@ jobs:
       - uses: letta-ai/letta-code-action@v0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # 用镜像里预装的 letta,跳过每 job 的 npm install
           path_to_letta_executable: /usr/bin/letta
           label_trigger: letta-code
-          # 不走 Letta Cloud:本地 backend,agent/会话/记忆落容器内 letta-state 卷
           letta_args: "--backend local -m glm-5.3-flash"
-          # 钉死 agent:action 的自动发现在本地 backend 下不工作,不钉会每轮新建 agent
-          # (persona/记忆全部挂在这个 agent 上;状态在容器卷,重建不丢)
           agent_id: agent-local-d1735ffc-7314-47bc-93a8-5a2ebb1a5382
-          # validate-env 要求 base_url/api_key 至少有一个;本地 backend 不会真连这个
-          # 占位地址(容器内已实测:两轮对话均成功,会话持久化正常)
           letta_base_url: http://localhost:8283
         env:
-          # LLM 直连 Z.ai GLM(不再需要 LETTA_API_KEY)
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          # ZAI_BASE_URL: https://api.z.ai/api/paas/v4   # letta 默认值,无需设置
           LETTA_LOCAL_BACKEND_DIR: /home/runner/letta-state
