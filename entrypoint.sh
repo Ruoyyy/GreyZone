@@ -54,15 +54,27 @@ else
   echo "[entrypoint] .runner 已存在,跳过注册"
 fi
 
-# Oracle is a background observer; its failure must not stop repository tasks.
-TRACE_ROOT="${LETTA_LOCAL_BACKEND_DIR:-/home/runner/letta-state}/conversations"
-mkdir -p "$TRACE_ROOT"
-(
-  while true; do
-    python3 -B -u /oracle.py "$TRACE_ROOT" || true
-    echo "[ORACLE MONITOR ERROR] Monitor exited; restarting in 5 seconds. Runner is unaffected." >&2
-    sleep 5
-  done
-) &
+# Oracles are opt-in background observers; failure never affects the runner.
+# Enable with ORACLE_ENABLE=exfil,net,mem (comma-separated).
+BACKEND_ROOT="${LETTA_LOCAL_BACKEND_DIR:-/home/runner/letta-state}"
+mkdir -p "$BACKEND_ROOT/conversations" "$BACKEND_ROOT/memfs"
+for _oracle in $(echo "${ORACLE_ENABLE:-}" | tr ',' ' '); do
+  case "$_oracle" in
+    exfil|net|mem)
+      (
+        while true; do
+          python3 -B -u "/oracle/$_oracle.py" "$BACKEND_ROOT" || true
+          echo "[ORACLE $_oracle] exited; restarting in 5 seconds. Runner is unaffected." >&2
+          sleep 5
+        done
+      ) &
+      echo "[entrypoint] oracle '$_oracle' enabled"
+      ;;
+    *)
+      echo "[entrypoint] unknown oracle '$_oracle' (available: exfil net mem)" >&2
+      ;;
+  esac
+done
+[ -z "${ORACLE_ENABLE:-}" ] && echo "[entrypoint] no oracle enabled (set ORACLE_ENABLE=exfil,net,mem to enable)"
 
 exec gitea-runner daemon --config "${CONFIG_FILE}"

@@ -24,6 +24,6 @@ RUN npm install -g "@letta-ai/letta-code@${LETTA_CODE_VERSION}" \
 RUN mkdir -p /home/runner/letta-state
 
 COPY entrypoint.sh /entrypoint.sh
-COPY oracle.py /oracle.py
+COPY oracle/ /oracle/
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
