@@ -15,7 +15,7 @@ opens pull requests, and replies in the same issue.
 ### 1. Clone and configure
 
 ```bash
-git clone <this-repo-url> letta && cd letta
+git clone <this-repo-url> <path> && cd <path>
 cp .env.example .env
 ```
 
