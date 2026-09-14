@@ -1,0 +1,80 @@
+# 放到目标仓库的 .gitea/workflows/letta.yml(Gitea Actions 约定目录)
+#
+# 触发(三个入口,自动续接同一 issue 的同一条 conversation,即多轮对话):
+#   1. issue 评论含 @letta-code
+#   2. issue 打 letta-code 标签
+#   3. issue 正文含 @letta-code
+# 开新话题:评论 @letta-code [--new]
+#
+# 仓库代码:第一步 git clone 拉到 $GITHUB_WORKSPACE(act_runner 已设好该变量),
+# letta 进程工作在该目录;改完 push 用 GITHUB_TOKEN 配好 remote(GitHub 模式
+# 时由 actions/checkout 做的事,这里一行 git 搞定,不依赖任何外部 action 仓)。
+#
+# LLM:Z.ai GLM 直连(letta 原生支持,env var 已从 0.31.14 源码核实)
+#   ZAI_API_KEY 下沉到 runner 容器 env(compose environment 段),letta 进程
+#   通过 process.env 继承(run-letta.ts spawn env:{...process.env}),无需在此引用 secrets。
+#   模型:letta_args 里 -m glm-5.3-flash
+#
+# action 源:本地 Gitea 私有仓库 letta-admin/letta-code-action,固定提交 SHA。
+# action 仓库的 Actions → General 已向 letta-admin 名下仓库开放共享。
+
+name: Letta Code
+
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+
+jobs:
+  letta:
+    # job 级过滤:runner 是独占资源,无关评论会占住它,必须在 job 层先挡掉
+    # (action 内部还有权限校验:仅写权限协作者可触发)
+    if: >-
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@letta-code')) ||
+      (github.event_name == 'issues' && github.event.label.name == 'letta-code') ||
+      (github.event_name == 'issues' && contains(github.event.issue.body, '@letta-code'))
+    runs-on: letta
+    env:
+      GIT_AUTHOR_NAME: letta-admin
+      GIT_AUTHOR_EMAIL: letta-admin@gitea.com
+      GIT_COMMITTER_NAME: letta-admin
+      GIT_COMMITTER_EMAIL: letta-admin@gitea.com
+    # 同一 issue 的多次触发串行,不互相打断
+    concurrency:
+      group: letta-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write    # push 分支
+      issues: write      # 评论/跟踪会话
+      pull-requests: write  # 开 PR
+    steps:
+      - name: Checkout
+        shell: bash
+        run: |
+          git clone --depth=1 "http://${GITHUB_TOKEN}@gitea:3000/${GITHUB_REPOSITORY}.git" "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git config user.name "letta-admin"
+          git config user.email "letta-admin@gitea.com"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # Gitea 自动注入,等价 GitHub
+
+      - uses: http://gitea:3000/letta-admin/letta-code-action@__ACTION_SHA__
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          bot_name: letta-admin
+          bot_id: "1"
+          allowed_non_write_users: ruoyu
+          # 用镜像里预装的 letta 和 bun,跳过每 job 的 npm/bun 下载
+          path_to_letta_executable: /usr/local/bin/letta
+          path_to_bun_executable: /usr/local/bin/bun   # Alpine musl 构建,Dockerfile 预装
+          label_trigger: letta-code
+          # 不走 Letta Cloud:本地 backend,agent/会话/记忆落容器内 letta-state 卷
+          model: glm-5.3-flash
+          letta_args: "--backend local"
+          # 同一 agent 上按 issue 评论中的 conversation_id 续接独立会话
+          # agent_id 未指定: action 按 tag 自动创建/复用 agent
+          # (persona/记忆挂在自动管理的 agent 上;状态在容器卷,重建不丢)
+          # validate-env 要求 base_url/api_key 至少有一个;本地 backend 不会真连这个
+          # 占位地址(容器内已实测:两轮对话均成功,会话持久化正常)
+          letta_base_url: http://localhost:8283
