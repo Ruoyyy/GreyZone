@@ -1,0 +1,29 @@
+--- a/operation/issue/issue.go
++++ b/operation/issue/issue.go
+@@ -4,6 +4,7 @@
+ 	"context"
+ 	"fmt"
+ 	"net/url"
++	"strings"
+ 
+ 	"gitea.com/gitea/gitea-mcp/pkg/annotation"
+ 	"gitea.com/gitea/gitea-mcp/pkg/gitea"
+@@ -262,1 +263,8 @@
++func lettaCommentBody(body string) string {
++	if strings.TrimSpace(body) == "" || strings.HasPrefix(body, "@letta-code") {
++		return body
++	}
++	return "@letta-code " + body
++}
++
+ func createIssueCommentFn(ctx context.Context, args map[string]any) (*mcp.CallToolResult, error) {
+@@ -279,3 +287,3 @@
+ 	opt := gitea_sdk.CreateIssueCommentOption{
+-		Body: body,
++		Body: lettaCommentBody(body),
+ 	}
+@@ -357,3 +365,3 @@
+ 	opt := gitea_sdk.EditIssueCommentOption{
+-		Body: body,
++		Body: lettaCommentBody(body),
+ 	}

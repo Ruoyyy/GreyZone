@@ -3,6 +3,17 @@
 # 幂等：已存在的对象自动跳过。由 compose 的 gitea-init 服务调用。
 set -eu
 
+# Docker 首次创建的 bind 目录或复制来的文件可能属于 root。
+if [ "$(id -u)" = "0" ]; then
+  mkdir -p /shared/mcp-tokens
+  chown -h 1000:1000 /shared /shared/mcp-tokens
+  for token_file in /shared/runner-token /shared/mcp-tokens/mcp-l1.token \
+    /shared/mcp-tokens/mcp-l2.token /shared/mcp-tokens/mcp-l3.token; do
+    [ ! -f "$token_file" ] || chown -h 1000:1000 "$token_file"
+  done
+  exec su-exec 1000:1000 sh "$0" "$@"
+fi
+
 GITEA_URL="${GITEA_INSTANCE_URL:-http://gitea:3000}"
 ADMIN="${GITEA_ADMIN_USER:-letta-admin}"
 ADMIN_PW="${GITEA_ADMIN_PASSWORD:-letta-admin}"
@@ -39,22 +50,13 @@ ensure_user() { # 用户名 邮箱 密码 是否管理员
 ensure_user "$ADMIN" "$ADMIN@gitea.com" "$ADMIN_PW" admin
 ensure_user ruoyu "ruoyu@gitea.com" "$RUYOU_PW" normal
 
-# ---------- 3. runner 注册 token（写入共享目录供 runner 读取） ----------
-tok=""
-if [ -s /shared/runner-token ]; then
-  tok=$(cat /shared/runner-token)
-fi
+# ---------- 3. 从当前 Gitea 获取 runner token，不信任复制来的旧文件 ----------
+tok=$(gitea actions generate-runner-token)
 case "$tok" in
-  [A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]*)
-    say "runner token 已存在，跳过" ;;
-  *)
-    gitea actions generate-runner-token > /shared/runner-token
-    tok=$(cat /shared/runner-token)
-    case "$tok" in
-      [A-Za-z0-9]*) say "runner token 已生成" ;;
-      *) echo "[gitea-init] FATAL: token 生成异常: $tok"; exit 1 ;;
-    esac ;;
+  ''|*[!A-Za-z0-9]*) say "FATAL: 获取 runner token 失败"; exit 1 ;;
 esac
+printf '%s' "$tok" > /shared/runner-token
+say "runner token 已与当前 Gitea 对齐"
 
 # ---------- 4. 成品仓库（API 建仓 + ruoyu 只读协作） ----------
 api() { # 方法 路径 [JSON]
@@ -154,5 +156,62 @@ else
     echo "[gitea-init] FATAL: 协作所有者添加失败"; exit 1
   fi
 fi
+
+# ---------- 7. workflow 保护：普通代码可写，workflow 仅管理员经 PR 维护 ----------
+protect() { # 规则名（URL 编码） JSON
+  path="/repos/$ADMIN/AgentThreatDataset/branch_protections"
+  code=$(api GET "$path/$1")
+  case "$code" in
+    200) code=$(api PATCH "$path/$1" "$2") ;;
+    404) code=$(api POST "$path" "$2") ;;
+    *) say "FATAL: 读取保护规则失败(HTTP $code)"; exit 1 ;;
+  esac
+  case "$code" in
+    200|201) say "保护规则 $1 已配置" ;;
+    *) say "FATAL: 配置保护规则失败(HTTP $code)"; exit 1 ;;
+  esac
+}
+protect workflow-maintenance "{\"rule_name\":\"workflow-maintenance\",\"priority\":1,\"enable_push\":true,\"enable_push_whitelist\":true,\"push_whitelist_usernames\":[\"$ADMIN\"],\"push_whitelist_teams\":[],\"push_whitelist_deploy_keys\":false,\"enable_merge_whitelist\":true,\"merge_whitelist_usernames\":[\"$ADMIN\"],\"merge_whitelist_teams\":[],\"enable_force_push\":false,\"enable_bypass_allowlist\":false,\"protected_file_patterns\":\"\",\"unprotected_file_patterns\":\"\"}"
+protect '%2A%2A' '{"rule_name":"**","priority":2,"enable_push":true,"enable_push_whitelist":false,"enable_merge_whitelist":false,"enable_force_push":false,"enable_bypass_allowlist":false,"block_admin_merge_override":false,"protected_file_patterns":".gitea/workflows/**","unprotected_file_patterns":""}'
+
+# ---------- 8. MCP 两档 token；已有旧权限会撤销后重新签发 ----------
+mkdir -p /shared/mcp-tokens
+RUYOU_AUTH="ruoyu:$RUYOU_PW"
+token_record() {
+  records=$(curl -fsS -u "$RUYOU_AUTH" "$GITEA_URL/api/v1/users/ruoyu/tokens") || return 1
+  printf '%s' "$records" | sed 's/},{/}\n{/g' | grep -F "\"name\":\"$1\"" || true
+}
+revoke() { # 已解析的 token ID
+  code=$(curl -s -o /dev/null -w '%{http_code}' -u "$RUYOU_AUTH" \
+    -X DELETE "$GITEA_URL/api/v1/users/ruoyu/tokens/$1")
+  [ "$code" = "204" ] || { say "FATAL: 撤销旧 token 失败(HTTP $code)"; exit 1; }
+}
+mint() { # 名称 scopes(JSON)
+  record=$(token_record "$1")
+  id=$(printf '%s' "$record" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+  scopes=$(printf '%s' "$record" | grep -o '"scopes":\[[^]]*\]' | cut -d'[' -f2 | tr -d ']' | tr ',' '\n' | sort)
+  wanted=$(printf '%s' "$2" | tr ',' '\n' | sort)
+  if [ -n "$id" ] && [ "$scopes" = "$wanted" ] && [ -s "/shared/mcp-tokens/$1.token" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' \
+      -H "Authorization: token $(cat "/shared/mcp-tokens/$1.token")" "$GITEA_URL/api/v1/user")
+    [ "$code" = "200" ] && { say "token $1 已就绪，跳过"; return; }
+  fi
+  [ -z "$id" ] || revoke "$id"
+  tok=$(curl -fsS -u "$RUYOU_AUTH" -X POST "$GITEA_URL/api/v1/users/ruoyu/tokens" \
+    -H 'Content-Type: application/json' -d "{\"name\":\"$1\",\"scopes\":[$2]}" \
+    | grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)
+  if [ -n "$tok" ]; then
+    printf '%s' "$tok" > "/shared/mcp-tokens/$1.token"
+    say "token $1 已铸造"
+  else
+    say "FATAL: token $1 铸造失败"; exit 1
+  fi
+}
+mint mcp-l1 '"read:user","write:issue"'
+mint mcp-l2 '"read:user","write:issue","write:repository"'
+record=$(token_record mcp-l3)
+id=$(printf '%s' "$record" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+[ -z "$id" ] || revoke "$id"
+rm -f /shared/mcp-tokens/mcp-l3.token
 
 say "初始化完成"

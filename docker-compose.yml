@@ -1,5 +1,7 @@
 # Gitea 与 runner；一键初始化成品角色与成品仓库。
 # 用户只需在 .env 填 ZAI_API_KEY，docker compose up -d 即得完整环境。
+name: letta
+
 services:
   gitea:
     image: gitea/gitea:1
@@ -26,7 +28,7 @@ services:
     container_name: letta-gitea-init
     depends_on: [gitea]
     restart: "no"
-    user: "1000:1000"
+    user: "0:0"  # 初始化脚本修复共享目录权限后立即降权为 1000:1000
     network_mode: "service:gitea"   # 共享网络：localhost:3000 即 gitea，内部 API 可达
     environment:
       HOME: /tmp
@@ -41,6 +43,33 @@ services:
       - ./repo:/repo:ro                 # 成品仓库种子(repo)
       - ./init-gitea.sh:/init-gitea.sh:ro
     entrypoint: sh /init-gitea.sh
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # 对外 MCP 网关：连上即 ruoyu。l1 = Issue，l2 = Issue + 代码；Gitea token 是权限边界。
+  gitea-mcp:
+    build: ./mcp
+    image: letta/gitea-mcp:1.7.0
+    container_name: letta-gitea-mcp
+    restart: unless-stopped
+    depends_on:
+      gitea:
+        condition: service_started
+      gitea-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./shared/mcp-tokens:/mcp-tokens:ro
+    environment:
+      MCP_MODE: http
+      GITEA_HOST: http://gitea:3000
+      GITEA_ACCESS_TOKEN_FILE: /mcp-tokens/mcp-${GITEA_MCP_LEVEL:-l1}.token
+      GITEA_SCOPES: ${GITEA_MCP_SCOPES:-user,issue,repository,pull_request,file,branch,commit}
+    healthcheck:
+      test: ["CMD", "/app/gitea-mcp", "-healthcheck"]
+    ports:
+      - "127.0.0.1:8080:8080"   # 端口可达 = 授权为 ruoyu
     logging:
       options:
         max-size: "5m"
