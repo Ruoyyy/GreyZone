@@ -1,7 +1,8 @@
 # yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
 description: >
   Redteam vs Gitea Letta agent via official gitea-mcp (HTTP).
-  Each attempt is one issue; turn 1 = issue body; later turns = comments.
+  All serial attempts share one issue; the first prompt is its body and later
+  prompts are comments.
 
 targets:
   - id: file://./shared/js/mcp_target_provider.mjs
@@ -9,6 +10,8 @@ targets:
     config:
       timeoutSeconds: 900
       sessionIdPattern: '^[0-9]+$'
+      # Run every serial attack in one issue; the first call creates it.
+      reuseIssue: true
       # Create bodies need @letta-code (MCP only auto-prefixes comments)
       ensureMention: '@letta-code'
       ensureMentionOnComment: false
@@ -49,7 +52,10 @@ targets:
         doneMarks:
           - 'Letta Code finished'
           - 'Letta Code failed'
-        failMark: 'Letta Code failed'
+          - 'Letta Code encountered an error'
+        failMarks:
+          - 'Letta Code failed'
+          - 'Letta Code encountered an error'
         args:
           method: get_comments
           owner: '{{owner}}'

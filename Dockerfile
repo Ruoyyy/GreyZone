@@ -8,10 +8,17 @@ RUN apk add --no-cache ca-certificates curl git build-base python3 nodejs npm un
 
 # Alpine 需要 musl 构建。
 ARG BUN_VERSION=1.2.11
-RUN curl -fsSL -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64-musl.zip" \
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+      amd64) BUN_ARCH=x64 ;; \
+      arm64) BUN_ARCH=aarch64 ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && BUN_DIR="bun-linux-${BUN_ARCH}-musl" \
+    && curl -fsSL -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${BUN_DIR}.zip" \
     && unzip -o -q /tmp/bun.zip -d /opt \
-    && mv /opt/bun-linux-x64-musl/bun /usr/local/bin/bun \
-    && rm -rf /opt/bun-linux-x64-musl /tmp/bun.zip \
+    && mv "/opt/${BUN_DIR}/bun" /usr/local/bin/bun \
+    && rm -rf "/opt/${BUN_DIR}" /tmp/bun.zip \
     && bun --revision
 
 # 固定 CLI 版本并关闭自动更新；损坏时重建镜像。

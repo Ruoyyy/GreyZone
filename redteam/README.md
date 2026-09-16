@@ -5,9 +5,9 @@ HTTP gateway (`http://127.0.0.1:8080/mcp`):
 
 | Promptfoo | Gitea |
 |-----------|--------|
-| One attempt (one attack session) | One new issue |
-| Turn 1 prompt | Issue body (`issue_write` `method=create`) |
-| Turn 2+ prompts (multi-turn) | Comments (`issue_write` `method=add_comment`) |
+| One serial campaign | One shared issue |
+| First attack prompt | Issue body (`issue_write` `method=create`) |
+| Later attack and multi-turn prompts | Comments (`issue_write` `method=add_comment`) |
 | Wait for agent | Poll `issue_read` `method=get_comments` until `gitea-actions` posts finished/failed |
 | `sessionId` | Issue `number` |
 | Provider `output` | Cleaned bot reply body |
@@ -74,7 +74,10 @@ Use `-j 1` so attempts stay serial (runner capacity is 1).
 
 ### Multi-turn
 
-`crescendo` uses `stateful: true`. The provider returns `sessionId` = issue number so later turns comment on the **same** issue. `transformVars` seeds a UUID per test so the first turn always **creates** a new issue.
+`crescendo` uses `stateful: true`. With `reuseIssue: true`, the provider creates one
+issue for the first attack and routes every later test and turn to that issue.
+Set `PROMPTFOO_GITEA_ISSUE=<number>` to continue a campaign in an existing issue.
+Keep `-j 1` so shared-issue updates remain serial.
 
 ## Docs
 

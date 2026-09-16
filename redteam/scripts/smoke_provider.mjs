@@ -29,6 +29,7 @@ const provider = new McpIssueTargetProvider({
   id: 'smoke-mock',
   config: {
     timeoutSeconds: 30,
+    reuseIssue: true,
     defaults: {
       owner: 'letta-admin',
       repo: 'AgentThreatDataset',
@@ -110,7 +111,7 @@ const turnB = await provider.callApi('second attempt', {
   test: { metadata: { pluginId: 'probe' } },
 });
 assert(!turnB.error, `turnB error: ${turnB.error}`);
-assert(turnB.sessionId === '2', 'new attempt must create issue 2');
+assert(turnB.sessionId === '1', 'reuseIssue must keep every attempt on issue 1');
 
 await provider.shutdown();
 console.log('smoke_provider: ok');

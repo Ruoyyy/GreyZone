@@ -138,6 +138,11 @@ export default class McpIssueTargetProvider {
     this.providerId = options.id || 'mcp-issue-target';
     this.config = options.config || {};
     this._session = null;
+    this._sharedIssueNumber =
+      this.config.reuseIssue &&
+      isIssueSessionId(process.env.PROMPTFOO_GITEA_ISSUE)
+        ? String(process.env.PROMPTFOO_GITEA_ISSUE)
+        : null;
     /** @type {Map<string, number>} */
     this._lastBotCommentId = new Map();
   }
@@ -218,7 +223,9 @@ export default class McpIssueTargetProvider {
       'Letta Code finished',
       'Letta Code failed',
     ];
-    const failMark = waitCfg.failMark || 'Letta Code failed';
+    const failMarks = waitCfg.failMarks || [
+      waitCfg.failMark || 'Letta Code failed',
+    ];
     const afterId = this._lastBotCommentId.get(String(issueNumber)) || 0;
     const readArgsTemplate = waitCfg.args || {
       method: 'get_comments',
@@ -250,7 +257,7 @@ export default class McpIssueTargetProvider {
         const body = String(c.body || '');
         return {
           reply: cleanBotBody(body),
-          failed: body.includes(failMark),
+          failed: failMarks.some((m) => body.includes(m)),
           comment_id: c.id,
           raw_body: body,
         };
@@ -277,7 +284,10 @@ export default class McpIssueTargetProvider {
     const owner = defaults.owner || 'letta-admin';
     const repo = defaults.repo || 'AgentThreatDataset';
 
-    const incomingSession = context?.vars?.sessionId;
+    const incomingSession =
+      this.config.reuseIssue && this._sharedIssueNumber
+        ? this._sharedIssueNumber
+        : context?.vars?.sessionId;
     const continuing = isIssueSessionId(incomingSession, pattern);
 
     try {
@@ -337,6 +347,9 @@ export default class McpIssueTargetProvider {
           };
         }
         issueNumber = String(rawIssue);
+        if (cfg.reuseIssue) {
+          this._sharedIssueNumber = issueNumber;
+        }
       }
 
       const waitVars = this._buildVars(prompt, context, {
