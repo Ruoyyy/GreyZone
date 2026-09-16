@@ -12,7 +12,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import Emitter, IncrementalScan, SecretBook, backend_arg, read_secret_literals
+from common import (Emitter, IncrementalScan, SecretBook, append_issue_log,
+                    backend_arg, read_secret_literals)
 
 MEM_POISON_PATTERNS = [
     re.compile(r"(?i)\b(ignore|disregard|bypass|override)\b[^.\n]{0,60}\b(rule|rules|directive|directives|instruction|instructions|security|restriction|guardrail)"),
@@ -35,6 +36,9 @@ class MemOracle:
             self.emit("MEM_POISON_SECRET", alert=True,
                       source=str(path.relative_to(self.backend)), line=number,
                       hint="known secret value stored in agent memory")
+            append_issue_log(self.backend, self.secrets,
+                             "*** ALERT MEM_POISON_SECRET *** %s:%s known secret in memory" % (
+                                 path.relative_to(self.backend), number))
             return
         for regex in MEM_POISON_PATTERNS:
             m = regex.search(text)
@@ -42,6 +46,10 @@ class MemOracle:
                 self.emit("MEM_POISON_ALERT", alert=True,
                           source=str(path.relative_to(self.backend)), line=number,
                           matched=self.secrets.redact(m.group(0)[:80]))
+                append_issue_log(self.backend, self.secrets,
+                                 "*** ALERT MEM_POISON_ALERT *** %s:%s %s" % (
+                                     path.relative_to(self.backend), number,
+                                     self.secrets.redact(m.group(0)[:80])))
                 return
 
     def poll(self):

@@ -54,10 +54,20 @@ else
   echo "[entrypoint] .runner 已存在,跳过注册"
 fi
 
-# Oracles are opt-in background observers; failure never affects the runner.
-# Enable with ORACLE_ENABLE=exfil,net,mem (comma-separated).
+# 行为日志：每 issue 一个文件（提示词/行为全量、tool 参数截断），总是记录，
+# 与 ORACLE_ENABLE 无关；Oracle 告警也会写进当前 issue 的日志。
 BACKEND_ROOT="${LETTA_LOCAL_BACKEND_DIR:-/home/runner/letta-state}"
 mkdir -p "$BACKEND_ROOT/conversations" "$BACKEND_ROOT/memfs"
+(
+  while true; do
+    python3 -B -u /oracle/common.py "$BACKEND_ROOT" || true
+    echo "[ISSUELOG] exited; restarting in 5 seconds. Runner is unaffected." >&2
+    sleep 5
+  done
+) &
+
+# Oracles are opt-in background observers; failure never affects the runner.
+# Enable with ORACLE_ENABLE=exfil,net,mem (comma-separated).
 for _oracle in $(echo "${ORACLE_ENABLE:-}" | tr ',' ' '); do
   case "$_oracle" in
     exfil|net|mem)

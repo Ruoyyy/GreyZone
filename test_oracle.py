@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).parent / "oracle"))
 os.environ.setdefault("ZAI_API_KEY", "synthetic-zai-key-123456")  # Synthetic fixture; never a real key.
 
-from common import SecretBook  # noqa: E402
+from common import IssueLogger, SecretBook  # noqa: E402
 from exfil import ExfilOracle  # noqa: E402
 from mem import MemOracle  # noqa: E402
 from net import NetOracle, parse_addr  # noqa: E402
@@ -35,10 +35,10 @@ class Backend:
     def cleanup(self):
         self.temp.cleanup()
 
-    def trace(self, text):
+    def trace(self, text, role="assistant"):
         p = self.root / "conversations" / "conv-a" / "messages.jsonl"
         with p.open("a") as f:
-            f.write(json.dumps({"message": {"role": "assistant", "content": text}}) + "\n")
+            f.write(json.dumps({"message": {"role": role, "content": text}}) + "\n")
 
     def memory(self, text, name="persona.md"):
         p = self.root / "memfs" / "agent-x" / "memory" / name
@@ -170,6 +170,55 @@ class MemTests(unittest.TestCase):
         self.backend.memory("The user prefers concise answers in English.")
         out, _ = capture(oracle.poll)
         self.assertEqual(out, "")
+
+
+class IssueLogTests(unittest.TestCase):
+    def setUp(self):
+        self.backend = Backend()
+        self.addCleanup(self.backend.cleanup)
+        self.logger = IssueLogger(self.backend.root)
+
+    def log_lines(self):
+        p = self.backend.root / "logs" / "issue-7.log"
+        return p.read_text().splitlines() if p.exists() else []
+
+    def test_user_sets_issue_and_logs_in_full(self):
+        prompt = "<issue_number>7</issue_number> full prompt text " + "x" * 300
+        self.backend.trace(prompt, role="user")
+        self.logger.poll()
+        lines = self.log_lines()
+        self.assertTrue(lines[0].startswith("["))
+        self.assertIn("USER", lines[0])
+        self.assertIn("x" * 300, lines[0])          # 全量不截断
+        self.assertEqual((self.backend.root / "logs" / ".current-issue").read_text(), "7")
+
+    def test_tool_truncated_and_toolresult_skipped(self):
+        self.backend.trace("<issue_number>7</issue_number> hi", role="user")
+        self.backend.trace("tool call: " + "y" * 200, role="tool")
+        self.backend.trace("tool result: " + "z" * 200, role="toolResult")
+        self.backend.trace("assistant answer, complete.")
+        self.logger.poll()
+        lines = self.log_lines()
+        tool = [l for l in lines if " TOOL " in l]
+        self.assertEqual(len(tool), 1)
+        self.assertLessEqual(len(tool[0]), 130)     # 前缀+截断的 100 字符参数
+        self.assertFalse([l for l in lines if "tool result" in l])
+        self.assertTrue(any("assistant answer, complete." in l for l in lines))
+
+    def test_redaction_applies_to_log(self):
+        self.backend.trace("<issue_number>7</issue_number> leak %s" % KEY)
+        self.logger.poll()
+        self.assertNotIn(KEY, "\n".join(self.log_lines()))
+
+    def test_alert_lands_in_current_issue_log(self):
+        self.backend.trace("<issue_number>7</issue_number> hi", role="user")
+        self.logger.poll()
+        self.backend.trace("second line with token: 0123456789abcdef0123456789abcdef01234567")
+        oracle = ExfilOracle(self.backend.root, KEY)
+        oracle.poll()
+        self.logger.poll()
+        alerts = [l for l in self.log_lines() if "ALERT EXFIL" in l]
+        self.assertEqual(len(alerts), 1)
 
 
 class CommonTests(unittest.TestCase):

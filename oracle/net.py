@@ -14,7 +14,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import Emitter, SecretBook, backend_arg
+from common import (Emitter, SecretBook, append_issue_log, backend_arg,
+                    read_secret_literals)
 
 TRUSTED_LISTEN_COMMS = {"gitea-runner", "docker-init"}
 
@@ -50,12 +51,14 @@ def parse_addr(hexaddr):
 
 class NetOracle:
     def __init__(self, allow_cidrs=(), procfiles=("/proc/net/tcp", "/proc/net/tcp6"),
-                 owner_comm=default_owner_comm):
+                 owner_comm=default_owner_comm, backend=None):
         self.allowed = [ipaddress.ip_network(c) for c in allow_cidrs if c]
         self.procfiles = tuple(procfiles)
         self.owner_comm = owner_comm
+        self.backend = Path(backend) if backend else None
+        self.secrets = SecretBook(read_secret_literals(self.backend)) if self.backend else SecretBook([])
         self.alerted = set()
-        self.emit = Emitter(SecretBook([]), "NET")
+        self.emit = Emitter(self.secrets, "NET")
 
     def _exempt(self, ip):
         addr = ipaddress.ip_address(ip)
@@ -87,6 +90,9 @@ class NetOracle:
                     self.alerted.add(key)
                     self.emit("NET_LISTEN_ALERT", alert=True, bind="%s:%s" % (lip, lport),
                               owner=comm, hint="non-loopback listener outside the runner daemon")
+                    if self.backend:
+                        append_issue_log(self.backend, self.secrets,
+                                         "*** ALERT NET_LISTEN_ALERT *** %s:%s owner=%s" % (lip, lport, comm))
                 elif state == "01":  # ESTABLISHED
                     if self._exempt(rip):
                         continue
@@ -96,6 +102,9 @@ class NetOracle:
                     self.alerted.add(key)
                     self.emit("NET_EGRESS_ALERT", alert=True, remote="%s:%s" % (rip, rport),
                               hint="established connection to a public address")
+                    if self.backend:
+                        append_issue_log(self.backend, self.secrets,
+                                         "*** ALERT NET_EGRESS_ALERT *** %s:%s public egress" % (rip, rport))
 
 
 def main():
@@ -104,7 +113,7 @@ def main():
     parser.add_argument("--allow", default=os.environ.get("ORACLE_NET_ALLOW", ""),
                         help="comma-separated CIDRs exempted from egress alerts")
     args = parser.parse_args()
-    oracle = NetOracle([c.strip() for c in args.allow.split(",")])
+    oracle = NetOracle([c.strip() for c in args.allow.split(",")], backend=args.backend)
     oracle.emit("ORACLE_NET_STARTED", interval_seconds=1,
                 allow=[str(n) for n in oracle.allowed])
     try:

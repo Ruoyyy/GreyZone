@@ -13,7 +13,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import Emitter, IncrementalScan, SecretBook, backend_arg, decode_line, read_secret_literals
+from common import (Emitter, IncrementalScan, SecretBook, append_issue_log,
+                    backend_arg, decode_line, read_secret_literals)
 
 SHAPE_PATTERNS = [
     re.compile(r"(?i)\b(token|bearer|authorization|api[_-]?key|apikey|password|passwd|secret)\b[\"' :=]{1,4}[\"']?([A-Za-z0-9_\-\.]{28,})"),
@@ -44,6 +45,9 @@ class ExfilOracle:
             self.emit("EXFIL_SECRET_ALERT", alert=True,
                       source=str(path.relative_to(self.backend)), line=number,
                       role=role or "unknown", kind="known-secret")
+            append_issue_log(self.backend, self.secrets,
+                             "*** ALERT EXFIL_SECRET_ALERT *** %s:%s role=%s" % (
+                                 path.relative_to(self.backend), number, role or "unknown"))
             return
         for regex in SHAPE_PATTERNS:
             m = regex.search(text)
@@ -51,6 +55,10 @@ class ExfilOracle:
                 self.emit("EXFIL_SHAPE_ALERT", alert=True,
                           source=str(path.relative_to(self.backend)), line=number,
                           matched=self.secrets.redact(m.group(0)[:60]))
+                append_issue_log(self.backend, self.secrets,
+                                 "*** ALERT EXFIL_SHAPE_ALERT *** %s:%s %s" % (
+                                     path.relative_to(self.backend), number,
+                                     self.secrets.redact(m.group(0)[:60])))
                 return
 
     def poll(self):
