@@ -1,6 +1,6 @@
 /**
- * In-memory MCP server for smoke-testing the Promptfoo issue/comment provider.
- * Not the real Gitea scenario MCP — only mirrors create_issue / comment / wait tools.
+ * In-memory MCP mimicking official gitea-mcp issue_write / issue_read shapes.
+ * Used only for smoke tests (not the Docker gitea-mcp gateway).
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -8,6 +8,7 @@ import * as z from 'zod/v4';
 
 const issues = new Map();
 let nextNumber = 1;
+let nextCommentId = 100;
 
 function jsonResult(obj) {
   return {
@@ -15,42 +16,106 @@ function jsonResult(obj) {
   };
 }
 
+function addBotReply(issue, promptText) {
+  const id = nextCommentId++;
+  issue.comments.push({
+    id,
+    body: `**Letta Code** working\n\nmock-agent-reply to: ${promptText}\n\nLetta Code finished`,
+    user: 'gitea-actions',
+  });
+}
+
 const server = new McpServer({
-  name: 'mock-gitea-issue-mcp',
+  name: 'mock-gitea-mcp',
   version: '1.0.0',
 });
 
 server.registerTool(
-  'create_issue',
+  'issue_write',
   {
-    description: 'Create a new issue (mock)',
+    description: 'Write issues (mock of gitea-mcp issue_write)',
     inputSchema: {
-      title: z.string(),
-      body: z.string(),
+      method: z.enum([
+        'create',
+        'update',
+        'add_comment',
+        'edit_comment',
+        'add_labels',
+        'remove_label',
+        'replace_labels',
+        'clear_labels',
+      ]),
+      owner: z.string(),
+      repo: z.string(),
+      issue_number: z.union([z.number(), z.string()]).optional(),
+      title: z.string().optional(),
+      body: z.string().optional(),
     },
   },
-  async ({ title, body }) => {
-    const issue_number = nextNumber++;
-    issues.set(issue_number, {
-      title,
-      body,
-      comments: [],
-      lastPrompt: body,
-    });
-    return jsonResult({ issue_number, title });
+  async (args) => {
+    const { method, title, body } = args;
+    if (method === 'create') {
+      const number = nextNumber++;
+      const issue = {
+        number,
+        title: title || '',
+        body: body || '',
+        comments: [],
+      };
+      issues.set(number, issue);
+      addBotReply(issue, body || '');
+      return jsonResult({
+        number,
+        title: issue.title,
+        body: issue.body,
+        state: 'open',
+        user: 'ruoyu',
+      });
+    }
+    if (method === 'add_comment') {
+      const num = Number(args.issue_number);
+      const issue = issues.get(num);
+      if (!issue) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `issue ${num} not found` }],
+        };
+      }
+      let commentBody = body || '';
+      if (
+        commentBody.trim() &&
+        !commentBody.startsWith('@letta-code')
+      ) {
+        commentBody = `@letta-code ${commentBody}`;
+      }
+      const id = nextCommentId++;
+      issue.comments.push({
+        id,
+        body: commentBody,
+        user: 'ruoyu',
+      });
+      addBotReply(issue, commentBody);
+      return jsonResult({ id, body: commentBody, user: 'ruoyu' });
+    }
+    return {
+      isError: true,
+      content: [{ type: 'text', text: `unsupported method ${method}` }],
+    };
   },
 );
 
 server.registerTool(
-  'comment_on_issue',
+  'issue_read',
   {
-    description: 'Comment on an issue (mock)',
+    description: 'Read issue (mock of gitea-mcp issue_read)',
     inputSchema: {
+      method: z.enum(['get', 'get_comments', 'get_labels']),
+      owner: z.string(),
+      repo: z.string(),
       issue_number: z.union([z.number(), z.string()]),
-      body: z.string(),
     },
   },
-  async ({ issue_number, body }) => {
+  async ({ method, issue_number }) => {
     const num = Number(issue_number);
     const issue = issues.get(num);
     if (!issue) {
@@ -59,35 +124,19 @@ server.registerTool(
         content: [{ type: 'text', text: `issue ${num} not found` }],
       };
     }
-    issue.comments.push(body);
-    issue.lastPrompt = body;
-    return jsonResult({ issue_number: num, ok: true });
-  },
-);
-
-server.registerTool(
-  'wait_for_agent_reply',
-  {
-    description: 'Wait for mock agent reply',
-    inputSchema: {
-      issue_number: z.union([z.number(), z.string()]),
-    },
-  },
-  async ({ issue_number }) => {
-    const num = Number(issue_number);
-    const issue = issues.get(num);
-    if (!issue) {
-      return {
-        isError: true,
-        content: [{ type: 'text', text: `issue ${num} not found` }],
-      };
+    if (method === 'get') {
+      return jsonResult({
+        number: issue.number,
+        title: issue.title,
+        body: issue.body,
+        state: 'open',
+        user: 'ruoyu',
+      });
     }
-    const reply = `mock-agent-reply to: ${issue.lastPrompt}`;
-    return jsonResult({
-      issue_number: num,
-      reply,
-      failed: false,
-    });
+    if (method === 'get_comments') {
+      return jsonResult(issue.comments);
+    }
+    return jsonResult([]);
   },
 );
 

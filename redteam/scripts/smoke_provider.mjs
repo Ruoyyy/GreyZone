@@ -1,5 +1,5 @@
 /**
- * Smoke: new attempt → create issue; follow-up → comment; sessionId = issue number.
+ * Smoke against mock gitea-mcp tool shapes (issue_write / issue_read).
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +17,6 @@ function assert(cond, msg) {
   }
 }
 
-// Unit: session / template helpers
 assert(!isIssueSessionId('a1b2-c3d4'), 'uuid must not look like issue');
 assert(isIssueSessionId('42'), 'numeric issue ok');
 assert(
@@ -25,36 +24,54 @@ assert(
     'redteam-hijacking',
   'template render',
 );
-assert(renderTemplate('{{prompt}}', { prompt: 'hi' }) === 'hi', 'prompt template');
 
 const provider = new McpIssueTargetProvider({
   id: 'smoke-mock',
   config: {
     timeoutSeconds: 30,
+    defaults: {
+      owner: 'letta-admin',
+      repo: 'AgentThreatDataset',
+    },
     mcp: {
       command: process.execPath,
       args: [mockServer],
       cwd: path.resolve(__dirname, '..'),
     },
     tools: {
-      createIssue: 'create_issue',
-      comment: 'comment_on_issue',
-      wait: 'wait_for_agent_reply',
+      createIssue: 'issue_write',
+      comment: 'issue_write',
+      wait: 'issue_read',
     },
     createArgs: {
+      method: 'create',
+      owner: '{{owner}}',
+      repo: '{{repo}}',
       title: 'redteam-{{plugin}}',
       body: '{{prompt}}',
     },
     commentArgs: {
+      method: 'add_comment',
+      owner: '{{owner}}',
+      repo: '{{repo}}',
       issue_number: '{{issue_number}}',
       body: '{{prompt}}',
     },
-    waitArgs: {
-      issue_number: '{{issue_number}}',
-    },
     result: {
+      issueField: 'number',
       outputField: 'reply',
-      issueField: 'issue_number',
+    },
+    wait: {
+      mode: 'poll_comments',
+      intervalSeconds: 0.05,
+      timeoutSeconds: 5,
+      botUser: 'gitea-actions',
+      args: {
+        method: 'get_comments',
+        owner: '{{owner}}',
+        repo: '{{repo}}',
+        issue_number: '{{issue_number}}',
+      },
     },
     ensureMention: '@letta-code',
   },

@@ -1,9 +1,13 @@
 /**
  * Promptfoo custom target: map each redteam attempt to one Gitea issue via MCP.
  *
- * - New attempt (sessionId not an issue number) → create_issue(body=prompt) → wait
- * - Same attempt follow-up → comment_on_issue → wait
- * - Returns { output: agent reply, sessionId: issue number }
+ * Real gitea-mcp tools (default):
+ *   - issue_write method=create | add_comment
+ *   - issue_read  method=get_comments (polled until bot finishes)
+ *
+ * - New attempt → create issue (body = prompt)
+ * - Follow-up → add_comment on same issue
+ * - sessionId = issue number
  */
 import { McpSession } from './mcp_session.mjs';
 
@@ -30,7 +34,7 @@ function getByPath(obj, path) {
 
 /**
  * Render templates like '{{prompt}}' / 'redteam-{{plugin}}'.
- * Unknown keys become empty string.
+ * Whole-string placeholders keep non-string types (e.g. issue_number as number).
  */
 export function renderTemplate(value, vars) {
   if (value == null) {
@@ -52,7 +56,6 @@ export function renderTemplate(value, vars) {
   if (typeof value !== 'string') {
     return value;
   }
-  // Whole-string placeholder → preserve non-string types from vars
   const whole = value.match(/^\{\{\s*([\w.]+)\s*\}\}$/);
   if (whole) {
     const key = whole[1];
@@ -90,6 +93,43 @@ function ensureMention(body, mention) {
   return `${mention} ${text}`.trim();
 }
 
+/** Match issue-chat.py clean_body for readable grader output. */
+export function cleanBotBody(body) {
+  let text = String(body ?? '');
+  text = text.replace(/<!-- letta-metadata[\s\S]*?-->/g, '');
+  const lines = text.split('\n');
+  if (lines[0]?.startsWith('**Letta Code')) {
+    lines.shift();
+  }
+  text = lines.join('\n');
+  text = text.split('\n🤖')[0];
+  return text.trim().replace(/^-+|-+$/g, '').trim();
+}
+
+function commentUser(comment) {
+  if (typeof comment?.user === 'string') {
+    return comment.user;
+  }
+  return comment?.user?.login || comment?.user?.username || '';
+}
+
+function asCommentList(raw) {
+  if (Array.isArray(raw)) {
+    return raw;
+  }
+  if (Array.isArray(raw?.comments)) {
+    return raw.comments;
+  }
+  if (raw && typeof raw === 'object' && raw.id != null && raw.body != null) {
+    return [raw];
+  }
+  return [];
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export default class McpIssueTargetProvider {
   /**
    * @param {{ id?: string, config?: Record<string, unknown> }} options
@@ -98,6 +138,8 @@ export default class McpIssueTargetProvider {
     this.providerId = options.id || 'mcp-issue-target';
     this.config = options.config || {};
     this._session = null;
+    /** @type {Map<string, number>} */
+    this._lastBotCommentId = new Map();
   }
 
   id() {
@@ -112,7 +154,7 @@ export default class McpIssueTargetProvider {
     const timeoutSeconds = this.config.timeoutSeconds ?? 900;
     this._session = new McpSession({
       ...mcp,
-      timeoutMs: (mcp.timeoutMs ?? timeoutSeconds * 1000),
+      timeoutMs: mcp.timeoutMs ?? timeoutSeconds * 1000,
     });
     await this._session.start();
     return this._session;
@@ -121,9 +163,9 @@ export default class McpIssueTargetProvider {
   _toolNames() {
     const tools = this.config.tools || {};
     return {
-      createIssue: tools.createIssue || 'create_issue',
-      comment: tools.comment || 'comment_on_issue',
-      wait: tools.wait || 'wait_for_agent_reply',
+      createIssue: tools.createIssue || 'issue_write',
+      comment: tools.comment || 'issue_write',
+      wait: tools.wait || 'issue_read',
     };
   }
 
@@ -132,7 +174,10 @@ export default class McpIssueTargetProvider {
       context?.test?.metadata?.pluginId ||
       context?.vars?.pluginId ||
       'probe';
+    const defaults = this.config.defaults || {};
     return {
+      owner: defaults.owner || 'letta-admin',
+      repo: defaults.repo || 'AgentThreatDataset',
       prompt,
       sessionId: context?.vars?.sessionId,
       plugin,
@@ -142,18 +187,95 @@ export default class McpIssueTargetProvider {
     };
   }
 
+  /**
+   * Wait for Letta bot reply. Real MCP has no wait tool — poll issue_read get_comments.
+   */
+  async _waitForReply(session, issueNumber, vars) {
+    const cfg = this.config;
+    const waitCfg = cfg.wait || {};
+    const tools = this._toolNames();
+    const timeoutSeconds =
+      waitCfg.timeoutSeconds ?? cfg.timeoutSeconds ?? 900;
+    const timeoutMs = timeoutSeconds * 1000;
+
+    if (waitCfg.mode === 'tool' || waitCfg.mode === 'single') {
+      const waitArgs = renderTemplate(
+        waitCfg.args ||
+          cfg.waitArgs || {
+            issue_number: '{{issue_number}}',
+          },
+        vars,
+      );
+      return session.callTool(waitCfg.tool || tools.wait, waitArgs, {
+        timeoutMs,
+      });
+    }
+
+    // Default: poll_comments (gitea-mcp issue_read)
+    const intervalMs = (waitCfg.intervalSeconds ?? 5) * 1000;
+    const botUser = waitCfg.botUser || 'gitea-actions';
+    const doneMarks = waitCfg.doneMarks || [
+      'Letta Code finished',
+      'Letta Code failed',
+    ];
+    const failMark = waitCfg.failMark || 'Letta Code failed';
+    const afterId = this._lastBotCommentId.get(String(issueNumber)) || 0;
+    const readArgsTemplate = waitCfg.args || {
+      method: 'get_comments',
+      owner: '{{owner}}',
+      repo: '{{repo}}',
+      issue_number: '{{issue_number}}',
+    };
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const args = renderTemplate(readArgsTemplate, vars);
+      const raw = await session.callTool(waitCfg.tool || tools.wait, args, {
+        timeoutMs,
+      });
+      const comments = asCommentList(raw);
+      const matches = comments.filter((c) => {
+        const user = commentUser(c);
+        const body = String(c.body || '');
+        const id = Number(c.id) || 0;
+        return (
+          user === botUser &&
+          id > afterId &&
+          doneMarks.some((m) => body.includes(m))
+        );
+      });
+      if (matches.length > 0) {
+        const c = matches[matches.length - 1];
+        this._lastBotCommentId.set(String(issueNumber), Number(c.id) || 0);
+        const body = String(c.body || '');
+        return {
+          reply: cleanBotBody(body),
+          failed: body.includes(failMark),
+          comment_id: c.id,
+          raw_body: body,
+        };
+      }
+      await sleep(intervalMs);
+    }
+    throw new Error(
+      `timeout after ${timeoutSeconds}s waiting for bot reply on issue #${issueNumber}`,
+    );
+  }
+
   async callApi(prompt, context /*, options */) {
     const cfg = this.config;
     const pattern = cfg.sessionIdPattern || '^[0-9]+$';
-    const mention =
-      Object.prototype.hasOwnProperty.call(cfg, 'ensureMention')
-        ? cfg.ensureMention
-        : '@letta-code';
+    const mention = Object.prototype.hasOwnProperty.call(cfg, 'ensureMention')
+      ? cfg.ensureMention
+      : '@letta-code';
     const resultCfg = cfg.result || {};
-    const issueField = resultCfg.issueField || 'issue_number';
+    const issueField = resultCfg.issueField || 'number';
     const outputField = resultCfg.outputField || 'reply';
     const tools = this._toolNames();
     const timeoutSeconds = cfg.timeoutSeconds ?? 900;
+    const defaults = cfg.defaults || {};
+    const owner = defaults.owner || 'letta-admin';
+    const repo = defaults.repo || 'AgentThreatDataset';
 
     const incomingSession = context?.vars?.sessionId;
     const continuing = isIssueSessionId(incomingSession, pattern);
@@ -166,17 +288,25 @@ export default class McpIssueTargetProvider {
         issueNumber = String(incomingSession);
         const vars = this._buildVars(prompt, context, {
           sessionId: issueNumber,
-          issue_number: Number(issueNumber) || issueNumber,
+          issue_number: Number(issueNumber),
         });
         const commentArgs = renderTemplate(
           cfg.commentArgs || {
+            method: 'add_comment',
+            owner: '{{owner}}',
+            repo: '{{repo}}',
             issue_number: '{{issue_number}}',
             body: '{{prompt}}',
           },
           vars,
         );
-        if (commentArgs.body != null) {
-          commentArgs.body = ensureMention(commentArgs.body, mention);
+        // Comments: real MCP auto-prefixes @letta-code; still OK if we also prepend.
+        if (commentArgs.body != null && mention) {
+          // Prefer leaving mention to MCP for comments when ensureMentionOnComment is false
+          const onComment = cfg.ensureMentionOnComment ?? false;
+          if (onComment) {
+            commentArgs.body = ensureMention(commentArgs.body, mention);
+          }
         }
         await session.callTool(tools.comment, commentArgs, {
           timeoutMs: timeoutSeconds * 1000,
@@ -185,11 +315,15 @@ export default class McpIssueTargetProvider {
         const vars = this._buildVars(prompt, context);
         const createArgs = renderTemplate(
           cfg.createArgs || {
+            method: 'create',
+            owner: '{{owner}}',
+            repo: '{{repo}}',
             title: 'redteam-{{plugin}}',
             body: '{{prompt}}',
           },
           vars,
         );
+        // Create: MCP does NOT auto-prefix — must include @letta-code in body.
         if (createArgs.body != null) {
           createArgs.body = ensureMention(createArgs.body, mention);
         }
@@ -199,7 +333,7 @@ export default class McpIssueTargetProvider {
         const rawIssue = getByPath(created, issueField);
         if (rawIssue == null || rawIssue === '') {
           return {
-            error: `create_issue did not return ${issueField}: ${JSON.stringify(created)}`,
+            error: `issue create did not return ${issueField}: ${JSON.stringify(created)}`,
           };
         }
         issueNumber = String(rawIssue);
@@ -207,17 +341,11 @@ export default class McpIssueTargetProvider {
 
       const waitVars = this._buildVars(prompt, context, {
         sessionId: issueNumber,
-        issue_number: Number(issueNumber) || issueNumber,
+        issue_number: Number(issueNumber),
+        owner,
+        repo,
       });
-      const waitArgs = renderTemplate(
-        cfg.waitArgs || {
-          issue_number: '{{issue_number}}',
-        },
-        waitVars,
-      );
-      const waited = await session.callTool(tools.wait, waitArgs, {
-        timeoutMs: timeoutSeconds * 1000,
-      });
+      const waited = await this._waitForReply(session, issueNumber, waitVars);
 
       let output = getByPath(waited, outputField);
       if (output == null) {
@@ -230,13 +358,12 @@ export default class McpIssueTargetProvider {
         output = JSON.stringify(output);
       }
 
-      const failed = Boolean(waited?.failed);
       return {
         output,
         sessionId: String(issueNumber),
         metadata: {
           issueNumber: String(issueNumber),
-          failed,
+          failed: Boolean(waited?.failed),
           waitResult: waited,
         },
       };

@@ -1,99 +1,84 @@
-# Promptfoo → Gitea issue/comment (via MCP)
+# Promptfoo → Gitea issue/comment (via gitea-mcp)
 
-Maps Promptfoo redteam attempts onto Gitea through an **existing** scenario MCP:
+Maps Promptfoo redteam attempts onto Gitea through the stack’s **gitea-mcp**
+HTTP gateway (`http://127.0.0.1:8080/mcp`):
 
 | Promptfoo | Gitea |
 |-----------|--------|
 | One attempt (one attack session) | One new issue |
-| Turn 1 prompt | Issue body |
-| Turn 2+ prompts (multi-turn) | Comments on that issue |
-| `sessionId` | Issue number |
-| Provider `output` | Agent reply for that turn |
+| Turn 1 prompt | Issue body (`issue_write` `method=create`) |
+| Turn 2+ prompts (multi-turn) | Comments (`issue_write` `method=add_comment`) |
+| Wait for agent | Poll `issue_read` `method=get_comments` until `gitea-actions` posts finished/failed |
+| `sessionId` | Issue `number` |
+| Provider `output` | Cleaned bot reply body |
 
 ```text
 promptfoo redteam
   → mcp_target_provider.mjs
-    → MCP create_issue | comment_on_issue
-    → MCP wait_for_agent_reply
-  → Gitea / Letta agent
+    → HTTP MCP :8080/mcp
+      → issue_write / issue_read
+  → Gitea → Letta Actions agent
 ```
 
 ## Layout
 
 ```text
 redteam/
-  promptfooconfig.yaml          # CLI entry (targets + redteam)
+  promptfooconfig.yaml          # points at real MCP URL by default
   package.json
   shared/js/
-    mcp_session.mjs             # stdio / HTTP MCP client
-    mcp_target_provider.mjs     # issue/comment mapping provider
-  fixtures/mock_issue_mcp.mjs  # local smoke double (not production MCP)
+    mcp_session.mjs             # stdio or Streamable HTTP client
+    mcp_target_provider.mjs     # issue/comment + poll wait
+  fixtures/mock_issue_mcp.mjs  # same tool names for offline smoke
   scripts/smoke_provider.mjs
 ```
 
-This package does **not** implement the real Gitea MCP server. Point `targets[].config.mcp` at yours.
+## Prerequisites
 
-## Setup
+1. Stack up with MCP healthy (`docker compose up -d`, port **8080**):
+   - See root [README.md](../README.md) § Connect an MCP client
+2. Node 18+
 
 ```bash
 cd redteam
 npm install
 ```
 
-### Point at your scenario MCP
+## Config notes (real MCP)
 
-Edit `promptfooconfig.yaml`:
+Defaults in `promptfooconfig.yaml` match official tools:
 
-```yaml
-config:
-  mcp:
-    command: python3          # or node / uv run ...
-    args: ['/path/to/your/mcp_server.py']
-    cwd: ../..
-    env: [GITEA_URL, GITEA_USER, GITEA_PASSWORD, GITEA_REPO]
-  # or: url: 'http://127.0.0.1:PORT/mcp'
-  tools:
-    createIssue: create_issue       # rename to match your server
-    comment: comment_on_issue
-    wait: wait_for_agent_reply
-  result:
-    issueField: issue_number        # create_issue response field
-    outputField: reply              # wait_for_agent_reply response field
-```
+- **Create**: `issue_write` + `method: create` → response field `number`
+- **Comment**: `issue_write` + `method: add_comment` (gateway auto-prepends `@letta-code`)
+- **Wait**: poll `issue_read` + `method: get_comments` for user `gitea-actions` containing `Letta Code finished` / `Letta Code failed`
 
-Expected tool shapes (names configurable):
-
-- `create_issue({ title, body })` → `{ issue_number, ... }`
-- `comment_on_issue({ issue_number, body })` → ok
-- `wait_for_agent_reply({ issue_number })` → `{ reply, failed?, ... }`
-
-By default the provider prepends `@letta-code` to bodies when missing (`ensureMention`). Set `ensureMention: false` if the MCP already does that.
+Issue **creation** bodies still need `@letta-code` in the body (`ensureMention`); comment auto-prefix is handled by the patched MCP gateway.
 
 ## Run
 
-Smoke (mock MCP, no Gitea):
+Offline smoke (mock MCP, no Docker):
 
 ```bash
 npm run smoke
 ```
 
-Redteam (after wiring real MCP + stack):
+Against the real gateway:
 
 ```bash
-# Serial: local runner capacity is 1
+# Ensure http://127.0.0.1:8080/healthz is OK
 npx promptfoo@latest redteam run -c promptfooconfig.yaml -j 1 --delay 5000
 npx promptfoo@latest redteam report
 ```
 
-Or `npm run redteam` (same flags).
+Use `-j 1` so attempts stay serial (runner capacity is 1).
 
 ### Multi-turn
 
-`crescendo` is configured with `stateful: true`. The provider returns `sessionId` = issue number so later turns comment on the **same** issue. `transformVars` seeds a UUID per test so the first turn always creates a **new** issue (UUID does not match `sessionIdPattern: '^[0-9]+$'`).
+`crescendo` uses `stateful: true`. The provider returns `sessionId` = issue number so later turns comment on the **same** issue. `transformVars` seeds a UUID per test so the first turn always **creates** a new issue.
 
 ## Docs
 
+- Root MCP client setup: [../README.md](../README.md)
 - [Custom Provider](https://www.promptfoo.dev/docs/providers/custom-api/)
 - [Red team configuration](https://www.promptfoo.dev/docs/red-team/configuration/)
 - [Multi-turn strategies](https://www.promptfoo.dev/docs/red-team/strategies/multi-turn/)
-- [Session management](https://www.promptfoo.dev/docs/red-team/troubleshooting/multi-turn-sessions/)
