@@ -157,8 +157,15 @@ export default class McpIssueTargetProvider {
     }
     const mcp = this.config.mcp || {};
     const timeoutSeconds = this.config.timeoutSeconds ?? 900;
+    const cfg = { ...mcp };
+    // PROMPTFOO_MCP_URL overrides the YAML url (e.g. inside docker compose,
+    // where the gateway is reachable as gitea-mcp:8080 instead of 127.0.0.1).
+    // Never applied to stdio configs (command) — e.g. the offline mock.
+    if (!cfg.command && process.env.PROMPTFOO_MCP_URL) {
+      cfg.url = process.env.PROMPTFOO_MCP_URL;
+    }
     this._session = new McpSession({
-      ...mcp,
+      ...cfg,
       timeoutMs: mcp.timeoutMs ?? timeoutSeconds * 1000,
     });
     await this._session.start();

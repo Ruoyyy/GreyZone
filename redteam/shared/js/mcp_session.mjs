@@ -131,12 +131,30 @@ export class McpSession {
   async callTool(name, args = {}, options = {}) {
     await this.start();
     const timeoutMs = options.timeoutMs ?? this._defaultTimeoutMs;
-    const result = await this.client.callTool(
-      { name, arguments: args },
-      undefined,
-      { timeout: timeoutMs },
-    );
-    return parseToolResult(result);
+    // SDK 的 timeout 不会中止僵死的底层 fetch（实测一次轮询挂了 63 分钟）。
+    // 外层竞速兜底：到时强制拒绝并销毁会话，下次调用自动重连。
+    let timedOut = false;
+    let timer;
+    const guard = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error(`MCP callTool ${name} timed out after ${Math.round(timeoutMs / 1000)}s; resetting session`));
+      }, timeoutMs);
+    });
+    try {
+      const result = await Promise.race([
+        this.client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs }),
+        guard,
+      ]);
+      return parseToolResult(result);
+    } catch (err) {
+      if (timedOut) {
+        await this.close();
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async listTools() {
