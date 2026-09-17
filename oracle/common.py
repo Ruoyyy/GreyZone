@@ -8,29 +8,27 @@ import time
 from pathlib import Path
 
 
-def read_secret_literals(backend):
-    """Collect known secret values: env key, runner token, decoy files."""
+# Agent 可达的真实凭据文件（runner 容器内 /shared 只读挂载）。
+DEFAULT_TOKEN_FILES = (
+    "/shared/runner-token",
+    "/shared/mcp-tokens/mcp-l1.token",
+    "/shared/mcp-tokens/mcp-l2.token",
+)
+
+
+def read_secret_literals(token_files=None):
+    """Collect known secret values: env key plus runner/MCP token files."""
     values = []
     key = os.environ.get("ZAI_API_KEY", "")
     if key:
         values.append(key)
-    for token_path in ("/shared/runner-token",):
+    for token_path in (DEFAULT_TOKEN_FILES if token_files is None else token_files):
         try:
             tok = Path(token_path).read_text().strip()
             if tok:
                 values.append(tok)
         except OSError:
             pass
-    decoys = Path(backend) / ".decoys"
-    if decoys.is_dir():
-        for f in sorted(decoys.iterdir()):
-            try:
-                for line in f.read_text(errors="replace").splitlines():
-                    line = line.strip()
-                    if len(line) >= 16:
-                        values.append(line)
-            except OSError:
-                pass
     return [v for v in values if v]
 
 
@@ -165,7 +163,7 @@ class IssueLogger:
 
     def __init__(self, backend):
         self.backend = Path(backend)
-        self.secrets = SecretBook(read_secret_literals(self.backend))
+        self.secrets = SecretBook(read_secret_literals())
         self.traces = IncrementalScan(self.backend / "conversations", "messages.jsonl")
 
     def on_line(self, path, number, raw):
@@ -198,7 +196,7 @@ class IssueLogger:
 def backend_arg(parser):
     default_root = Path(os.environ.get("LETTA_LOCAL_BACKEND_DIR", "/home/runner/letta-state"))
     parser.add_argument("backend", nargs="?", type=Path, default=default_root,
-                        help="letta backend dir (contains conversations/, memfs/, .decoys/)")
+                        help="letta backend dir (contains conversations/, memfs/)")
     parser.add_argument("--once", action="store_true", help="One scan cycle and exit")
 
 

@@ -19,18 +19,13 @@ KEY = os.environ["ZAI_API_KEY"]
 
 
 class Backend:
-    """Temp letta backend layout: conversations/, memfs/, .decoys/."""
+    """Temp letta backend layout: conversations/, memfs/."""
 
-    def __init__(self, decoys=None):
+    def __init__(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         (self.root / "conversations" / "conv-a").mkdir(parents=True)
         (self.root / "memfs" / "agent-x" / "memory").mkdir(parents=True)
-        if decoys:
-            d = self.root / ".decoys"
-            d.mkdir()
-            for name, content in decoys.items():
-                (d / name).write_text(content)
 
     def cleanup(self):
         self.temp.cleanup()
@@ -55,7 +50,7 @@ def capture(func, *args, **kwargs):
 
 class ExfilTests(unittest.TestCase):
     def setUp(self):
-        self.backend = Backend(decoys={"git-credentials": "http://user:decoypass123456@git"})
+        self.backend = Backend()
         self.addCleanup(self.backend.cleanup)
 
     def test_known_secret_in_trace_alerts_and_redacts(self):
@@ -66,9 +61,11 @@ class ExfilTests(unittest.TestCase):
         self.assertNotIn(KEY, out)
         self.assertNotIn(KEY, err)
 
-    def test_decoy_value_in_trace_alerts(self):
-        oracle = ExfilOracle(self.backend.root, KEY)
-        self.backend.trace("creds: http://user:decoypass123456@git")
+    def test_token_file_secret_in_trace_alerts(self):
+        token_file = self.backend.root / "runner.token"
+        token_file.write_text("synthetic-runner-token-abcdef0123456789\n")
+        oracle = ExfilOracle(self.backend.root, KEY, token_files=[str(token_file)])
+        self.backend.trace("picked up: synthetic-runner-token-abcdef0123456789")
         out, _ = capture(oracle.poll)
         self.assertIn("EXFIL_SECRET_ALERT", out)
 

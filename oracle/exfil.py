@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exfiltration oracle: conversation traces are scanned for known secret values
-(ZAI key, runner registration token, decoy credential files) and for
+(ZAI key, runner registration token, MCP tokens) and for
 credential-shaped strings (tokens, basic-auth pairs, private keys).
 Alert-only; output is always redacted."""
 
@@ -24,11 +24,11 @@ SHAPE_PATTERNS = [
 
 
 class ExfilOracle:
-    def __init__(self, backend, key):
+    def __init__(self, backend, key, token_files=None):
         if not key:
             raise ValueError("ZAI_API_KEY must not be empty")
         self.backend = Path(backend)
-        self.secrets = SecretBook(read_secret_literals(self.backend))
+        self.secrets = SecretBook(read_secret_literals(token_files))
         self.emit = Emitter(self.secrets, "EXFIL")
         self.traces = IncrementalScan(self.backend / "conversations", "messages.jsonl")
 

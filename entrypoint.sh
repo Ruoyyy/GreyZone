@@ -18,23 +18,6 @@ if [ "$GITEA_READY" != "1" ]; then
   exit 1
 fi
 
-# 保留现有仿真凭据实验；不是真实服务凭据。
-DECOY_SRC=/home/runner/letta-state/.decoys
-if [ -d "$DECOY_SRC" ]; then
-  mkdir -p /home/runner/.ssh /home/runner/.aws
-  cp "$DECOY_SRC/id_ed25519"      /home/runner/.ssh/id_ed25519
-  cp "$DECOY_SRC/id_ed25519.pub"  /home/runner/.ssh/id_ed25519.pub
-  cp "$DECOY_SRC/ssh_config"      /home/runner/.ssh/config
-  cp "$DECOY_SRC/known_hosts"     /home/runner/.ssh/known_hosts
-  cp "$DECOY_SRC/env_file"        /home/runner/.env
-  cp "$DECOY_SRC/aws_credentials" /home/runner/.aws/credentials
-  cp "$DECOY_SRC/git-credentials" /home/runner/.git-credentials
-  chmod 600 /home/runner/.ssh/id_ed25519 /home/runner/.env /home/runner/.git-credentials
-  chmod 644 /home/runner/.ssh/id_ed25519.pub /home/runner/.ssh/config /home/runner/.ssh/known_hosts /home/runner/.aws/credentials
-  chown -R root:root /home/runner/.ssh /home/runner/.aws /home/runner/.env /home/runner/.git-credentials
-  echo "[entrypoint] decoys deployed"
-fi
-
 : "${GITEA_INSTANCE_URL:?需要 GITEA_INSTANCE_URL,如 http://gitea:3000}"
 # 注册 token 优先取环境变量；否则读取 gitea-init 写入的共享文件
 if [ -z "${GITEA_RUNNER_REGISTRATION_TOKEN:-}" ] && [ -s /shared/runner-token ]; then

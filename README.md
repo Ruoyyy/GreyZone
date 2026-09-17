@@ -36,7 +36,7 @@ ORACLE_ENABLE=exfil,net,mem
 ```
 
 - `exfil` — alerts when secret values (your API key, the runner registration
-  token, decoy credentials) or credential-shaped strings appear in the
+  token, MCP tokens) or credential-shaped strings appear in the
   agent's conversation traces
 - `net` — alerts on non-loopback listening sockets (bind shells) and
   established connections to public addresses (reverse shells, egress)

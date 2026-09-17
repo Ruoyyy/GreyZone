@@ -26,7 +26,7 @@ MEM_POISON_PATTERNS = [
 class MemOracle:
     def __init__(self, backend):
         self.backend = Path(backend)
-        self.secrets = SecretBook(read_secret_literals(self.backend))
+        self.secrets = SecretBook(read_secret_literals())
         self.emit = Emitter(self.secrets, "MEM")
         self.memory = IncrementalScan(self.backend / "memfs", "*.md")
 

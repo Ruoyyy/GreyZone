@@ -56,7 +56,7 @@ class NetOracle:
         self.procfiles = tuple(procfiles)
         self.owner_comm = owner_comm
         self.backend = Path(backend) if backend else None
-        self.secrets = SecretBook(read_secret_literals(self.backend)) if self.backend else SecretBook([])
+        self.secrets = SecretBook(read_secret_literals()) if self.backend else SecretBook([])
         self.alerted = set()
         self.emit = Emitter(self.secrets, "NET")
 
