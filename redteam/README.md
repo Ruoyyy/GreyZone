@@ -54,6 +54,76 @@ Defaults in `promptfooconfig.yaml` match official tools:
 
 Issue **creation** bodies still need `@letta-code` in the body (`ensureMention`); comment auto-prefix is handled by the patched MCP gateway.
 
+## Config reference
+
+`promptfooconfig.yaml` fields, grouped by section.
+
+### Top level
+
+| Field | Purpose |
+|---|---|
+| `description` | Free text summary shown in reports |
+| `targets` | The system under test (see below) |
+| `prompts` | Template that renders the attack into the target; `{{prompt}}` is filled by the generator |
+| `defaultTest` | Options applied to every test; here it randomizes `sessionId` so each test starts a new conversation |
+| `outputPath` | Where results are written (gitignored run artifact) |
+| `redteam` | Attack-generation settings (see below) |
+
+### `targets[0]` — custom provider (`shared/js/mcp_target_provider.mjs`)
+
+| Field | Purpose |
+|---|---|
+| `id` / `label` | Provider path and the name shown in reports |
+| `timeoutSeconds` | Per-call timeout; must cover a full agent run plus polling |
+| `sessionIdPattern` | `sessionId` matching this regex continues an existing issue; otherwise a new issue is created |
+| `reuseIssue` | When true, every test and turn shares one issue (persistent conversation) |
+| `ensureMention` | Prefix added to **new issue bodies** (the MCP gateway only patches comments) |
+| `ensureMentionOnComment` | When false, leave comment prefixing to the gateway so the real code path is exercised |
+| `defaults.owner` / `defaults.repo` | Repo coordinates substituted into `{{owner}}` / `{{repo}}` |
+| `mcp.url` | MCP endpoint (HTTP). Override with `PROMPTFOO_MCP_URL` when running inside compose |
+| `mcp.command` / `mcp.args` / `mcp.cwd` | stdio alternative used by the offline mock instead of `url` |
+| `tools.*` | MCP tool names; change these to swap implementations |
+| `createArgs.*` / `commentArgs.*` | Argument templates for the first turn and follow-up turns |
+| `result.issueField` | Response field holding the new issue number |
+| `result.outputField` | Field holding the target's reply, used as the model output |
+| `wait.mode` | `poll_comments` = poll the issue until a completion marker appears |
+| `wait.intervalSeconds` / `wait.timeoutSeconds` | Poll cadence and maximum wait |
+| `wait.botUser` | Only comments from this user count (the agent's bot identity) |
+| `wait.doneMarks` | Any of these strings ends the turn |
+| `wait.failMarks` | Any of these flags the agent's turn as failed |
+| `wait.args` | Tool arguments used while polling |
+
+### `redteam`
+
+| Field | Purpose |
+|---|---|
+| `purpose` | Description of the system under test; drives how attacks are generated |
+| `injectVar` | Variable the generated attack is written into (must match `prompts`) |
+| `numTests` | Tests generated **per plugin** (total = plugins x numTests) |
+| `provider` | Model that generates the attacks (not the target) |
+| `plugins` | Attack categories that generate locally, one test set each |
+| `strategies` | How attacks are delivered/evolved; `crescendo` = multi-turn escalation |
+
+### `redteam.provider` — attack generator
+
+| Field | Purpose |
+|---|---|
+| `id` | Provider/model string, here the Z.ai OpenAI-compatible endpoint |
+| `config.apiBaseUrl` | Endpoint base URL |
+| `config.apiKeyEnvar` | Env var holding the API key |
+| `config.passthrough` | Raw request-body keys promptfoo forwards unchanged; used here to send `thinking: disabled` |
+| `config.max_tokens` | Output cap; promptfoo defaults to 1024 for non-OpenAI models, which truncates long JSON |
+| `config.showThinking` | When false, reasoning content is not prepended to the output |
+| `config.response_format` | **Deliberately absent here.** Set only on the crescendo provider; a global JSON mode leaks into plugin-generated attack text. |
+
+### `redteam.strategies[0]` — crescendo
+
+| Field | Purpose |
+|---|---|
+| `stateful` | Sends only the newest message each turn; the issue thread carries the context |
+| `maxTurns` | Turn budget per test |
+| `redteamProvider` | Strategy-scoped generator override; same model plus `response_format: json_object` so each step parses cleanly |
+
 ## Run
 
 Offline smoke (mock MCP, no Docker):
@@ -66,9 +136,14 @@ Against the real gateway:
 
 ```bash
 # Ensure http://127.0.0.1:8080/healthz is OK
-npx promptfoo@latest redteam run -c promptfooconfig.yaml -j 1 --delay 5000
-npx promptfoo@latest redteam report
+npm run redteam                              # = promptfoo 0.122.2 redteam run -j 1
+npx promptfoo redteam report                # same pinned version as the dependency
 ```
+
+`npm run redteam` uses the promptfoo pinned in `package.json` / `package-lock.json`
+and sets `PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=true` (local Z.ai generation,
+no attack content leaves the machine). Use `npx promptfoo@latest` only if you
+deliberately want a different version — it is not what this config is tested against.
 
 Use `-j 1` so attempts stay serial (runner capacity is 1).
 

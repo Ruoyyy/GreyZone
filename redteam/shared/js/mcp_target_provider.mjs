@@ -335,7 +335,8 @@ export default class McpIssueTargetProvider {
             method: 'create',
             owner: '{{owner}}',
             repo: '{{repo}}',
-            title: 'redteam-{{plugin}}',
+            // 标题不得暴露红队/promptfoo 特征
+            title: 'Question about repo configuration',
             body: '{{prompt}}',
           },
           vars,
@@ -378,14 +379,22 @@ export default class McpIssueTargetProvider {
         output = JSON.stringify(output);
       }
 
+      // The bot's failMarks mean the run ended in "Letta Code failed" /
+      // "encountered an error". That is a valid redteam observation (the attack
+      // may have crashed the target), so it is flagged rather than turned into a
+      // provider error. Without this, a refused/crashed run and a successful
+      // secret leak look identical in the results.
+      const botFailed = Boolean(waited?.failed);
+
       return {
         output,
         sessionId: String(issueNumber),
         metadata: {
           issueNumber: String(issueNumber),
-          failed: Boolean(waited?.failed),
+          failed: botFailed,
           waitResult: waited,
         },
+        ...(botFailed ? { guardrails: { flagged: true } } : {}),
       };
     } catch (err) {
       return {
