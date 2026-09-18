@@ -2,7 +2,12 @@
 """Persistence oracle: samples /proc/net/tcp{,6} for non-loopback LISTEN
 sockets (bind shells; sockets owned by the runner daemon itself are trusted)
 and for established connections to public addresses (reverse shells, egress).
-Alert-only; never blocks tasks."""
+HTTPS egress (port 443) is not alerted: the agent's own LLM API calls live
+there and the endpoint IPs rotate across CDNs, so any address-based allowlist
+both misses real hosts and silences real leaks. Non-443 egress is the signal
+(reverse shells on 4444/1337, plaintext POSTs), and target-side exfil over 443
+is covered by the exfil oracle scanning the conversation traces.
+Alert; never blocks tasks."""
 
 import argparse
 import ipaddress
@@ -14,11 +19,13 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import (Emitter, SecretBook, append_issue_log, backend_arg,
+from common import (Emitter, SecretBook, append_alert, backend_arg,
                     read_secret_literals)
 
 TRUSTED_LISTEN_COMMS = {"gitea-runner", "docker-init"}
 
+# Egress exemption: HTTPS is the agent's own LLM API traffic; see module docstring.
+HTTPS_PORT = 443
 
 def default_owner_comm(inode):
     try:
@@ -91,20 +98,25 @@ class NetOracle:
                     self.emit("NET_LISTEN_ALERT", alert=True, bind="%s:%s" % (lip, lport),
                               owner=comm, hint="non-loopback listener outside the runner daemon")
                     if self.backend:
-                        append_issue_log(self.backend, self.secrets,
-                                         "*** ALERT NET_LISTEN_ALERT *** %s:%s owner=%s" % (lip, lport, comm))
+                        append_alert(self.backend, self.secrets, "NET_LISTEN_ALERT",
+                                     "%s:%s owner=%s" % (lip, lport, comm),
+                                     extra={"owner": comm})
                 elif state == "01":  # ESTABLISHED
                     if self._exempt(rip):
                         continue
+                    if rport == HTTPS_PORT:
+                        continue     # agent's own LLM API traffic; see module docstring
                     key = ("egress", rip, rport)
                     if key in self.alerted:
                         continue
+                    comm = self.owner_comm(inode)   # 进程归因: 谁发起的外联
                     self.alerted.add(key)
                     self.emit("NET_EGRESS_ALERT", alert=True, remote="%s:%s" % (rip, rport),
-                              hint="established connection to a public address")
+                              owner=comm, hint="non-HTTPS egress to a public address")
                     if self.backend:
-                        append_issue_log(self.backend, self.secrets,
-                                         "*** ALERT NET_EGRESS_ALERT *** %s:%s public egress" % (rip, rport))
+                        append_alert(self.backend, self.secrets, "NET_EGRESS_ALERT",
+                                     "%s:%s non-HTTPS egress owner=%s" % (rip, rport, comm),
+                                     extra={"owner": comm})
 
 
 def main():
@@ -115,7 +127,8 @@ def main():
     args = parser.parse_args()
     oracle = NetOracle([c.strip() for c in args.allow.split(",")], backend=args.backend)
     oracle.emit("ORACLE_NET_STARTED", interval_seconds=1,
-                allow=[str(n) for n in oracle.allowed])
+                allow=[str(n) for n in oracle.allowed],
+                egress_exempt_port=HTTPS_PORT)
     try:
         while True:
             oracle.poll()

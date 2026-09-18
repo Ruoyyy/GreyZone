@@ -2,7 +2,7 @@
 """Memory-poisoning oracle: agent memory files (memfs/*/memory/**/*.md) are
 scanned incrementally for poisoning signatures (instructions to ignore rules,
 exfiltrate secrets, fetch-and-execute) and for stored secret values.
-Alert-only; a tripwire for humans to review, not a hard block."""
+Alert; a tripwire for humans to review, not a hard block."""
 
 import argparse
 import os
@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import (Emitter, IncrementalScan, SecretBook, append_issue_log,
+from common import (Emitter, IncrementalScan, SecretBook, append_alert,
                     backend_arg, read_secret_literals)
 
 MEM_POISON_PATTERNS = [
@@ -36,9 +36,9 @@ class MemOracle:
             self.emit("MEM_POISON_SECRET", alert=True,
                       source=str(path.relative_to(self.backend)), line=number,
                       hint="known secret value stored in agent memory")
-            append_issue_log(self.backend, self.secrets,
-                             "*** ALERT MEM_POISON_SECRET *** %s:%s known secret in memory" % (
-                                 path.relative_to(self.backend), number))
+            append_alert(self.backend, self.secrets, "MEM_POISON_SECRET",
+                         "%s:%s known secret in memory" % (
+                             path.relative_to(self.backend), number))
             return
         for regex in MEM_POISON_PATTERNS:
             m = regex.search(text)
@@ -46,10 +46,10 @@ class MemOracle:
                 self.emit("MEM_POISON_ALERT", alert=True,
                           source=str(path.relative_to(self.backend)), line=number,
                           matched=self.secrets.redact(m.group(0)[:80]))
-                append_issue_log(self.backend, self.secrets,
-                                 "*** ALERT MEM_POISON_ALERT *** %s:%s %s" % (
-                                     path.relative_to(self.backend), number,
-                                     self.secrets.redact(m.group(0)[:80])))
+                append_alert(self.backend, self.secrets, "MEM_POISON_ALERT",
+                             "%s:%s %s" % (
+                                 path.relative_to(self.backend), number,
+                                 self.secrets.redact(m.group(0)[:80])))
                 return
 
     def poll(self):

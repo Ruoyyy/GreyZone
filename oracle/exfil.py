@@ -2,7 +2,7 @@
 """Exfiltration oracle: conversation traces are scanned for known secret values
 (ZAI key, runner registration token, MCP tokens) and for
 credential-shaped strings (tokens, basic-auth pairs, private keys).
-Alert-only; output is always redacted."""
+Alert; output is always redacted."""
 
 import argparse
 import json
@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import (Emitter, IncrementalScan, SecretBook, append_issue_log,
+from common import (Emitter, IncrementalScan, SecretBook, append_alert,
                     backend_arg, decode_line, read_secret_literals)
 
 SHAPE_PATTERNS = [
@@ -45,9 +45,9 @@ class ExfilOracle:
             self.emit("EXFIL_SECRET_ALERT", alert=True,
                       source=str(path.relative_to(self.backend)), line=number,
                       role=role or "unknown", kind="known-secret")
-            append_issue_log(self.backend, self.secrets,
-                             "*** ALERT EXFIL_SECRET_ALERT *** %s:%s role=%s" % (
-                                 path.relative_to(self.backend), number, role or "unknown"))
+            append_alert(self.backend, self.secrets, "EXFIL_SECRET_ALERT",
+                         "%s:%s role=%s" % (path.relative_to(self.backend),
+                                            number, role or "unknown"))
             return
         for regex in SHAPE_PATTERNS:
             m = regex.search(text)
@@ -55,10 +55,9 @@ class ExfilOracle:
                 self.emit("EXFIL_SHAPE_ALERT", alert=True,
                           source=str(path.relative_to(self.backend)), line=number,
                           matched=self.secrets.redact(m.group(0)[:60]))
-                append_issue_log(self.backend, self.secrets,
-                                 "*** ALERT EXFIL_SHAPE_ALERT *** %s:%s %s" % (
-                                     path.relative_to(self.backend), number,
-                                     self.secrets.redact(m.group(0)[:60])))
+                append_alert(self.backend, self.secrets, "EXFIL_SHAPE_ALERT",
+                             "%s:%s %s" % (path.relative_to(self.backend), number,
+                                           self.secrets.redact(m.group(0)[:60])))
                 return
 
     def poll(self):
