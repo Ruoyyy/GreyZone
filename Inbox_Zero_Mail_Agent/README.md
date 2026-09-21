@@ -1,150 +1,175 @@
-[![](apps/web/app/opengraph-image.jpg)](https://www.getinboxzero.com)
+# Inbox Zero Mail Agent (Gmail Emulator + Customer Mail)
 
-<p align="center">
-  <a href="https://www.getinboxzero.com">
-    <h1 align="center">Inbox Zero - your 24/7 AI email assistant</h1>
-  </a>
-  <p align="center">
-    Organizes your inbox, pre-drafts replies, manages your calendar, and organizes attachments. Chat with it from Slack or Telegram to manage your inbox on the go. Open source alternative to Fyxer, but more customizable and secure.
-    <br />
-    <a href="https://www.getinboxzero.com">Website</a>
-    ·
-    <a href="https://www.getinboxzero.com/discord">Discord</a>
-    ·
-    <a href="https://github.com/elie222/inbox-zero/issues">Issues</a>
-  </p>
-</p>
+A local mail-agent environment: a managed Gmail mailbox is processed by
+Inbox Zero's AI (auto-replies, rules, cold-email screening), and an external
+customer mailbox is driven by an agent over MCP — send mails as the customer,
+read the AI's replies, and continue the conversation.
 
-<div align="center">
+## How to Run
 
-![Stars](https://img.shields.io/github/stars/elie222/inbox-zero?labelColor=black&style=for-the-badge&color=2563EB)
-![Forks](https://img.shields.io/github/forks/elie222/inbox-zero?labelColor=black&style=for-the-badge&color=2563EB)
+### Prerequisites
 
-<a href="https://trendshift.io/repositories/6400" target="_blank"><img src="https://trendshift.io/api/badge/repositories/6400" alt="elie222%2Finbox-zero | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+- Docker with the `docker compose` plugin
+- Node.js 24 and pnpm (for the Inbox Zero app and the customer MCP server)
+- Free ports `3000` (Inbox Zero web UI), `4002` (Gmail emulator), `4005`
+  (mail backbone), `4100` (customer mail server)
 
-[![Sponsor](https://readme.cash/i/hg3bchcqpo.svg)](https://readme.cash/c/hg3bchcqpo)
-
-[![Vercel OSS Program](https://vercel.com/oss/program-badge.svg)](https://vercel.com/oss)
-
-</div>
-
-## Mission
-
-To help you spend less time in your inbox, so you can focus on what matters most.
-
-## Features
-
-- **AI Personal Assistant:** Organizes your inbox and pre-drafts replies in your tone and style.
-- **AI Rules for email:** Explain in plain English how your AI should handle your inbox.
-- **Reply Zero:** Track emails to reply to and those awaiting responses.
-- **Bulk Unsubscriber:** One-click unsubscribe and archive emails you never read.
-- **Bulk Archiver:** Clean up your inbox by bulk archiving old emails.
-- **Cold Email Blocker:** Auto‑block cold emails.
-- **Email Analytics:** Track your activity and trends over time.
-- **Meeting Briefs:** Get personalized briefings before every meeting, pulling context from your email and calendar.
-- **Smart Filing:** Automatically save email attachments to Google Drive or OneDrive.
-- **Slack & Telegram Integration:** Chat with your AI assistant from Slack or Telegram to manage your inbox without leaving the apps you already use.
-
-
-Learn more in our [docs](https://docs.getinboxzero.com).
-
-## Feature Screenshots
-
-| ![AI Assistant](.github/screenshots/email-assistant.png) |        ![Reply Zero](.github/screenshots/reply-zero.png)        |
-| :------------------------------------------------------: | :-------------------------------------------------------------: |
-|                      _AI Assistant_                      |                          _Reply Zero_                           |
-|  ![Gmail Client](.github/screenshots/email-client.png)   | ![Bulk Unsubscriber](.github/screenshots/bulk-unsubscriber.png) |
-|                      _Gmail client_                      |                       _Bulk Unsubscriber_                       |
-
-## Demo Video
-
-[![Inbox Zero demo](https://img.youtube.com/vi/UusnveLKwWM/maxresdefault.jpg)](https://youtu.be/UusnveLKwWM)
-
-## Built with
-
-- [Next.js](https://nextjs.org/)
-- [Tailwind CSS](https://tailwindcss.com/)
-- [shadcn/ui](https://ui.shadcn.com/)
-- [Prisma](https://www.prisma.io/)
-- [Upstash](https://upstash.com/)
-- [Turborepo](https://turbo.build/)
-- [Popsy Illustrations](https://popsy.co/)
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=elie222/inbox-zero&type=Date)](https://www.star-history.com/#elie222/inbox-zero&Date)
-
-## Feature Requests
-
-To request a feature open a [GitHub issue](https://github.com/elie222/inbox-zero/issues), or join our [Discord](https://www.getinboxzero.com/discord).
-
-## Getting Started
-
-We offer a hosted version of Inbox Zero at [getinboxzero.com](https://www.getinboxzero.com).
-
-### Self-Hosting
-
-The fastest way to self-host Inbox Zero is with the CLI:
-
-> **Prerequisites**: [Docker](https://docs.docker.com/engine/install/) and [Node.js](https://nodejs.org/) v24+
+### 1. Configure
 
 ```bash
-npx @inbox-zero/cli setup      # One-time setup wizard
-npx @inbox-zero/cli start      # Start containers
+cp apps/web/.env.example apps/web/.env
 ```
 
-Open http://localhost:3000
+Edit `apps/web/.env` and fill in the required values:
 
-For complete self-hosting instructions, production deployment, OAuth setup, and configuration options, see our **[Self-Hosting Docs](https://docs.getinboxzero.com/hosting/quick-start)**.
-
-### Local Development
-
-> **Prerequisites**: [Docker](https://docs.docker.com/engine/install/), [Node.js](https://nodejs.org/) v24+, and [pnpm](https://pnpm.io/) v10+
-
-```bash
-git clone https://github.com/elie222/inbox-zero.git
-cd inbox-zero
-docker compose -f docker-compose.dev.yml up -d   # Postgres + Redis
-pnpm install
-npm run setup                                     # Interactive env setup
-cd apps/web && pnpm prisma migrate dev && cd ../..
-pnpm dev
 ```
-
-Open http://localhost:3000
-
-After `pnpm install`, if you want to use the local Google emulator, start it with:
-
-```bash
-docker compose -f docker-compose.dev.yml --profile google-emulator up -d
-```
-
-Then point `apps/web/.env` at it with:
-
-```bash
-GOOGLE_BASE_URL=http://localhost:4002
+AUTH_SECRET=<openssl rand -hex 32>
+EMAIL_ENCRYPT_SECRET=<openssl rand -hex 32>
+GOOGLE_PUBSUB_VERIFICATION_TOKEN=<openssl rand -hex 32>
+CRON_SECRET=<openssl rand -hex 32>
+GOOGLE_BASE_URL=http://localhost:4005
 GOOGLE_CLIENT_ID=emulate-google-client.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=emulate-google-secret
 ```
 
-If you want to use the local Microsoft emulator, start it with:
+LLM configuration — the mail agent needs a model for drafts, rule matching,
+and cold-email screening. Point it at any OpenAI-compatible endpoint:
 
-```bash
-docker compose -f docker-compose.dev.yml --profile microsoft-emulator up -d
+```
+LLM_API_KEY=<your-key>
+OPENAI_COMPATIBLE_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+OPENAI_COMPATIBLE_MODEL=glm-5.3-flash
+OPENAI_COMPATIBLE_STRUCTURED_OUTPUTS=false
+DEFAULT_LLMS=openai-compatible:glm-5.3-flash
 ```
 
-Then point `apps/web/.env` at it with:
+The managed mailbox is seeded from `emulate.local.config.yaml` (default
+`admin@gmail.com`); the external customer identity defaults to
+`ruoyu@gmail.com` and is overridable with `CUSTOMER_EMAIL`.
+
+### 2. Start the stack
 
 ```bash
-MICROSOFT_BASE_URL=http://localhost:4003
-MICROSOFT_CLIENT_ID=emulate-microsoft-client-id
-MICROSOFT_CLIENT_SECRET=emulate-microsoft-secret
+# Infrastructure (Postgres, Redis)
+docker compose up -d db redis serverless-redis-http
+
+# Mail loop (Gmail emulator, mail backbone, customer mail server)
+docker compose --profile mail-loop -f docker-compose.mail-loop.yml up -d
+
+# Inbox Zero app (from source)
+cd apps/web
+DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/inboxzero?schema=public" \
+  DIRECT_URL="postgresql://postgres:postgres@127.0.0.1:5433/inboxzero?schema=public" \
+  UPSTASH_REDIS_URL="http://127.0.0.1:8079" \
+  pnpm dev
 ```
 
-See the **[Contributing Guide](https://docs.getinboxzero.com/contributing)** for more details including devcontainer setup.
+The stack is ready when:
 
-## Contributing
+| Service | Check |
+|---|---|
+| Gmail emulator | `curl http://127.0.0.1:4002/.well-known/openid-configuration` |
+| Mail backbone | `curl http://127.0.0.1:4005/.well-known/openid-configuration` |
+| Customer mail | `curl -X POST http://127.0.0.1:4100/receive` returns 401 |
+| Inbox Zero app | `curl http://localhost:3000/login` returns 200 |
 
-View open tasks in [GitHub Issues](https://github.com/elie222/inbox-zero/issues) and join our [Discord](https://www.getinboxzero.com/discord) to discuss what's being worked on.
+The emulator is in-memory: restarting it wipes messages, labels, and OAuth
+tokens. After any emulator restart, re-login at `http://localhost:3000`
+(managed mailbox `admin@gmail.com`) and re-establish the watch:
 
-Docker images are automatically built on every push to `main` and tagged with the commit SHA (e.g., `elie222/inbox-zero:abc1234`). The `latest` tag always points to the most recent main build. Formal releases use version tags (e.g., `v2.26.0`).
+```bash
+curl -s "http://localhost:3000/api/watch/all" \
+  -H "Authorization: Bearer $(grep -E '^CRON_SECRET=' apps/web/.env | cut -d= -f2-)"
+```
+
+### 3. Talk to the agent
+
+Log in to the Inbox Zero UI at `http://localhost:3000` with
+`admin@gmail.com` and configure rules. The default system rule set drafts
+replies; enable send actions to make the agent auto-reply (see
+`usage.md` for the exact SQL/UI steps).
+
+Alternatively drive the customer side from a terminal:
+
+```bash
+cd apps/web
+TRANSPORT_TOKEN=$(cat .tmp/customer-mail/.transport-token) \
+  CUSTOMER_EMAIL=ruoyu@gmail.com \
+  npx tsx scripts/customer-mail-cli.ts
+```
+
+The CLI is an interactive customer inbox: `list` / `read <n>` / `reply <n>`
+/ `send` / `quit`.
+
+### 4. Connect an MCP client
+
+The customer mail server exposes a stdio MCP server with four tools:
+
+| Tool | Arguments | Effect |
+|---|---|---|
+| `send_email` | `to`, `subject`, `body`, `inReplyTo?`, `references?` | Send a mail as the external customer |
+| `list_received` | — | List mails the customer actually received (indexed) |
+| `read_received` | `index` | Read a received mail in full |
+| `reply_to` | `index`, `body` | Reply in-thread with proper In-Reply-To/References |
+
+For clients using the `mcpServers` JSON format, add this server entry:
+
+```json
+{
+  "mcpServers": {
+    "customer-mail": {
+      "command": "npx",
+      "args": ["tsx", "scripts/customer-mail-mcp.ts"],
+      "cwd": "/home/ruoyu/AgentThreatDataset/Inbox_Zero_Mail_Agent/apps/web",
+      "env": {
+        "TRANSPORT_TOKEN": "<from .tmp/customer-mail/.transport-token>"
+      }
+    }
+  }
+}
+```
+
+`TRANSPORT_TOKEN` is shared between the mail backbone and the customer mail
+server; generate it once and keep it stable across restarts:
+
+```bash
+openssl rand -hex 32 > apps/web/.tmp/customer-mail/.transport-token
+```
+
+#### Use the tools
+
+Start with `list_received` to see what the mail agent has sent the customer.
+Then use `send_email` to start a conversation, e.g.:
+
+```json
+{
+  "name": "send_email",
+  "arguments": {
+    "to": "admin@gmail.com",
+    "subject": "Invoice question",
+    "body": "Could you confirm the status of invoice #4242?"
+  }
+}
+```
+
+The mail agent processes the incoming mail (cold-email screening, rule
+matching, AI reply generation) and the backbone delivers the reply to the
+customer. Poll `list_received` and read new entries with `read_received`;
+reply with `reply_to` to continue the thread.
+
+### Notes
+
+- The Gmail emulator is a patched build
+  (`patches/@inbox-zero__emulate@0.11.1.patch`) with dense history IDs — the
+  app's history cursor math breaks on the upstream 21-digit IDs. Details in
+  `patches/README.md` and `plan.md`.
+- `apps/web/.tmp/` holds runtime state (customer outbox, transport token,
+  logs). It is regenerated on demand; delete it to reset the customer side.
+- The Inbox Zero app runs from source, not from the prebuilt image: several
+  local fixes (LLM structured-output fallback, draft→REPLY content routing)
+  live in `apps/web/utils/` and are required for auto-reply quality.
+- `docker-compose.mail-loop.yml` runs the emulator/backbone/customer stack
+  only; Postgres and Redis come from the base `docker-compose.yml`.
+- Security model: the app-side auto-reply pipeline and the customer MCP
+  tools are separate trust domains. The customer holds only `TRANSPORT_TOKEN`;
+  the managed mailbox credentials stay inside the app. See `plan.md` §2.
