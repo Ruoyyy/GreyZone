@@ -1,0 +1,283 @@
+"use client";
+
+import {
+  useCallback,
+  useState,
+  createContext,
+  useMemo,
+  useEffect,
+  useRef,
+} from "react";
+import { SWRConfig, mutate, useSWRConfig } from "swr";
+import { connectThreadCacheInvalidation } from "@/utils/email-cache/thread-invalidation";
+import { captureException } from "@/utils/error";
+import { useAccount } from "@/providers/EmailAccountProvider";
+import {
+  EMAIL_ACCOUNT_HEADER,
+  MICROSOFT_AUTH_EXPIRED_ERROR_CODE,
+  NO_REFRESH_TOKEN_ERROR_CODE,
+} from "@/utils/config";
+import { prefixPath } from "@/utils/path";
+import {
+  getSWRFetchErrorMessage,
+  normalizeSWRFetchErrorData,
+} from "./swr-error";
+import { redirectToSafeUrl } from "@/utils/redirect";
+import {
+  accountIdFromSnapshotKey,
+  clearPersistedSwrCacheForAccount,
+  PERSISTED_SWR_KEYS,
+  persistSwrEntries,
+  readPersistedSwrEntries,
+} from "@/utils/swr-persistence";
+
+// https://swr.vercel.app/docs/error-handling#status-code-and-error-object
+const fetcher = async (
+  url: string,
+  init?: RequestInit | undefined,
+  emailAccountId?: string | null,
+) => {
+  const headers = new Headers(init?.headers);
+
+  if (emailAccountId) {
+    headers.set(EMAIL_ACCOUNT_HEADER, emailAccountId);
+  }
+
+  const newInit = { ...init, headers };
+
+  const res = await fetch(url, newInit);
+
+  if (!res.ok) {
+    // Try to parse JSON, but handle cases where response isn't JSON (e.g. HMR 404s)
+    let errorData: Record<string, unknown> = {};
+    try {
+      const payload: unknown = await res.json();
+      errorData = normalizeSWRFetchErrorData(payload);
+    } catch {
+      // Response wasn't JSON - common during dev HMR, unexpected in production
+      if (process.env.NODE_ENV !== "development") {
+        console.error("Failed to parse error response as JSON", {
+          url,
+          status: res.status,
+          statusText: res.statusText,
+        });
+      }
+    }
+
+    if (
+      errorData.errorCode === NO_REFRESH_TOKEN_ERROR_CODE ||
+      errorData.errorCode === MICROSOFT_AUTH_EXPIRED_ERROR_CODE
+    ) {
+      if (emailAccountId) {
+        const errorMessage =
+          errorData.errorCode === MICROSOFT_AUTH_EXPIRED_ERROR_CODE
+            ? "Microsoft authorization expired"
+            : "Refresh token missing";
+
+        captureException(new Error(errorMessage), {
+          extra: {
+            url,
+            status: res.status,
+            statusText: res.statusText,
+            responseBody: errorData,
+            emailAccountId,
+          },
+        });
+
+        console.log(`${errorMessage}, redirecting to consent page...`);
+        const redirectUrl = prefixPath(emailAccountId, "/permissions/consent");
+        redirectToSafeUrl(redirectUrl);
+        return;
+      }
+    }
+
+    const errorMessage = getSWRFetchErrorMessage(errorData);
+    const error: Error & { info?: Record<string, unknown>; status?: number } =
+      new Error(errorMessage);
+
+    // Attach extra info to the error object.
+    error.info = errorData;
+    error.status = res.status;
+
+    const isKnownError = errorData.isKnownError;
+
+    if (!isKnownError) {
+      captureException(error, {
+        extra: {
+          url,
+          status: res.status,
+          statusText: res.statusText,
+          responseBody: error.info,
+          extraMessage: "SWR fetch error",
+        },
+      });
+    }
+
+    throw error;
+  }
+
+  return res.json();
+};
+
+interface Context {
+  resetCache: () => void;
+}
+
+const defaultContextValue = {
+  resetCache: () => {},
+};
+
+export const SWRContext = createContext<Context>(defaultContextValue);
+
+export const SWRProvider = (props: { children: React.ReactNode }) => {
+  const [provider, setProvider] = useState(new Map());
+  const { emailAccountId } = useAccount();
+  const previousEmailAccountIdRef = useRef<string | null>(null);
+
+  const resetCache = useCallback(() => {
+    // based on: https://swr.vercel.app/docs/mutation#mutate-multiple-items
+    mutate(() => true, undefined, { revalidate: false });
+
+    // not sure we also need this approach anymore to clear cache but keeping both for now
+    setProvider(new Map());
+  }, []);
+
+  // Reset cache when emailAccountId changes (account switching)
+  useEffect(() => {
+    if (
+      emailAccountId &&
+      previousEmailAccountIdRef.current &&
+      emailAccountId !== previousEmailAccountIdRef.current
+    ) {
+      resetCache();
+    }
+    previousEmailAccountIdRef.current = emailAccountId;
+  }, [emailAccountId, resetCache]);
+
+  const enhancedFetcher = useCallback(
+    async (keyOrUrl: string | [string, string], init?: RequestInit) => {
+      if (Array.isArray(keyOrUrl)) {
+        const [url, overrideEmailAccountId] = keyOrUrl;
+        return fetcher(url, init, overrideEmailAccountId);
+      }
+      return fetcher(keyOrUrl, init, emailAccountId);
+    },
+    [emailAccountId],
+  );
+
+  const value = useMemo(() => ({ resetCache }), [resetCache]);
+
+  return (
+    <SWRContext.Provider value={value}>
+      <SWRConfig
+        value={{
+          fetcher: enhancedFetcher,
+          provider: () => provider,
+          onError: (error: unknown) => console.log("SWR error:", error),
+          ...getDevOnlySWRConfig(),
+        }}
+      >
+        <PersistedSwrCache />
+        {props.children}
+      </SWRConfig>
+    </SWRContext.Provider>
+  );
+};
+
+/**
+ * Hydrates whitelisted SWR entries from localStorage and snapshots them back.
+ * Must live inside SWRConfig: SWR initializes its cache from the provider
+ * exactly once, so only the scoped `cache`/`mutate` from useSWRConfig reach
+ * the live cache. Hydrating in an effect (after the hydration render) keeps
+ * client and server HTML identical.
+ */
+function PersistedSwrCache() {
+  const { cache, mutate: scopedMutate } = useSWRConfig();
+  const { emailAccountId } = useAccount();
+  const hydratedForRef = useRef<string | null>(null);
+
+  useEffect(
+    () => connectThreadCacheInvalidation(cache, scopedMutate),
+    [cache, scopedMutate],
+  );
+
+  useEffect(() => {
+    if (!emailAccountId || hydratedForRef.current === emailAccountId) return;
+    const isAccountSwitch = hydratedForRef.current !== null;
+    hydratedForRef.current = emailAccountId;
+    const persisted = readPersistedSwrEntries(emailAccountId);
+    for (const key of PERSISTED_SWR_KEYS) {
+      const data = persisted.get(key)?.data;
+      if (isAccountSwitch) {
+        // The provider reset doesn't reach the live scoped cache (SWR only
+        // initializes its provider once), so the previous account's values
+        // still occupy these keys. Replace them with this account's snapshot
+        // (or clear them) so they can't render or get persisted under the
+        // wrong account.
+        scopedMutate(key, data, { populateCache: true, revalidate: false });
+      } else if (data !== undefined && cache.get(key)?.data === undefined) {
+        scopedMutate(key, data, { populateCache: true, revalidate: false });
+      }
+    }
+  }, [emailAccountId, cache, scopedMutate]);
+
+  // If another tab removes an account's snapshot (logout or account
+  // deletion), stop this tab from re-persisting it out of its warm cache.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.newValue !== null) return;
+      const removedAccountId = accountIdFromSnapshotKey(event.key ?? "");
+      if (removedAccountId) clearPersistedSwrCacheForAccount(removedAccountId);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  // Snapshot when the app is backgrounded, closed, or this account unmounts;
+  // there is no per-write hook on the SWR cache, and the visibility event also
+  // covers the desktop shell hiding its window.
+  useEffect(() => {
+    if (!emailAccountId) return;
+
+    const persist = () => persistSwrEntries(emailAccountId, cache);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") persist();
+    };
+
+    window.addEventListener("pagehide", persist);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      persist();
+      window.removeEventListener("pagehide", persist);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [emailAccountId, cache]);
+
+  return null;
+}
+
+// Dev-only config to handle transient 404s during HMR
+function getDevOnlySWRConfig() {
+  if (process.env.NODE_ENV !== "development") return {};
+
+  return {
+    keepPreviousData: true,
+    onErrorRetry: (
+      error: Error & { status?: number },
+      _key: string,
+      _config: unknown,
+      revalidate: (opts: { retryCount: number }) => void,
+      { retryCount }: { retryCount: number },
+    ) => {
+      // Retry 404s quickly (likely HMR transient errors)
+      if (error.status === 404) {
+        setTimeout(() => revalidate({ retryCount }), 500);
+        return;
+      }
+      // Don't retry on other client errors (4xx)
+      if (error.status && error.status >= 400 && error.status < 500) return;
+      // Default exponential backoff for server errors
+      setTimeout(() => revalidate({ retryCount }), 5000 * 2 ** retryCount);
+    },
+  };
+}

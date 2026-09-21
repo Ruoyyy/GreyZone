@@ -1,0 +1,202 @@
+import type { gmail_v1 } from "@googleapis/gmail";
+import { getBatchWithRetry } from "@/utils/gmail/batch-with-retry";
+import {
+  isDefined,
+  type ThreadWithPayloadMessages,
+  type MessageWithPayload,
+} from "@/utils/types";
+import { parseMessage } from "@/utils/gmail/message";
+import { GmailLabel } from "@/utils/gmail/label";
+import { withGmailRetry } from "@/utils/gmail/retry";
+import type { Logger } from "@/utils/logger";
+
+export async function getThread(
+  threadId: string,
+  gmail: gmail_v1.Gmail,
+): Promise<ThreadWithPayloadMessages> {
+  const thread = await withGmailRetry(
+    () => gmail.users.threads.get({ userId: "me", id: threadId }),
+    5,
+  );
+  return thread.data as ThreadWithPayloadMessages;
+}
+
+interface MinimalThread {
+  historyId: string;
+  id: string;
+  snippet: string;
+}
+
+export async function getThreads(
+  q: string,
+  labelIds: string[],
+  gmail: gmail_v1.Gmail,
+  maxResults = 100,
+): Promise<{
+  nextPageToken?: string | null;
+  resultSizeEstimate?: number | null;
+  threads: MinimalThread[];
+}> {
+  const threads = await withGmailRetry(
+    () =>
+      gmail.users.threads.list({
+        userId: "me",
+        q,
+        labelIds,
+        maxResults,
+      }),
+    5,
+  );
+  return {
+    nextPageToken: threads.data.nextPageToken,
+    resultSizeEstimate: threads.data.resultSizeEstimate,
+    threads: (threads.data.threads || []) as MinimalThread[],
+  };
+}
+
+export async function getThreadsWithNextPageToken({
+  gmail,
+  q,
+  labelIds,
+  maxResults = 100,
+  pageToken,
+  logger,
+}: {
+  gmail: gmail_v1.Gmail;
+  q?: string;
+  labelIds?: string[];
+  maxResults?: number;
+  pageToken?: string;
+  logger?: Logger;
+}) {
+  const threads = await withGmailRetry(
+    () =>
+      gmail.users.threads.list({
+        userId: "me",
+        q,
+        labelIds,
+        maxResults,
+        pageToken,
+      }),
+    5,
+    { logger },
+  );
+
+  return {
+    threads: threads.data.threads || [],
+    nextPageToken: threads.data.nextPageToken,
+  };
+}
+
+export async function getThreadsBatch(
+  threadIds: string[],
+  accessToken: string,
+  logger: Logger,
+  options?: { format: "metadata" },
+): Promise<ThreadWithPayloadMessages[]> {
+  if (!threadIds.length) return [];
+
+  return getBatchWithRetry<
+    ThreadWithPayloadMessages,
+    ThreadWithPayloadMessages
+  >({
+    ids: threadIds,
+    endpoint: "/gmail/v1/users/me/threads",
+    accessToken,
+    parse: (thread) => thread,
+    logger,
+    queryString:
+      options?.format === "metadata" ? getMetadataQueryString() : undefined,
+  });
+}
+
+function getMetadataQueryString() {
+  const searchParams = new URLSearchParams({ format: "metadata" });
+  for (const header of [
+    "From",
+    "To",
+    "Cc",
+    "Bcc",
+    "Subject",
+    "Date",
+    "Message-ID",
+    "In-Reply-To",
+    "References",
+    "Reply-To",
+  ]) {
+    searchParams.append("metadataHeaders", header);
+  }
+  return searchParams.toString();
+}
+
+async function getThreadsFromSender(
+  gmail: gmail_v1.Gmail,
+  sender: string,
+  limit: number,
+): Promise<
+  Array<{
+    id?: string | null;
+    threadId?: string | null;
+    snippet?: string | null;
+  }>
+> {
+  const query = `from:${sender} -label:sent -label:draft`;
+  const response = await withGmailRetry(
+    () =>
+      gmail.users.threads.list({
+        userId: "me",
+        q: query,
+        maxResults: limit,
+      }),
+    5,
+  );
+
+  return response.data.threads || [];
+}
+
+export async function getThreadsFromSenderWithSubject(
+  gmail: gmail_v1.Gmail,
+  accessToken: string,
+  sender: string,
+  limit: number,
+  logger: Logger,
+): Promise<
+  Array<{
+    id: string;
+    snippet: string;
+    subject: string;
+  }>
+> {
+  const threads = await getThreadsFromSender(gmail, sender, limit);
+  const threadIds = threads.map((t) => t.id).filter(isDefined);
+  const threadsWithSubject = await getThreadsBatch(
+    threadIds,
+    accessToken,
+    logger,
+  );
+  return threadsWithSubject
+    .map((t) =>
+      t.id
+        ? {
+            id: t.id,
+            subject:
+              t.messages?.[0]?.payload?.headers?.find(
+                (h) => h.name === "Subject",
+              )?.value || "",
+            snippet: t.messages?.[0]?.snippet || "",
+          }
+        : undefined,
+    )
+    .filter(isDefined);
+}
+
+export async function getThreadMessages(
+  threadId: string,
+  gmail: gmail_v1.Gmail,
+) {
+  const thread = await getThread(threadId, gmail);
+  if (!thread?.messages) return [];
+  return thread.messages
+    .map((m) => parseMessage(m as MessageWithPayload))
+    .filter((m) => !m.labelIds?.includes(GmailLabel.DRAFT));
+}

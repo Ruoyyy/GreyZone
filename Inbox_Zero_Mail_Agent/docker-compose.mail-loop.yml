@@ -1,0 +1,111 @@
+# 邮件闭环测试栈:模拟器 + 邮件骨干 + 客户邮件服务器。
+#
+# 用法:
+#   docker compose -f docker-compose.mail-loop.yml up -d --profile mail-loop
+#   docker compose -f docker-compose.mail-loop.yml down
+#
+# 依赖:apps/web/.tmp/ 下的 bundle(由 mail-loop.sh 打包)和 patched emulate。
+# 应用本身不在这个文件里 —— 它跑在宿主机(next dev),骨干通过
+# host.docker.internal 把 webhook 投递给它。
+name: inbox-zero-mail-loop
+
+services:
+  google-emulator:
+    image: node:24-alpine
+    container_name: inbox-zero-mail-emulator
+    restart: unless-stopped
+    working_dir: /workspace
+    command:
+      - node
+      - /emulate/dist/index.js
+      - start
+      - --service
+      - google
+      - --port
+      - "4002"
+      - --base-url
+      - http://localhost:4005
+    volumes:
+      - ./.tmp/emulate-patched:/emulate:ro
+      - ./emulate.local.config.yaml:/workspace/emulate.config.yaml:ro
+    ports:
+      - "4002:4002"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O - http://127.0.0.1:4002/.well-known/openid-configuration >/dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - mail-loop
+
+  mail-backbone:
+    image: node:24-alpine
+    container_name: inbox-zero-mail-backbone
+    restart: unless-stopped
+    working_dir: /app
+    depends_on:
+      google-emulator:
+        condition: service_healthy
+    env_file:
+      - path: ${INBOX_ZERO_ENV_FILE:-./apps/web/.env}
+        required: false
+    environment:
+      LISTEN_HOST: 0.0.0.0
+      MANAGED_EMAIL: admin@gmail.com
+      EMULATOR_BASE_URL: http://google-emulator:4002
+      TRANSPORT_TOKEN: ${TRANSPORT_TOKEN:-local-transport-token}
+      GOOGLE_WEBHOOK_URL: http://host.docker.internal:3000/api/google/webhook
+      GOOGLE_PUBSUB_VERIFICATION_TOKEN: ${GOOGLE_PUBSUB_VERIFICATION_TOKEN:?请在 .env 或环境中设置}
+      CUSTOMER_RECEIVE_URL: http://customer-mail-server:4100/receive
+      MAIL_BACKBONE_PORT: "4005"
+      MAIL_BACKBONE_STATE_DIR: /app/state
+      MAIL_BACKBONE_POLL_INTERVAL_MS: "5000"
+    volumes:
+      - ./apps/web/.tmp/mail-loop-bundles/run-mail-backbone.js:/app/run-mail-backbone.js:ro
+      - mail-backbone-state:/app/state
+    command: ["node", "/app/run-mail-backbone.js"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4005:4005"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O - http://127.0.0.1:4005/.well-known/openid-configuration >/dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - mail-loop
+
+  customer-mail-server:
+    image: node:24-alpine
+    container_name: inbox-zero-customer-mail
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      LISTEN_HOST: 0.0.0.0
+      TRANSPORT_TOKEN: ${TRANSPORT_TOKEN:-local-transport-token}
+      CUSTOMER_EMAIL: ${CUSTOMER_EMAIL:-ruoyu@gmail.com}
+    volumes:
+      - ./apps/web/.tmp/mail-loop-bundles/customer-mail-server.js:/app/customer-mail-server.js:ro
+      - ./apps/web/.tmp/customer-mail:/app/outbox
+    command:
+      - node
+      - /app/customer-mail-server.js
+      - serve
+      - --port
+      - "4100"
+      - --outbox
+      - /app/outbox
+      - --token
+      - ${TRANSPORT_TOKEN:-local-transport-token}
+    ports:
+      - "4100:4100"
+    profiles:
+      - mail-loop
+
+volumes:
+  mail-backbone-state:
