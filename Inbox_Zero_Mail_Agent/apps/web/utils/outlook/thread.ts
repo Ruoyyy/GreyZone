@@ -1,0 +1,243 @@
+import type { OutlookClient } from "@/utils/outlook/client";
+import type { Message } from "@microsoft/microsoft-graph-types";
+import type { ParsedMessage } from "@/utils/types";
+import { escapeODataString } from "@/utils/outlook/odata-escape";
+import type { Logger } from "@/utils/logger";
+import {
+  convertMessage,
+  createMessagesRequest,
+  getCategoryMap,
+  getFolderIds,
+} from "@/utils/outlook/message";
+import {
+  extractErrorInfo,
+  isRetryableError,
+  withMicrosoftGraphRetry,
+} from "@/utils/microsoft/retry";
+import { resolveMicrosoftGraphNextLink } from "@/utils/outlook/page-token";
+
+export async function getThread(
+  threadId: string,
+  client: OutlookClient,
+  logger: Logger,
+): Promise<Message[]> {
+  const escapedThreadId = escapeODataString(threadId);
+  const filter = `conversationId eq '${escapedThreadId}'`;
+
+  try {
+    const messages: { value: Message[] } = await withMicrosoftGraphRetry(
+      () =>
+        createMessagesRequest(client)
+          .filter(filter)
+          .top(100) // Get up to 100 messages instead of default 10
+          .get(),
+      logger,
+    );
+
+    // Sort in memory to avoid "restriction or sort order is too complex" error
+    return messages.value.sort((a, b) => {
+      const dateA =
+        a.isDraft && !a.receivedDateTime
+          ? Number.POSITIVE_INFINITY
+          : new Date(a.receivedDateTime || 0).getTime();
+      const dateB =
+        b.isDraft && !b.receivedDateTime
+          ? Number.POSITIVE_INFINITY
+          : new Date(b.receivedDateTime || 0).getTime();
+      return dateA - dateB;
+    });
+  } catch (error) {
+    // biome-ignore lint/suspicious/noExplicitAny: existing loose external shape
+    const err = error as any;
+
+    const context = {
+      threadId,
+      filter,
+      error: error instanceof Error ? error.message : err,
+      errorCode: err?.code,
+      errorStatusCode: err?.statusCode,
+    };
+    if (isRetryableError(extractErrorInfo(error)).isRateLimit) {
+      logger.warn("getThread failed", context);
+    } else {
+      logger.error("getThread failed", context);
+    }
+    throw error;
+  }
+}
+
+export async function getThreads(
+  query: string,
+  client: OutlookClient,
+  logger: Logger,
+  maxResults = 100,
+): Promise<{
+  nextPageToken?: string | null;
+  threads: { id: string; snippet: string }[];
+}> {
+  let request = client.getClient().api("/me/messages");
+
+  if (query) {
+    request = request.filter(
+      `contains(subject, '${escapeODataString(query)}')`,
+    );
+  }
+
+  const response: { value: Message[]; "@odata.nextLink"?: string } =
+    await withMicrosoftGraphRetry(
+      () =>
+        request
+          .top(maxResults)
+          .select("id,conversationId,subject,bodyPreview")
+          .get(),
+      logger,
+    );
+
+  // Group messages by conversationId to create thread-like structure
+  const threadMap = new Map<string, { id: string; snippet: string }>();
+  for (const message of response.value) {
+    if (message.conversationId && !threadMap.has(message.conversationId)) {
+      threadMap.set(message.conversationId, {
+        id: message.conversationId,
+        snippet: message.bodyPreview || "",
+      });
+    }
+  }
+
+  return {
+    threads: Array.from(threadMap.values()),
+    nextPageToken: response["@odata.nextLink"],
+  };
+}
+
+export async function getThreadsWithNextPageToken({
+  client,
+  query,
+  maxResults = 100,
+  pageToken,
+  logger,
+}: {
+  client: OutlookClient;
+  query?: string;
+  maxResults?: number;
+  pageToken?: string;
+  logger: Logger;
+}) {
+  const endpoint = resolveMicrosoftGraphNextLink(pageToken) || "/me/messages";
+
+  let request = client
+    .getClient()
+    .api(endpoint)
+    .top(maxResults)
+    .select("id,conversationId,subject,bodyPreview");
+
+  if (query) {
+    request = request.filter(
+      `contains(subject, '${escapeODataString(query)}')`,
+    );
+  }
+
+  const response: { value: Message[]; "@odata.nextLink"?: string } =
+    await withMicrosoftGraphRetry(() => request.get(), logger);
+
+  // Group messages by conversationId to create thread-like structure
+  const threadMap = new Map<string, { id: string; snippet: string }>();
+  for (const message of response.value) {
+    if (message.conversationId && !threadMap.has(message.conversationId)) {
+      threadMap.set(message.conversationId, {
+        id: message.conversationId,
+        snippet: message.bodyPreview || "",
+      });
+    }
+  }
+
+  return {
+    threads: Array.from(threadMap.values()),
+    nextPageToken: response["@odata.nextLink"],
+  };
+}
+
+export async function getThreadsFromSender(
+  client: OutlookClient,
+  sender: string,
+  limit: number,
+  logger: Logger,
+): Promise<Array<{ id: string; snippet: string }>> {
+  const response: { value: Message[] } = await withMicrosoftGraphRetry(
+    () =>
+      client
+        .getClient()
+        .api("/me/messages")
+        .filter(`from/emailAddress/address eq '${escapeODataString(sender)}'`)
+        .top(limit)
+        .select("id,conversationId,bodyPreview")
+        .get(),
+    logger,
+  );
+
+  // Group messages by conversationId
+  const threadMap = new Map<string, { id: string; snippet: string }>();
+  for (const message of response.value) {
+    if (message.conversationId && !threadMap.has(message.conversationId)) {
+      threadMap.set(message.conversationId, {
+        id: message.conversationId,
+        snippet: message.bodyPreview || "",
+      });
+    }
+  }
+
+  return Array.from(threadMap.values());
+}
+
+export async function getThreadsFromSenderWithSubject(
+  client: OutlookClient,
+  sender: string,
+  limit: number,
+  logger: Logger,
+): Promise<Array<{ id: string; snippet: string; subject: string }>> {
+  const response: { value: Message[] } = await withMicrosoftGraphRetry(
+    () =>
+      client
+        .getClient()
+        .api("/me/messages")
+        .filter(`from/emailAddress/address eq '${escapeODataString(sender)}'`)
+        .top(limit)
+        .select("id,conversationId,subject,bodyPreview")
+        .get(),
+    logger,
+  );
+
+  // Group messages by conversationId
+  const threadMap = new Map<
+    string,
+    { id: string; snippet: string; subject: string }
+  >();
+  for (const message of response.value) {
+    if (message.conversationId && !threadMap.has(message.conversationId)) {
+      threadMap.set(message.conversationId, {
+        id: message.conversationId,
+        snippet: message.bodyPreview || "",
+        subject: message.subject || "",
+      });
+    }
+  }
+
+  return Array.from(threadMap.values());
+}
+
+export async function getThreadMessages(
+  threadId: string,
+  client: OutlookClient,
+  logger: Logger,
+  { includeDrafts = false }: { includeDrafts?: boolean } = {},
+): Promise<ParsedMessage[]> {
+  const [messages, folderIds, categoryMap] = await Promise.all([
+    getThread(threadId, client, logger),
+    getFolderIds(client, logger, { includeDrafts }),
+    getCategoryMap(client, logger),
+  ]);
+
+  return messages
+    .filter((msg) => includeDrafts || !msg.isDraft)
+    .map((msg) => convertMessage(msg, folderIds, categoryMap));
+}

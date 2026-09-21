@@ -1,0 +1,579 @@
+/* eslint-disable no-process-env */
+import { createEnv } from "@t3-oss/env-nextjs";
+import { z } from "zod";
+import { buildLegacyLlmsEnv, optionalEnvValue } from "@/env-legacy-llms";
+import { booleanString } from "@/utils/zod";
+
+const llmProviderEnum = z.enum([
+  "anthropic",
+  "azure",
+  "azure-foundry",
+  "vertex",
+  "google",
+  "openai",
+  "bedrock",
+  "openrouter",
+  "groq",
+  "aigateway",
+  "ollama",
+  "openai-compatible",
+  "codex-cli",
+  "claude-code",
+]);
+
+/** For Vercel preview deployments, auto-detect from VERCEL_URL. */
+const getBaseUrl = (): string | undefined => {
+  const isOAuthProxyServer = process.env.IS_OAUTH_PROXY_SERVER === "true";
+  if (
+    process.env.VERCEL_ENV === "preview" &&
+    process.env.VERCEL_URL &&
+    !isOAuthProxyServer
+  ) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+
+  return process.env.NEXT_PUBLIC_BASE_URL;
+};
+
+const legacyLlmsEnv = buildLegacyLlmsEnv(process.env);
+
+const llmsEnv = (legacyValue: string | undefined) =>
+  z.preprocess(
+    (value) => optionalEnvValue(value) ?? legacyValue,
+    z.string().optional(),
+  );
+
+const defaultLlmsEnv = z.preprocess(
+  (value) => optionalEnvValue(value) ?? legacyLlmsEnv.DEFAULT_LLMS,
+  z.string().min(1),
+);
+
+const parsedEnv = createEnv({
+  server: {
+    NODE_ENV: z.enum(["development", "production", "test"]),
+    INBOX_ZERO_ENV_FILE: z.string().optional(),
+    DATABASE_URL: z.string().url(),
+    DATABASE_URL_UNPOOLED: z.string().url().optional(),
+    PREVIEW_DATABASE_URL: z.string().url().optional(),
+    PREVIEW_DATABASE_URL_UNPOOLED: z.preprocess(
+      (value) => value ?? process.env.DATABASE_URL_UNPOOLED,
+      z.string().url().optional(),
+    ),
+
+    AUTH_SECRET: z.string().optional(),
+    SCIM_CREDENTIAL_HASH_SECRET: z.string().min(32).optional(),
+    NEXTAUTH_SECRET: z.string().optional(),
+    AUTH_ALLOWED_EMAILS: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value
+          ?.split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      ),
+    AUTH_ALLOWED_EMAIL_DOMAINS: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value
+          ?.split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      ),
+    GOOGLE_CLIENT_ID: z.string().min(1),
+    GOOGLE_CLIENT_SECRET: z.string().min(1),
+    // Local Google emulation only; used for both OAuth and resource APIs.
+    GOOGLE_BASE_URL: z.string().url().optional(),
+    // Local Microsoft emulation only; used for both OAuth and Microsoft Graph APIs.
+    MICROSOFT_BASE_URL: z.string().url().optional(),
+    MICROSOFT_CLIENT_ID: z.string().optional(),
+    MICROSOFT_CLIENT_SECRET: z.string().optional(),
+    MICROSOFT_TENANT_ID: z.preprocess(
+      optionalEnvValue,
+      z.string().default("common"),
+    ),
+    APPLE_CLIENT_ID: z.string().optional(),
+    APPLE_TEAM_ID: z.string().optional(),
+    APPLE_KEY_ID: z.string().optional(),
+    APPLE_PRIVATE_KEY: z.string().optional(),
+    APPLE_APP_BUNDLE_IDENTIFIER: z.string().optional(),
+    // Comma-separated SHA-256 fingerprints served from /.well-known/assetlinks.json
+    ANDROID_APP_CERT_SHA256_FINGERPRINTS: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value
+          ?.split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      ),
+    EMAIL_ENCRYPT_SECRET: z.string(),
+    EMAIL_ENCRYPT_SALT: z.string(),
+
+    DEFAULT_LLMS: defaultLlmsEnv, // Ordered provider:model chain; first valid entry is primary, later entries are fallbacks
+    ECONOMY_LLMS: llmsEnv(legacyLlmsEnv.ECONOMY_LLMS), // Ordered provider:model chain for economy model plus fallbacks
+    CHAT_LLMS: llmsEnv(legacyLlmsEnv.CHAT_LLMS), // Ordered provider:model chain for chat model plus fallbacks
+    NANO_LLMS: llmsEnv(legacyLlmsEnv.NANO_LLMS), // Ordered provider:model chain for nano model plus fallbacks
+    DRAFT_LLMS: llmsEnv(legacyLlmsEnv.DRAFT_LLMS), // Ordered provider:model chain for draft model plus fallbacks
+    CHAT_OPENROUTER_PROVIDERS: z.string().optional(), // Comma-separated list of OpenRouter providers for chat (e.g., "Google Vertex,Anthropic")
+    DEFAULT_OPENROUTER_PROVIDERS: z.string().optional(), // Comma-separated list of OpenRouter providers for default model (e.g., "Google Vertex,Anthropic")
+    ECONOMY_OPENROUTER_PROVIDERS: z.string().optional(), // Comma-separated list of OpenRouter providers for economy model (e.g., "Google Vertex,Anthropic")
+    // Deprecated: use DEFAULT_LLMS instead. Kept so older deployments are converted at startup.
+    DEFAULT_LLM_PROVIDER: z
+      .enum([...llmProviderEnum.options, "custom"])
+      .optional(),
+    // Deprecated: use DEFAULT_LLMS instead. Kept so older deployments are converted at startup.
+    DEFAULT_LLM_MODEL: z.string().optional(),
+    // Deprecated: use DEFAULT_LLMS instead. Kept so older deployments are converted at startup.
+    DEFAULT_LLM_FALLBACKS: z.string().optional(),
+    // Deprecated: use ECONOMY_LLMS instead. Kept so older deployments are converted at startup.
+    ECONOMY_LLM_PROVIDER: llmProviderEnum.optional(),
+    // Deprecated: use ECONOMY_LLMS instead. Kept so older deployments are converted at startup.
+    ECONOMY_LLM_MODEL: z.string().optional(),
+    // Deprecated: use ECONOMY_LLMS instead. Kept so older deployments are converted at startup.
+    ECONOMY_LLM_FALLBACKS: z.string().optional(),
+    // Deprecated: use CHAT_LLMS instead. Kept so older deployments are converted at startup.
+    CHAT_LLM_PROVIDER: llmProviderEnum.optional(),
+    // Deprecated: use CHAT_LLMS instead. Kept so older deployments are converted at startup.
+    CHAT_LLM_MODEL: z.string().optional(),
+    // Deprecated: use CHAT_LLMS instead. Kept so older deployments are converted at startup.
+    CHAT_LLM_FALLBACKS: z.string().optional(),
+    // Deprecated: use NANO_LLMS instead. Kept so older deployments are converted at startup.
+    NANO_LLM_PROVIDER: llmProviderEnum.optional(),
+    // Deprecated: use NANO_LLMS instead. Kept so older deployments are converted at startup.
+    NANO_LLM_MODEL: z.string().optional(),
+    // Deprecated: use DRAFT_LLMS instead. Kept so older deployments are converted at startup.
+    DRAFT_LLM_PROVIDER: llmProviderEnum.optional(),
+    // Deprecated: use DRAFT_LLMS instead. Kept so older deployments are converted at startup.
+    DRAFT_LLM_MODEL: z.string().optional(),
+    AI_NANO_WEEKLY_SPEND_LIMIT_USD: z.coerce.number().positive().optional(),
+    AI_TRIAL_WEEKLY_SPEND_LIMIT_USD: z.coerce.number().positive().optional(),
+    // Unset defaults to ALLOW. Used when an account has not chosen a policy.
+    SENSITIVE_DATA_POLICY_DEFAULT: z
+      .enum(["ALLOW", "REDACT", "BLOCK"])
+      .optional(),
+
+    LLM_API_KEY: z.string().optional(),
+    OPENAI_API_KEY: z.string().optional(),
+    AZURE_API_KEY: z.string().optional(),
+    AZURE_RESOURCE_NAME: z.string().optional(),
+    AZURE_API_VERSION: z.string().optional(),
+    AZURE_FOUNDRY_API_KEY: z.string().optional(),
+    AZURE_FOUNDRY_BASE_URL: z.string().optional(),
+    ANTHROPIC_API_KEY: z.string().optional(),
+    BEDROCK_ACCESS_KEY: z.string().optional(),
+    BEDROCK_SECRET_KEY: z.string().optional(),
+    BEDROCK_REGION: z.string().default("us-west-2"),
+    GOOGLE_API_KEY: z.string().optional(),
+    GOOGLE_THINKING_BUDGET: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.coerce.number().int().nonnegative().optional(),
+    ),
+    GOOGLE_VERTEX_PROJECT: z.string().optional(),
+    GOOGLE_VERTEX_LOCATION: z.string().optional().default("us-central1"),
+    GOOGLE_VERTEX_CLIENT_EMAIL: z.string().optional(),
+    GOOGLE_VERTEX_PRIVATE_KEY: z.string().optional(),
+    GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
+    GROQ_API_KEY: z.string().optional(),
+    OPENROUTER_API_KEY: z.string().optional(),
+    AI_GATEWAY_API_KEY: z.string().optional(),
+    PERPLEXITY_API_KEY: z.string().optional(),
+    OLLAMA_BASE_URL: z.string().optional(),
+    OLLAMA_MODEL: z.string().optional(),
+    OPENAI_COMPATIBLE_BASE_URL: z.string().optional(),
+    OPENAI_COMPATIBLE_MODEL: z.string().optional(),
+    OPENAI_COMPATIBLE_AUTH_HEADER: z
+      .enum(["authorization", "api-key"])
+      .optional(),
+    // Not every OpenAI-compatible endpoint implements structured outputs
+    // (response_format: json_schema); DeepSeek, for one, only accepts
+    // json_object. Set false to fall back to json_object on such endpoints.
+    OPENAI_COMPATIBLE_STRUCTURED_OUTPUTS: booleanString
+      .optional()
+      .default(true),
+    CLI_LLM_ENABLED: booleanString.optional().default(false),
+    CODEX_CLI_ALLOW_NPX: booleanString.optional().default(false),
+    CODEX_CLI_PATH: z.string().optional(),
+
+    OPENAI_ZERO_DATA_RETENTION: booleanString.optional().default(false),
+
+    UPSTASH_REDIS_URL: z
+      .string()
+      .optional()
+      .transform((value) => value || process.env.KV_REST_API_URL),
+    UPSTASH_REDIS_TOKEN: z
+      .string()
+      .optional()
+      .transform((value) => value || process.env.KV_REST_API_TOKEN),
+    REDIS_URL: z
+      .string()
+      .optional()
+      .transform((value) => value || process.env.KV_URL), // used for subscriptions
+
+    QSTASH_TOKEN: z.string().optional(),
+    QSTASH_CURRENT_SIGNING_KEY: z.string().optional(),
+    QSTASH_NEXT_SIGNING_KEY: z.string().optional(),
+    QUEUE_BACKEND: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.enum(["bullmq", "internal", "qstash"]).optional(),
+    ),
+
+    GOOGLE_PUBSUB_TOPIC_NAME: z.string().min(1),
+    GOOGLE_PUBSUB_VERIFICATION_TOKEN: z.string().optional(),
+
+    MICROSOFT_WEBHOOK_CLIENT_STATE: z.string().optional(),
+
+    SENTRY_AUTH_TOKEN: z.string().optional(),
+    SENTRY_ORGANIZATION: z.string().optional(),
+    SENTRY_PROJECT: z.string().optional(),
+    AXIOM_DATASET: z.string().optional(),
+    AXIOM_TOKEN: z.string().optional(),
+    AXIOM_AUDIT_DATASET: z.string().optional(),
+    AXIOM_AUDIT_TOKEN: z.string().optional(),
+
+    DISABLE_LOG_ZOD_ERRORS: booleanString.optional(),
+    ENABLE_DEBUG_LOGS: booleanString.default(false),
+    // SECURITY: disables the webhook SSRF guard (allows webhook URLs that point
+    // to / resolve to private IP ranges, e.g. LAN or Tailscale 100.64.0.0/10).
+    // Defaults to false. Only enable on a trusted, single-tenant self-hosted
+    // deployment — never on a shared/multi-tenant instance.
+    WEBHOOK_ALLOW_PRIVATE_IPS: booleanString.optional().default(false),
+    DIGEST_MAX_SUMMARIES_PER_24H: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .default(50),
+    REASONING_RETENTION_DAYS: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.coerce.number().int().nonnegative().optional(),
+    ),
+    DRAFT_SENT_TEXT_RETENTION_DAYS: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.coerce.number().int().nonnegative().default(14),
+    ),
+
+    // Lemon Squeezy
+    LEMON_SQUEEZY_SIGNING_SECRET: z.string().optional(),
+    LEMON_SQUEEZY_API_KEY: z.string().optional(),
+
+    // Stripe
+    STRIPE_SECRET_KEY: z.string().optional(),
+    STRIPE_WEBHOOK_SECRET: z.string().optional(),
+    STRIPE_AI_GENERATION_OVERAGE_CONFIG: z.string().optional(),
+
+    // Apple App Store
+    APPLE_IAP_ISSUER_ID: z.string().uuid().optional(),
+    APPLE_IAP_KEY_ID: z.string().min(1).optional(),
+    APPLE_IAP_PRIVATE_KEY: z.string().min(1).optional(),
+    APPLE_IAP_BUNDLE_ID: z.string().min(1).optional(),
+    APPLE_IAP_APPLE_ID: z.coerce.number().int().positive().optional(),
+    SUPERWALL_APP_STORE_CONNECT_FORWARD_URL: z.string().url().optional(),
+
+    TINYBIRD_TOKEN: z.string().optional(),
+    TINYBIRD_BASE_URL: z.string().default("https://api.us-east.tinybird.co/"),
+
+    API_KEY_SALT: z.string().optional(),
+
+    POSTHOG_API_SECRET: z.string().optional(),
+    POSTHOG_PROJECT_ID: z.string().optional(),
+    POSTHOG_FEEDBACK_SURVEY_ID: z.string().optional(),
+    POSTHOG_FEEDBACK_SURVEY_QUESTION_ID: z.string().optional(),
+    POSTHOG_LLM_EVALS_APPROVED_EMAILS: z.string().optional(),
+    FEEDBACK_WEBHOOK_URL: z.string().url().optional(),
+
+    RECALL_API_KEY: z.string().optional(),
+    RECALL_WEBHOOK_SECRET: z.string().optional(),
+    RECALL_REGION: z
+      .string()
+      .regex(/^[a-z0-9-]+$/)
+      .optional(),
+    // Local Recall emulation only; points the bot provider at a stand-in API.
+    RECALL_BASE_URL: z.string().url().optional(),
+
+    RESEND_API_KEY: z.string().optional(),
+    RESEND_AUDIENCE_ID: z.string().optional(),
+    RESEND_FROM_EMAIL: z
+      .string()
+      .optional()
+      .default("Inbox Zero <updates@transactional.getinboxzero.com>"),
+    CRON_SECRET: z.string().optional(),
+    BLOG_SYNC_WEBHOOK_SECRET: z.string().min(1).optional(),
+    BLOG_SYNC_SANITY_AUTHOR_ID: z.string().min(1).optional(),
+    BLOG_SYNC_IMAGE_ALLOWED_HOSTS: z.string().optional(),
+    SANITY_API_WRITE_TOKEN: z.string().min(1).optional(),
+    LOOPS_API_SECRET: z.string().optional(),
+    FB_CONVERSION_API_ACCESS_TOKEN: z.string().optional(),
+    FB_PIXEL_ID: z.string().optional(),
+    CONVERSION_ANALYTICS_SERVER_URL: z.string().optional(),
+    CONVERSION_ANALYTICS_SERVER_SECRET: z.string().optional(),
+    ADMINS: z
+      .string()
+      .optional()
+      .transform((value) => value?.split(",")),
+    WEBHOOK_URL: z.string().optional(),
+    MCP_SERVER_URL_OVERRIDES: z.string().optional(),
+    INTERNAL_API_URL: z.string().optional(),
+    INTERNAL_API_KEY: z.string(),
+    WHITELIST_FROM: z.string().optional(),
+    HEALTH_API_KEY: z.string().optional(),
+    OAUTH_PROXY_URL: z.string().url().optional(),
+    MCP_SERVER_ENABLED: booleanString.optional().default(false),
+    IMAGE_PROXY_SIGNING_SECRET: z.string().min(16).optional(),
+    // Set to true on the server that acts as the OAuth proxy (e.g., staging)
+    IS_OAUTH_PROXY_SERVER: booleanString.optional().default(false),
+    // Additional trusted origins for CORS (comma-separated, supports wildcards like https://*.vercel.app)
+    ADDITIONAL_TRUSTED_ORIGINS: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value
+          ?.split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
+    // Mobile auth trusted origin, e.g. inboxzero://
+    MOBILE_AUTH_ORIGIN: z.string().trim().min(1).optional(),
+    // Desktop Electron custom-scheme origin for system-browser OAuth return.
+    DESKTOP_AUTH_ORIGIN: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .default("inboxzero://"),
+    AUTO_JOIN_ORGANIZATION_ENABLED: booleanString.optional().default(false),
+    AUTO_ENABLE_ORG_ANALYTICS: booleanString.optional().default(false),
+
+    // license
+    LICENSE_1_SEAT_VARIANT_ID: z.coerce.number().optional(),
+    LICENSE_3_SEAT_VARIANT_ID: z.coerce.number().optional(),
+    LICENSE_5_SEAT_VARIANT_ID: z.coerce.number().optional(),
+    LICENSE_10_SEAT_VARIANT_ID: z.coerce.number().optional(),
+    LICENSE_25_SEAT_VARIANT_ID: z.coerce.number().optional(),
+
+    DUB_API_KEY: z.string().optional(),
+
+    // Slack
+    SLACK_CLIENT_ID: z.string().optional(),
+    SLACK_CLIENT_SECRET: z.string().optional(),
+    SLACK_SIGNING_SECRET: z.string().optional(),
+
+    // Chat SDK messaging adapters
+    TEAMS_BOT_APP_ID: z.string().optional(),
+    TEAMS_BOT_APP_PASSWORD: z.string().optional(),
+    TEAMS_BOT_APP_TENANT_ID: z.string().optional(),
+    TELEGRAM_BOT_TOKEN: z.string().optional(),
+    TELEGRAM_BOT_SECRET_TOKEN: z.string().optional(),
+    APP_REVIEW_DEMO_ENABLED: booleanString.optional().default(false),
+    APP_REVIEW_DEMO_ACCOUNTS: z.string().optional(),
+    SSO_LOGIN_ENABLED: booleanString.optional().default(false),
+  },
+  client: {
+    // stripe
+    NEXT_PUBLIC_STRIPE_BUSINESS_MONTHLY_PRICE_ID: z.string().optional(),
+    NEXT_PUBLIC_STRIPE_BUSINESS_ANNUALLY_PRICE_ID: z.string().optional(),
+    NEXT_PUBLIC_STRIPE_PLUS_MONTHLY_PRICE_ID: z.string().optional(),
+    NEXT_PUBLIC_STRIPE_PLUS_ANNUALLY_PRICE_ID: z.string().optional(),
+    NEXT_PUBLIC_STRIPE_BUSINESS_PLUS_MONTHLY_PRICE_ID: z.string().optional(),
+    NEXT_PUBLIC_STRIPE_BUSINESS_PLUS_ANNUALLY_PRICE_ID: z.string().optional(),
+
+    // apple app store
+    NEXT_PUBLIC_APPLE_IAP_STARTER_MONTHLY_PRODUCT_ID: z.string().optional(),
+    NEXT_PUBLIC_APPLE_IAP_STARTER_ANNUALLY_PRODUCT_ID: z.string().optional(),
+
+    // lemon squeezy
+    NEXT_PUBLIC_LEMON_STORE_ID: z.string().nullish().default("inboxzero"),
+    NEXT_PUBLIC_BASIC_MONTHLY_VARIANT_ID: z.coerce.number().default(0),
+    NEXT_PUBLIC_BASIC_ANNUALLY_VARIANT_ID: z.coerce.number().default(0),
+    NEXT_PUBLIC_PRO_MONTHLY_VARIANT_ID: z.coerce.number().default(0),
+    NEXT_PUBLIC_PRO_ANNUALLY_VARIANT_ID: z.coerce.number().default(0),
+    NEXT_PUBLIC_BUSINESS_MONTHLY_VARIANT_ID: z.coerce.number().default(0),
+    NEXT_PUBLIC_BUSINESS_ANNUALLY_VARIANT_ID: z.coerce.number().default(0),
+    NEXT_PUBLIC_COPILOT_MONTHLY_VARIANT_ID: z.coerce.number().default(0),
+
+    NEXT_PUBLIC_FREE_UNSUBSCRIBE_CREDITS: z.preprocess(
+      optionalEnvValue,
+      z.coerce.number().int().nonnegative().default(5),
+    ),
+    NEXT_PUBLIC_CALL_LINK: z
+      .string()
+      .default("https://cal.com/team/inbox-zero/feedback"),
+    NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
+    NEXT_PUBLIC_POSTHOG_API_HOST: z.string().optional(),
+    NEXT_PUBLIC_POSTHOG_ONBOARDING_SURVEY_ID: z.string().optional(),
+    NEXT_PUBLIC_BASE_URL: z.string(),
+    NEXT_PUBLIC_IMAGE_PROXY_BASE_URL: z.string().url().optional(),
+    NEXT_PUBLIC_IMAGE_PROXY_USE_APP_ROUTE: booleanString
+      .optional()
+      .default(false),
+    NEXT_PUBLIC_BRAND_NAME: z.string().trim().min(1).default("Inbox Zero"),
+    NEXT_PUBLIC_BRAND_LOGO_URL: z.string().optional(),
+    NEXT_PUBLIC_BRAND_ICON_URL: z.string().optional().default("/icon.png"),
+    NEXT_PUBLIC_SLACK_BOT_NAME: z.string().trim().min(1).default("Inbox Zero"),
+    NEXT_PUBLIC_SELF_HOSTED_LOGIN_FOOTER_TEXT: z.string().optional(),
+    NEXT_PUBLIC_CONTACTS_ENABLED: booleanString.optional().default(false),
+    NEXT_PUBLIC_EMAIL_SEND_ENABLED: booleanString.default(true),
+    NEXT_PUBLIC_WEBHOOK_ACTION_ENABLED: booleanString.optional().default(true),
+    NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
+    NEXT_PUBLIC_SUPPORT_EMAIL: z
+      .string()
+      .optional()
+      .default("support@getinboxzero.com"),
+    NEXT_PUBLIC_GTM_ID: z.string().optional(),
+    NEXT_PUBLIC_CONVERSION_ANALYTICS_SCRIPT_URL: z.string().optional(),
+    NEXT_PUBLIC_CRISP_WEBSITE_ID: z.string().optional(),
+    NEXT_PUBLIC_AXIOM_DATASET: z.string().optional(),
+    NEXT_PUBLIC_AXIOM_TOKEN: z.string().optional(),
+    NEXT_PUBLIC_LOG_SCOPES: z
+      .string()
+      .optional()
+      .transform((value) => {
+        if (!value) return;
+        return value.split(",");
+      }),
+    NEXT_PUBLIC_DUB_REFER_DOMAIN: z.string().optional(),
+    NEXT_PUBLIC_DISABLE_REFERRAL_SIGNATURE: booleanString
+      .optional()
+      .default(false),
+    NEXT_PUBLIC_USE_AEONIK_FONT: booleanString.optional().default(false),
+    NEXT_PUBLIC_BYPASS_PREMIUM_CHECKS: booleanString.optional(),
+    NEXT_PUBLIC_DIGEST_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_MEETING_BRIEFS_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_MEETING_RECORDER_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_FOLLOW_UP_REMINDERS_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_INTEGRATIONS_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_SMART_FILING_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_CLEANER_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_DELETE_EMAIL_ACTION_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_INTEGRATION_ACTION_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_BOOKING_LINKS_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_EXTERNAL_API_ENABLED: booleanString.optional().default(false),
+    NEXT_PUBLIC_AUTO_DRAFT_DISABLED: booleanString.optional(),
+    NEXT_PUBLIC_AI_MODEL_SETTINGS_DISABLED: booleanString
+      .optional()
+      .default(false),
+    // When true, the deployment default is enforced and account-level edits are disabled.
+    NEXT_PUBLIC_SENSITIVE_DATA_POLICY_LOCKED: booleanString
+      .optional()
+      .default(false),
+    NEXT_PUBLIC_IS_RESEND_CONFIGURED: booleanString.optional(),
+    NEXT_PUBLIC_TABS_EXTENSION_ID: z
+      .string()
+      .optional()
+      .default("iencpoofingkkakccoknbleilcliokfk"),
+  },
+  // For Next.js >= 13.4.4, you only need to destructure client variables:
+  experimental__runtimeEnv: {
+    // stripe
+    NEXT_PUBLIC_STRIPE_BUSINESS_MONTHLY_PRICE_ID:
+      process.env.NEXT_PUBLIC_STRIPE_BUSINESS_MONTHLY_PRICE_ID,
+    NEXT_PUBLIC_STRIPE_BUSINESS_ANNUALLY_PRICE_ID:
+      process.env.NEXT_PUBLIC_STRIPE_BUSINESS_ANNUALLY_PRICE_ID,
+    NEXT_PUBLIC_STRIPE_PLUS_MONTHLY_PRICE_ID:
+      process.env.NEXT_PUBLIC_STRIPE_PLUS_MONTHLY_PRICE_ID,
+    NEXT_PUBLIC_STRIPE_PLUS_ANNUALLY_PRICE_ID:
+      process.env.NEXT_PUBLIC_STRIPE_PLUS_ANNUALLY_PRICE_ID,
+    NEXT_PUBLIC_STRIPE_BUSINESS_PLUS_MONTHLY_PRICE_ID:
+      process.env.NEXT_PUBLIC_STRIPE_BUSINESS_PLUS_MONTHLY_PRICE_ID,
+    NEXT_PUBLIC_STRIPE_BUSINESS_PLUS_ANNUALLY_PRICE_ID:
+      process.env.NEXT_PUBLIC_STRIPE_BUSINESS_PLUS_ANNUALLY_PRICE_ID,
+
+    // apple app store
+    NEXT_PUBLIC_APPLE_IAP_STARTER_MONTHLY_PRODUCT_ID:
+      process.env.NEXT_PUBLIC_APPLE_IAP_STARTER_MONTHLY_PRODUCT_ID,
+    NEXT_PUBLIC_APPLE_IAP_STARTER_ANNUALLY_PRODUCT_ID:
+      process.env.NEXT_PUBLIC_APPLE_IAP_STARTER_ANNUALLY_PRODUCT_ID,
+
+    // lemon squeezy
+    NEXT_PUBLIC_LEMON_STORE_ID: process.env.NEXT_PUBLIC_LEMON_STORE_ID,
+    NEXT_PUBLIC_BASIC_MONTHLY_VARIANT_ID:
+      process.env.NEXT_PUBLIC_BASIC_MONTHLY_VARIANT_ID,
+    NEXT_PUBLIC_BASIC_ANNUALLY_VARIANT_ID:
+      process.env.NEXT_PUBLIC_BASIC_ANNUALLY_VARIANT_ID,
+    NEXT_PUBLIC_PRO_MONTHLY_VARIANT_ID:
+      process.env.NEXT_PUBLIC_PRO_MONTHLY_VARIANT_ID,
+    NEXT_PUBLIC_PRO_ANNUALLY_VARIANT_ID:
+      process.env.NEXT_PUBLIC_PRO_ANNUALLY_VARIANT_ID,
+    NEXT_PUBLIC_BUSINESS_MONTHLY_VARIANT_ID:
+      process.env.NEXT_PUBLIC_BUSINESS_MONTHLY_VARIANT_ID,
+    NEXT_PUBLIC_BUSINESS_ANNUALLY_VARIANT_ID:
+      process.env.NEXT_PUBLIC_BUSINESS_ANNUALLY_VARIANT_ID,
+    NEXT_PUBLIC_COPILOT_MONTHLY_VARIANT_ID:
+      process.env.NEXT_PUBLIC_COPILOT_MONTHLY_VARIANT_ID,
+
+    NEXT_PUBLIC_CALL_LINK: process.env.NEXT_PUBLIC_CALL_LINK,
+    NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY,
+    NEXT_PUBLIC_POSTHOG_API_HOST: process.env.NEXT_PUBLIC_POSTHOG_API_HOST,
+    NEXT_PUBLIC_POSTHOG_ONBOARDING_SURVEY_ID:
+      process.env.NEXT_PUBLIC_POSTHOG_ONBOARDING_SURVEY_ID,
+    NEXT_PUBLIC_BASE_URL: getBaseUrl(),
+    NEXT_PUBLIC_IMAGE_PROXY_BASE_URL:
+      process.env.NEXT_PUBLIC_IMAGE_PROXY_BASE_URL,
+    NEXT_PUBLIC_IMAGE_PROXY_USE_APP_ROUTE:
+      process.env.NEXT_PUBLIC_IMAGE_PROXY_USE_APP_ROUTE,
+    NEXT_PUBLIC_BRAND_NAME: process.env.NEXT_PUBLIC_BRAND_NAME,
+    NEXT_PUBLIC_BRAND_LOGO_URL: process.env.NEXT_PUBLIC_BRAND_LOGO_URL,
+    NEXT_PUBLIC_BRAND_ICON_URL: process.env.NEXT_PUBLIC_BRAND_ICON_URL,
+    NEXT_PUBLIC_SLACK_BOT_NAME: process.env.NEXT_PUBLIC_SLACK_BOT_NAME,
+    NEXT_PUBLIC_SELF_HOSTED_LOGIN_FOOTER_TEXT:
+      process.env.NEXT_PUBLIC_SELF_HOSTED_LOGIN_FOOTER_TEXT,
+    NEXT_PUBLIC_CONTACTS_ENABLED: process.env.NEXT_PUBLIC_CONTACTS_ENABLED,
+    NEXT_PUBLIC_EMAIL_SEND_ENABLED: process.env.NEXT_PUBLIC_EMAIL_SEND_ENABLED,
+    NEXT_PUBLIC_WEBHOOK_ACTION_ENABLED:
+      process.env.NEXT_PUBLIC_WEBHOOK_ACTION_ENABLED,
+    NEXT_PUBLIC_FREE_UNSUBSCRIBE_CREDITS:
+      process.env.NEXT_PUBLIC_FREE_UNSUBSCRIBE_CREDITS,
+    NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
+    NEXT_PUBLIC_SUPPORT_EMAIL: process.env.NEXT_PUBLIC_SUPPORT_EMAIL,
+    NEXT_PUBLIC_GTM_ID: process.env.NEXT_PUBLIC_GTM_ID,
+    NEXT_PUBLIC_CONVERSION_ANALYTICS_SCRIPT_URL:
+      process.env.NEXT_PUBLIC_CONVERSION_ANALYTICS_SCRIPT_URL,
+    NEXT_PUBLIC_CRISP_WEBSITE_ID: process.env.NEXT_PUBLIC_CRISP_WEBSITE_ID,
+    NEXT_PUBLIC_AXIOM_DATASET: process.env.NEXT_PUBLIC_AXIOM_DATASET,
+    NEXT_PUBLIC_AXIOM_TOKEN: process.env.NEXT_PUBLIC_AXIOM_TOKEN,
+    NEXT_PUBLIC_LOG_SCOPES: process.env.NEXT_PUBLIC_LOG_SCOPES,
+    NEXT_PUBLIC_DUB_REFER_DOMAIN: process.env.NEXT_PUBLIC_DUB_REFER_DOMAIN,
+    NEXT_PUBLIC_DISABLE_REFERRAL_SIGNATURE:
+      process.env.NEXT_PUBLIC_DISABLE_REFERRAL_SIGNATURE,
+    NEXT_PUBLIC_USE_AEONIK_FONT: process.env.NEXT_PUBLIC_USE_AEONIK_FONT,
+    NEXT_PUBLIC_BYPASS_PREMIUM_CHECKS:
+      process.env.NEXT_PUBLIC_BYPASS_PREMIUM_CHECKS,
+    NEXT_PUBLIC_DIGEST_ENABLED: process.env.NEXT_PUBLIC_DIGEST_ENABLED,
+    NEXT_PUBLIC_MEETING_BRIEFS_ENABLED:
+      process.env.NEXT_PUBLIC_MEETING_BRIEFS_ENABLED,
+    NEXT_PUBLIC_MEETING_RECORDER_ENABLED:
+      process.env.NEXT_PUBLIC_MEETING_RECORDER_ENABLED,
+    NEXT_PUBLIC_FOLLOW_UP_REMINDERS_ENABLED:
+      process.env.NEXT_PUBLIC_FOLLOW_UP_REMINDERS_ENABLED,
+    NEXT_PUBLIC_INTEGRATIONS_ENABLED:
+      process.env.NEXT_PUBLIC_INTEGRATIONS_ENABLED,
+    NEXT_PUBLIC_SMART_FILING_ENABLED:
+      process.env.NEXT_PUBLIC_SMART_FILING_ENABLED,
+    NEXT_PUBLIC_CLEANER_ENABLED: process.env.NEXT_PUBLIC_CLEANER_ENABLED,
+    NEXT_PUBLIC_DELETE_EMAIL_ACTION_ENABLED:
+      process.env.NEXT_PUBLIC_DELETE_EMAIL_ACTION_ENABLED,
+    NEXT_PUBLIC_INTEGRATION_ACTION_ENABLED:
+      process.env.NEXT_PUBLIC_INTEGRATION_ACTION_ENABLED,
+    NEXT_PUBLIC_BOOKING_LINKS_ENABLED:
+      process.env.NEXT_PUBLIC_BOOKING_LINKS_ENABLED,
+    NEXT_PUBLIC_EXTERNAL_API_ENABLED:
+      process.env.NEXT_PUBLIC_EXTERNAL_API_ENABLED,
+    NEXT_PUBLIC_AUTO_DRAFT_DISABLED:
+      process.env.NEXT_PUBLIC_AUTO_DRAFT_DISABLED,
+    NEXT_PUBLIC_AI_MODEL_SETTINGS_DISABLED:
+      process.env.NEXT_PUBLIC_AI_MODEL_SETTINGS_DISABLED,
+    NEXT_PUBLIC_SENSITIVE_DATA_POLICY_LOCKED:
+      process.env.NEXT_PUBLIC_SENSITIVE_DATA_POLICY_LOCKED,
+    NEXT_PUBLIC_IS_RESEND_CONFIGURED:
+      process.env.NEXT_PUBLIC_IS_RESEND_CONFIGURED,
+    NEXT_PUBLIC_TABS_EXTENSION_ID: process.env.NEXT_PUBLIC_TABS_EXTENSION_ID,
+  },
+});
+
+if (process.env.TELEGRAM_BOT_TOKEN && !process.env.TELEGRAM_BOT_SECRET_TOKEN) {
+  throw new Error(
+    "TELEGRAM_BOT_SECRET_TOKEN is required when TELEGRAM_BOT_TOKEN is set.",
+  );
+}
+
+export const env = parsedEnv;

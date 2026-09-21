@@ -1,0 +1,211 @@
+import { subMonths } from "date-fns/subMonths";
+import { createEmailProvider } from "@/utils/email/provider";
+import type { EmailProvider, EmailThread } from "@/utils/email/types";
+import type { Logger } from "@/utils/logger";
+import { createCalendarEventProviders } from "@/utils/calendar/event-provider";
+import type {
+  CalendarEvent,
+  CalendarEventAttendee,
+  CalendarEventProvider,
+} from "@/utils/calendar/event-types";
+
+const MAX_THREADS = 10;
+const MAX_MESSAGES_PER_THREAD = 10;
+const MAX_MEETINGS = 10;
+const THREADS_PER_PARTICIPANT = 3;
+const MEETINGS_PER_PARTICIPANT = 3;
+
+export type { CalendarEvent, CalendarEventAttendee };
+
+export interface ExternalGuest {
+  email: string;
+  name?: string;
+}
+
+export interface InternalTeamMember {
+  email: string;
+  name?: string;
+}
+
+export interface MeetingBriefingData {
+  emailThreads: EmailThread[];
+  event: CalendarEvent;
+  externalGuests: ExternalGuest[];
+  internalTeamMembers: InternalTeamMember[];
+  pastMeetings: CalendarEvent[];
+}
+
+export async function gatherContextForEvent({
+  event,
+  emailAccountId,
+  externalAttendees,
+  internalAttendees,
+  provider,
+  logger,
+}: {
+  event: CalendarEvent;
+  emailAccountId: string;
+  externalAttendees: CalendarEventAttendee[];
+  internalAttendees: CalendarEventAttendee[];
+  provider: string;
+  logger: Logger;
+}): Promise<MeetingBriefingData> {
+  const participantEmails = externalAttendees.map((a) => a.email);
+
+  logger.info("Gathering context for meeting attendees", {
+    guestCount: externalAttendees.length,
+    internalTeamCount: internalAttendees.length,
+  });
+
+  const [emailProvider, calendarProviders] = await Promise.all([
+    createEmailProvider({ emailAccountId, provider, logger }),
+    createCalendarEventProviders(emailAccountId, logger),
+  ]);
+
+  // Fetch email threads and past meetings in parallel
+  const [emailThreads, pastMeetings] = await Promise.all([
+    fetchEmailThreadsWithParticipants({
+      emailProvider,
+      participantEmails,
+      maxThreads: MAX_THREADS,
+      threadsPerParticipant: THREADS_PER_PARTICIPANT,
+      logger,
+    }),
+    fetchPastMeetingsWithParticipants({
+      calendarProviders,
+      participantEmails,
+      maxMeetings: MAX_MEETINGS,
+      logger,
+    }),
+  ]);
+
+  // Limit messages per thread to avoid overwhelming the AI
+  const cappedThreads = emailThreads.map((thread) => ({
+    ...thread,
+    messages: thread.messages.slice(-MAX_MESSAGES_PER_THREAD),
+  }));
+
+  logger.info("Gathered context for meeting", {
+    threadCount: cappedThreads.length,
+    meetingCount: pastMeetings.length,
+  });
+
+  return {
+    event,
+    externalGuests: externalAttendees.map((a) => ({
+      email: a.email,
+      name: a.name,
+    })),
+    internalTeamMembers: internalAttendees.map((a) => ({
+      email: a.email,
+      name: a.name,
+    })),
+    emailThreads: cappedThreads,
+    pastMeetings,
+  };
+}
+
+async function fetchEmailThreadsWithParticipants({
+  emailProvider,
+  participantEmails,
+  maxThreads,
+  threadsPerParticipant,
+  logger,
+}: {
+  emailProvider: EmailProvider;
+  participantEmails: string[];
+  maxThreads: number;
+  threadsPerParticipant: number;
+  logger: Logger;
+}): Promise<EmailThread[]> {
+  if (participantEmails.length === 0) {
+    return [];
+  }
+
+  const fetchedThreadIds = new Set<string>();
+  const allThreads: EmailThread[] = [];
+
+  for (const email of participantEmails) {
+    if (allThreads.length >= maxThreads) break;
+
+    try {
+      const threads = await emailProvider.getThreadsWithParticipant({
+        participantEmail: email,
+        maxThreads: threadsPerParticipant,
+      });
+
+      // Add only new threads (dedupe by thread ID)
+      for (const thread of threads) {
+        if (allThreads.length >= maxThreads) break;
+        if (!fetchedThreadIds.has(thread.id)) {
+          fetchedThreadIds.add(thread.id);
+          allThreads.push(thread);
+        }
+      }
+    } catch (error) {
+      logger.error("Failed to fetch threads for participant", {
+        participantEmail: email,
+        error,
+      });
+    }
+  }
+
+  return allThreads;
+}
+
+async function fetchPastMeetingsWithParticipants({
+  calendarProviders,
+  participantEmails,
+  maxMeetings,
+  logger,
+}: {
+  calendarProviders: CalendarEventProvider[];
+  participantEmails: string[];
+  maxMeetings: number;
+  logger: Logger;
+}): Promise<CalendarEvent[]> {
+  if (participantEmails.length === 0 || calendarProviders.length === 0) {
+    return [];
+  }
+
+  const sixMonthsAgo = subMonths(new Date(), 6);
+
+  const fetchedEventIds = new Set<string>();
+  const allMeetings: CalendarEvent[] = [];
+
+  for (const email of participantEmails) {
+    if (allMeetings.length >= maxMeetings) break;
+
+    for (const provider of calendarProviders) {
+      if (allMeetings.length >= maxMeetings) break;
+
+      try {
+        const events = await provider.fetchEventsWithAttendee({
+          attendeeEmail: email,
+          timeMin: sixMonthsAgo,
+          timeMax: new Date(),
+          maxResults: MEETINGS_PER_PARTICIPANT,
+        });
+
+        // Add only new events (dedupe by event ID)
+        for (const event of events) {
+          if (allMeetings.length >= maxMeetings) break;
+          if (!fetchedEventIds.has(event.id)) {
+            fetchedEventIds.add(event.id);
+            allMeetings.push(event);
+          }
+        }
+      } catch (error) {
+        logger.error("Failed to fetch events for participant", {
+          participantEmail: email,
+          error,
+        });
+      }
+    }
+  }
+
+  // Sort by start time descending (most recent first)
+  return allMeetings.sort(
+    (a, b) => b.startTime.getTime() - a.startTime.getTime(),
+  );
+}
