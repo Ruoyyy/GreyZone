@@ -325,9 +325,19 @@ export default class McpIssueTargetProvider {
             commentArgs.body = ensureMention(commentArgs.body, mention);
           }
         }
-        await session.callTool(tools.comment, commentArgs, {
+        const postedComment = await session.callTool(tools.comment, commentArgs, {
           timeoutMs: timeoutSeconds * 1000,
         });
+        // A resumed provider has no in-memory bot cursor. Anchor polling to
+        // the comment just submitted so historical finished replies cannot
+        // satisfy this turn, including after a process restart.
+        const postedId = Number(postedComment?.id);
+        if (Number.isFinite(postedId) && postedId > 0) {
+          this._lastBotCommentId.set(
+            String(issueNumber),
+            Math.max(postedId, this._lastBotCommentId.get(String(issueNumber)) || 0),
+          );
+        }
       } else {
         const vars = this._buildVars(prompt, context);
         const createArgs = renderTemplate(

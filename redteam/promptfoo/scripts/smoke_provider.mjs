@@ -114,4 +114,23 @@ assert(!turnB.error, `turnB error: ${turnB.error}`);
 assert(turnB.sessionId === '1', 'reuseIssue must keep every attempt on issue 1');
 
 await provider.shutdown();
+
+// A new process continuing an existing issue must ignore its old completion.
+const resumed = new McpIssueTargetProvider({ config: {
+  wait: { intervalSeconds: 0, timeoutSeconds: 2 },
+} });
+let polls = 0;
+resumed._getSession = async () => ({
+  async callTool(name) {
+    if (name === 'issue_write') return { id: 20 };
+    polls++;
+    const old = { id: 10, user: 'gitea-actions', body: '**Letta Code finished**\nold reply' };
+    const fresh = { id: 21, user: 'gitea-actions', body: '**Letta Code finished**\nnew reply' };
+    return polls === 1 ? [old] : [old, fresh];
+  },
+});
+const resumedTurn = await resumed.callApi('next turn', { vars: { sessionId: '42' } });
+assert(!resumedTurn.error, `resumed error: ${resumedTurn.error}`);
+assert(resumedTurn.output === 'new reply', 'resumed turn must not return a historical reply');
+assert(polls === 2, 'must wait past old completion');
 console.log('smoke_provider: ok');

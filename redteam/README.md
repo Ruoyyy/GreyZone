@@ -1,162 +1,110 @@
-# Promptfoo → Gitea issue/comment (via gitea-mcp)
+# Red-team integrations
 
-Maps Promptfoo redteam attempts onto Gitea through the stack’s **gitea-mcp**
-HTTP gateway (`http://127.0.0.1:8080/mcp`):
+Each integration keeps its configuration, dependencies, scripts, and run artifacts
+in its own directory:
 
-| Promptfoo | Gitea |
-|-----------|--------|
-| One serial campaign | One shared issue |
-| First attack prompt | Issue body (`issue_write` `method=create`) |
-| Later attack and multi-turn prompts | Comments (`issue_write` `method=add_comment`) |
-| Wait for agent | Poll `issue_read` `method=get_comments` until `gitea-actions` posts finished/failed |
-| `sessionId` | Issue `number` |
-| Provider `output` | Cleaned bot reply body |
+- [Promptfoo](promptfoo/README.md): Gitea issue/comment testing through the MCP gateway.
+- [Dreadnode](dreadnode/README.md): An autonomous attacker capability using the same gateway.
+- [DeepTeam](deepteam/README.md): Crescendo attacks through the same issue/comment gateway.
+- [PyRIT](pyrit/README.md): Multi-turn RedTeamingAttack through the same issue/comment gateway.
+- [Check Point / Lakera Red](lakera/README.md): Cloud-generated attacks relayed locally through MCP.
 
-```text
-promptfoo redteam
-  → mcp_target_provider.mjs
-    → HTTP MCP :8080/mcp
-      → issue_write / issue_read
-  → Gitea → Letta Actions agent
-```
+Run campaigns serially; do not run integrations concurrently. PyRIT and Lakera hold the
+shared `redteam/.campaign.lock`; launch other campaigns through
+`python3 redteam/run_locked.py -- <command> [args...]` to share that lock.
 
-## Layout
+## Promptfoo
 
-```text
-redteam/
-  promptfooconfig.yaml          # points at real MCP URL by default
-  package.json
-  shared/js/
-    mcp_session.mjs             # stdio or Streamable HTTP client
-    mcp_target_provider.mjs     # issue/comment + poll wait
-  fixtures/mock_issue_mcp.mjs  # same tool names for offline smoke
-  scripts/smoke_provider.mjs
-```
-
-## Prerequisites
-
-1. Stack up with MCP healthy (`docker compose up -d`, port **8080**):
-   - See root [README.md](../README.md) § Connect an MCP client
-2. Node 18+
+From the repository root:
 
 ```bash
-cd redteam
-npm install
-```
-
-## Config notes (real MCP)
-
-Defaults in `promptfooconfig.yaml` match official tools:
-
-- **Create**: `issue_write` + `method: create` → response field `number`
-- **Comment**: `issue_write` + `method: add_comment` (gateway auto-prepends `@letta-code`)
-- **Wait**: poll `issue_read` + `method: get_comments` for user `gitea-actions` containing `Letta Code finished` / `Letta Code failed`
-
-Issue **creation** bodies still need `@letta-code` in the body (`ensureMention`); comment auto-prefix is handled by the patched MCP gateway.
-
-## Config reference
-
-`promptfooconfig.yaml` fields, grouped by section.
-
-### Top level
-
-| Field | Purpose |
-|---|---|
-| `description` | Free text summary shown in reports |
-| `targets` | The system under test (see below) |
-| `prompts` | Template that renders the attack into the target; `{{prompt}}` is filled by the generator |
-| `defaultTest` | Options applied to every test; here it randomizes `sessionId` so each test starts a new conversation |
-| `outputPath` | Where results are written (gitignored run artifact) |
-| `redteam` | Attack-generation settings (see below) |
-
-### `targets[0]` — custom provider (`shared/js/mcp_target_provider.mjs`)
-
-| Field | Purpose |
-|---|---|
-| `id` / `label` | Provider path and the name shown in reports |
-| `timeoutSeconds` | Per-call timeout; must cover a full agent run plus polling |
-| `sessionIdPattern` | `sessionId` matching this regex continues an existing issue; otherwise a new issue is created |
-| `reuseIssue` | When true, every test and turn shares one issue (persistent conversation) |
-| `ensureMention` | Prefix added to **new issue bodies** (the MCP gateway only patches comments) |
-| `ensureMentionOnComment` | When false, leave comment prefixing to the gateway so the real code path is exercised |
-| `defaults.owner` / `defaults.repo` | Repo coordinates substituted into `{{owner}}` / `{{repo}}` |
-| `mcp.url` | MCP endpoint (HTTP). Override with `PROMPTFOO_MCP_URL` when running inside compose |
-| `mcp.command` / `mcp.args` / `mcp.cwd` | stdio alternative used by the offline mock instead of `url` |
-| `tools.*` | MCP tool names; change these to swap implementations |
-| `createArgs.*` / `commentArgs.*` | Argument templates for the first turn and follow-up turns |
-| `result.issueField` | Response field holding the new issue number |
-| `result.outputField` | Field holding the target's reply, used as the model output |
-| `wait.mode` | `poll_comments` = poll the issue until a completion marker appears |
-| `wait.intervalSeconds` / `wait.timeoutSeconds` | Poll cadence and maximum wait |
-| `wait.botUser` | Only comments from this user count (the agent's bot identity) |
-| `wait.doneMarks` | Any of these strings ends the turn |
-| `wait.failMarks` | Any of these flags the agent's turn as failed |
-| `wait.args` | Tool arguments used while polling |
-
-### `redteam`
-
-| Field | Purpose |
-|---|---|
-| `purpose` | Description of the system under test; drives how attacks are generated |
-| `injectVar` | Variable the generated attack is written into (must match `prompts`) |
-| `numTests` | Tests generated **per plugin** (total = plugins x numTests) |
-| `provider` | Model that generates the attacks (not the target) |
-| `plugins` | Attack categories that generate locally, one test set each |
-| `strategies` | How attacks are delivered/evolved; `crescendo` = multi-turn escalation |
-
-### `redteam.provider` — attack generator
-
-| Field | Purpose |
-|---|---|
-| `id` | Provider/model string, here the Z.ai OpenAI-compatible endpoint |
-| `config.apiBaseUrl` | Endpoint base URL |
-| `config.apiKeyEnvar` | Env var holding the API key |
-| `config.passthrough` | Raw request-body keys promptfoo forwards unchanged; used here to send `thinking: disabled` |
-| `config.max_tokens` | Output cap; promptfoo defaults to 1024 for non-OpenAI models, which truncates long JSON |
-| `config.showThinking` | When false, reasoning content is not prepended to the output |
-| `config.response_format` | **Deliberately absent here.** Set only on the crescendo provider; a global JSON mode leaks into plugin-generated attack text. |
-
-### `redteam.strategies[0]` — crescendo
-
-| Field | Purpose |
-|---|---|
-| `stateful` | Sends only the newest message each turn; the issue thread carries the context |
-| `maxTurns` | Turn budget per test |
-| `redteamProvider` | Strategy-scoped generator override; same model plus `response_format: json_object` so each step parses cleanly |
-
-## Run
-
-Offline smoke (mock MCP, no Docker):
-
-```bash
+cd redteam/promptfoo
+npm ci
 npm run smoke
+python3 ../run_locked.py -- node --env-file=../../.env --run redteam
 ```
 
-Against the real gateway:
+Use Node 22.22.0 or newer. The final command loads provider credentials from the
+repository root `.env`; if they are already exported, use `python3 ../run_locked.py -- npm run redteam`.
+
+Promptfoo previously ran from `redteam/`; its working directory is now
+`redteam/promptfoo/`. Internal provider and fixture paths remain relative to that
+directory. Local state (`.promptfoo/`), generated tests (`redteam.yaml`), and
+results (`promptfoo-results/`) also live there.
+
+## Dreadnode
+
+From the repository root:
 
 ```bash
-# Ensure http://127.0.0.1:8080/healthz is OK
-npm run redteam                              # = promptfoo 0.122.2 redteam run -j 1
-npx promptfoo redteam report                # same pinned version as the dependency
+python3 redteam/run_locked.py -- bash redteam/dreadnode/run.sh
 ```
 
-`npm run redteam` uses the promptfoo pinned in `package.json` / `package-lock.json`
-and sets `PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=true` (local Z.ai generation,
-no attack content leaves the machine). Use `npx promptfoo@latest` only if you
-deliberately want a different version — it is not what this config is tested against.
+See the integration README for installation and configuration.
 
-Use `-j 1` so attempts stay serial (runner capacity is 1).
+## DeepTeam
 
-### Multi-turn
+From the repository root:
 
-`crescendo` uses `stateful: true`. With `reuseIssue: true`, the provider creates one
-issue for the first attack and routes every later test and turn to that issue.
-Set `PROMPTFOO_GITEA_ISSUE=<number>` to continue a campaign in an existing issue.
-Keep `-j 1` so shared-issue updates remain serial.
+```bash
+uv sync --project redteam/deepteam --python 3.11 --locked
+redteam/deepteam/.venv/bin/python redteam/deepteam/run.py --check
+python3 redteam/run_locked.py -- redteam/deepteam/.venv/bin/python redteam/deepteam/run.py
+```
 
-## Docs
+Set `ZAI_API_KEY` in the environment, `redteam/deepteam/.env`, or the root `.env`.
+`--check` performs read-only validation and requires credentials to be present;
+it does not call models. DeepTeam has no `--offline-check` mode. Its internal
+lock only covers DeepTeam, so use the shared wrapper for campaigns.
+See [DeepTeam's README](deepteam/README.md) for configuration and report details.
 
-- Root MCP client setup: [../README.md](../README.md)
-- [Custom Provider](https://www.promptfoo.dev/docs/providers/custom-api/)
-- [Red team configuration](https://www.promptfoo.dev/docs/red-team/configuration/)
-- [Multi-turn strategies](https://www.promptfoo.dev/docs/red-team/strategies/multi-turn/)
+## PyRIT
+
+From the repository root:
+
+```bash
+uv sync --project redteam/pyrit --python 3.11 --locked
+redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --offline-check
+redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --check
+redteam/pyrit/.venv/bin/python redteam/pyrit/run.py
+```
+
+See the integration README for configuration, offline tests and result semantics.
+
+## Check Point / Lakera Red
+
+From the repository root:
+
+```bash
+uv sync --project redteam/lakera --python 3.11 --locked
+redteam/lakera/.venv/bin/python redteam/lakera/run.py --check
+redteam/lakera/.venv/bin/python redteam/lakera/run.py
+```
+
+Set `LAKERA_RED_API_KEY` in `redteam/lakera/.env` or the environment before
+running a scan. The target reply deadline is 300 seconds. The adapter uses the
+same MCP issue tools as PyRIT; no public endpoint is required. See the integration
+README for SDK compatibility tests, session isolation and result semantics.
+
+## Current behavior across integrations
+
+These are the shipped configurations, not a claim that all services enforce the
+same budgets or produce comparable scores automatically:
+
+| Integration | Conversation mapping | Target reply wait | Result / Oracle handling |
+| --- | --- | --- | --- |
+| Promptfoo | One shared issue per campaign (`reuseIssue: true`) | 900s polling window; an in-flight MCP call can extend it | Promptfoo report; runner Oracle evidence is separate |
+| Dreadnode | One issue per campaign, managed by the attacker | At most 60 × 15s pauses plus request latency; instruction-enforced | Agent observations; no structured Oracle verdict |
+| DeepTeam | One new issue per case | 900s | Local framework assessment; Oracle not collected |
+| PyRIT | One new issue per case | 900s | Local framework assessment; Oracle not collected |
+| Lakera Red | One new issue per Red session | 300s maximum; SDK relay idle timer separately defaults to 480s | Cloud assessment plus local session reports; Oracle not collected |
+
+All use the MCP gateway at `http://127.0.0.1:8080/mcp`; the default Gitea web UI
+is `http://127.0.0.1:3000`. New issues do not reset the repository or persistent
+agent state. Runner Oracles are separately enabled by `ORACLE_ENABLE`; none of
+these adapters automatically imports their final verdicts into its assessment.
+
+The documented check modes do not validate paid model/cloud access or quotas.
+Promptfoo's `smoke` is an offline fixture test; its `smoke:live` creates a real
+issue and performs two Letta turns. Treat it as a campaign and hold the shared
+lock. Dreadnode capability validation checks the manifest, not target behavior.
