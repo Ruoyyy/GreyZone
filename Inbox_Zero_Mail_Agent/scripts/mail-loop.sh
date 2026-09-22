@@ -152,6 +152,20 @@ up() {
     wait_for "应用" "http://localhost:3000/login" 120
   fi
 
+  # 自动重建 watch:骨干重启会丢内存态订阅(虽然现在订阅也持久化了,
+  # 但应用侧 watch 可能已过期),重建成本低、幂等。
+  say "重建 watch 订阅"
+  local cron_secret
+  cron_secret="$(env_value CRON_SECRET)"
+  if [ -n "$cron_secret" ]; then
+    curl -s -X GET "http://localhost:3000/api/watch/all" \
+      -H "Authorization: Bearer $cron_secret" --max-time 60 \
+      | head -c 200 >/dev/null 2>&1 || true
+    ok "watch 请求已发送(应用若未登录会静默失败,登录后再跑一次)"
+  else
+    warn "缺少 CRON_SECRET,跳过 watch 重建"
+  fi
+
   echo
   ok "邮件闭环就绪"
   if [ "$NEEDS_LOGIN" = "1" ]; then

@@ -70,6 +70,7 @@ type BackboneState = {
   historyCursor: string;
   deliveredMessageIds: string[];
   pending: QueueItem[];
+  subscription?: Subscription | null;
 };
 
 type HistoryRecord = {
@@ -99,7 +100,15 @@ export async function startMailBackbone(
   await mkdir(options.stateDir, { recursive: true });
 
   const state: BackboneState = await loadState(stateFile);
-  let subscription: Subscription | null = null;
+  // 重启恢复订阅:watch 是内存态,但 state 在 volume 里。不恢复的话,
+  // 游标照常推进但通知静默停止。
+  let subscription: Subscription | null = state.subscription ?? null;
+  if (subscription) {
+    console.log("[mail-backbone] watch restored from state", {
+      topicName: subscription.topicName,
+      expiration: subscription.expiration,
+    });
+  }
   let closed = false;
   // processQueue 的并发锁。必须在这里声明:函数体在文件后半部,而定时器
   // 在下面的 await 期间就可能触发,let 的 TDZ 会让第一次调用直接抛
@@ -185,6 +194,9 @@ export async function startMailBackbone(
             getString(body, "labelFilterBehavior", "labelFilterAction") ?? null,
           expiration: String(responseJson.expiration ?? ""),
         };
+        // 持久化订阅:骨干重启(watch 是内存态)后恢复,否则游标照常
+        // 推进但通知静默停止 —— 这是优雅 stop/start 必踩的坑。
+        persistState();
         // Gmail delivers a sync notification when a watch is established.
         enqueue({
           kind: "notification",
@@ -206,6 +218,7 @@ export async function startMailBackbone(
     ) {
       await handleCapturedProxy(req, res, (_body, _responseJson) => {
         subscription = null;
+        persistState();
         console.log("[mail-backbone] watch stopped");
       });
       return;
@@ -645,9 +658,15 @@ async function loadState(stateFile: string): Promise<BackboneState> {
       historyCursor: parsed.historyCursor ?? "",
       deliveredMessageIds: parsed.deliveredMessageIds ?? [],
       pending: parsed.pending ?? [],
+      subscription: parsed.subscription ?? null,
     };
   } catch {
-    return { historyCursor: "", deliveredMessageIds: [], pending: [] };
+    return {
+      historyCursor: "",
+      deliveredMessageIds: [],
+      pending: [],
+      subscription: null,
+    };
   }
 }
 
