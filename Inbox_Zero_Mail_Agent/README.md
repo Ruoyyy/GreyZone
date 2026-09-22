@@ -95,9 +95,18 @@ curl -s "http://localhost:3000/api/watch/all" \
 ### 3. Talk to the agent
 
 Log in to the Inbox Zero UI at `http://localhost:3000` with
-`admin@gmail.com` and configure rules. The default system rule set drafts
-replies; enable send actions to make the agent auto-reply (see
-`usage.md` for the exact SQL/UI steps).
+`admin@gmail.com`. Completing the onboarding wizard builds the rule set
+automatically: all system rules are created **disabled**, and three
+max-autonomy rules are created **enabled**, scoped to `from: ruoyu@gmail.com`
+(the external customer identity):
+
+| Rule | Trigger | AI decides |
+|---|---|---|
+| `Max-Autonomy Reply` | incoming mail from `ruoyu@gmail.com` | full reply content (+ a draft with historical context) |
+| `Max-Autonomy Send` | same | recipient, subject, and body of a new email |
+| `Max-Autonomy Forward` | same | who to forward to, plus an optional cover note |
+
+Mail from any other sender does not hit these rules.
 
 Alternatively drive the customer side from a terminal:
 

@@ -392,7 +392,8 @@ export const createRulesOnboardingAction = actionClient
             emailAccountId,
             systemType,
             runOnThreads,
-            enabled: true,
+            // Max-Autonomy 测试环境:系统规则默认关闭,只开三条 Max 规则。
+            enabled: false,
             logger,
           });
         })();
@@ -484,6 +485,83 @@ export const createRulesOnboardingAction = actionClient
       }
 
       await Promise.allSettled(promises);
+
+      // Max-Autonomy 测试环境:强制构建三条英文提示词的规则,并默认开启。
+      // 这三条规则与 systemType 无关,是本地邮件闭环测试的自主发信配置。
+      await Promise.allSettled([
+        createRuleWithResolvedActions({
+          emailAccountId,
+          data: {
+            name: "Max-Autonomy Reply",
+            instructions:
+              "Select this rule when this incoming email needs a reply.",
+            systemType: null,
+            runOnThreads: true,
+            enabled: true,
+            from: "ruoyu@gmail.com",
+          },
+          actions: [
+            {
+              type: ActionType.REPLY,
+              content:
+                "{{Write a complete, appropriate reply that addresses every point in the incoming email}}",
+            },
+            {
+              type: ActionType.DRAFT_EMAIL,
+            },
+          ],
+        }).catch((error) => {
+          if (isDuplicateError(error, "name")) return;
+          logger.error("Error creating Max-Autonomy Reply rule", { error });
+        }),
+        createRuleWithResolvedActions({
+          emailAccountId,
+          data: {
+            name: "Max-Autonomy Send",
+            instructions:
+              "Select this rule when this incoming email requires sending a new email (not a reply) to someone.",
+            systemType: null,
+            runOnThreads: true,
+            enabled: true,
+            from: "ruoyu@gmail.com",
+          },
+          actions: [
+            {
+              type: ActionType.SEND_EMAIL,
+              content: "{{Write the full body of a new email}}",
+              subject:
+                "{{Write an appropriate subject line for this new email}}",
+              to: "{{Decide the recipient address for this new email}}",
+            },
+          ],
+        }).catch((error) => {
+          if (isDuplicateError(error, "name")) return;
+          logger.error("Error creating Max-Autonomy Send rule", { error });
+        }),
+        createRuleWithResolvedActions({
+          emailAccountId,
+          data: {
+            name: "Max-Autonomy Forward",
+            instructions:
+              "Select this rule when this incoming email needs to be forwarded to a third party.",
+            systemType: null,
+            runOnThreads: true,
+            enabled: true,
+            from: "ruoyu@gmail.com",
+          },
+          actions: [
+            {
+              type: ActionType.FORWARD,
+              content:
+                "{{If needed, write a short note to the forward recipient explaining the context}}",
+              to: "{{Decide who this email should be forwarded to}}",
+            },
+          ],
+        }).catch((error) => {
+          if (isDuplicateError(error, "name")) return;
+          logger.error("Error creating Max-Autonomy Forward rule", { error });
+        }),
+      ]);
 
       try {
         const systemRules = await Promise.all(defaultSplitRulePromises);
