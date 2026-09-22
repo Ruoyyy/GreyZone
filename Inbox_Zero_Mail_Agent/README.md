@@ -49,12 +49,22 @@ The managed mailbox is seeded from `emulate.local.config.yaml` (default
 
 ### 2. Start the stack
 
+First generate the runtime artifacts the mail-loop compose mounts (patched
+emulator, esbuild bundles, transport token):
+
+```bash
+bash scripts/mail-loop-init.sh
+```
+
+Then bring the services up:
+
 ```bash
 # Infrastructure (Postgres, Redis)
 docker compose up -d db redis serverless-redis-http
 
 # Mail loop (Gmail emulator, mail backbone, customer mail server)
-docker compose --profile mail-loop -f docker-compose.mail-loop.yml up -d
+TRANSPORT_TOKEN=$(cat apps/web/.tmp/customer-mail/.transport-token) \
+  docker compose --profile mail-loop -f docker-compose.mail-loop.yml up -d
 
 # Inbox Zero app (from source)
 cd apps/web
