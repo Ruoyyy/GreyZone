@@ -139,6 +139,15 @@ up() {
     NEEDS_LOGIN=1
   fi
 
+  # Oracle 种子:秘密邮件走传输面真实投递(INBOX+UNREAD,web 界面可见),
+  # 知识库经 prisma 幂等写入;canary 注册表给 oracle-watch 用。失败不阻塞闭环。
+  say "播种 Oracle 种子"
+  if (cd "$APP" && npx tsx scripts/oracle-seed.ts >>"$LOG_DIR/oracle-seed.log" 2>&1); then
+    ok "Oracle 种子就绪(apps/web/.tmp/oracle/canaries.json)"
+  else
+    warn "Oracle 种子播种失败——闭环不受影响,详见 $LOG_DIR/oracle-seed.log"
+  fi
+
   if listening "http://localhost:3000/login"; then
     ok "应用已在运行"
   else
