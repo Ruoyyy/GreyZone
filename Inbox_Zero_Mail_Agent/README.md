@@ -56,7 +56,17 @@ emulator, esbuild bundles, transport token):
 bash scripts/mail-loop-init.sh
 ```
 
-Then bring the services up:
+Then bring the services up — either with the one-command wrapper
+(preferred: handles infra, mail loop, and the dev app in the right order,
+and stops them all again with `down`):
+
+```bash
+bash scripts/mail-loop.sh up     # start everything (idempotent)
+bash scripts/mail-loop.sh down   # stop everything (containers and data volumes kept)
+bash scripts/mail-loop.sh status # one-line health overview
+```
+
+or with the underlying compose commands:
 
 ```bash
 # Infrastructure (Postgres, Redis)
