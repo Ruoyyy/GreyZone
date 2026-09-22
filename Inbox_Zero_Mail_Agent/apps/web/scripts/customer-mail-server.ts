@@ -1,6 +1,6 @@
 /**
  * Customer mail server: plays the external customer's mail system in local
- * tests (plan.md §2–§3). Knows nothing about Inbox Zero, the Gmail API, or
+ * tests. Knows nothing about Inbox Zero, the Gmail API, or
  * webhooks — it only speaks the {envelope, raw} transport contract with the
  * mail backbone and keeps its own send/receive records.
  *

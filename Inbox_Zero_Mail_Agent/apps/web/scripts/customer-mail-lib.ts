@@ -1,7 +1,7 @@
 /**
  * Shared transport helpers for the customer mail role: compose, deliver,
  * parse, and read the outbox. Used by the CLI and the MCP server so they
- * share one implementation (plan.md §D: "共享同一实现").
+ * share one implementation.
  */
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";

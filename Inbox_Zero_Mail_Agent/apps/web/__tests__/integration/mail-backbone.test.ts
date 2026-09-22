@@ -1,5 +1,5 @@
 /**
- * Contract tests for the mail backbone (plan.md §3): the three faces of the
+ * Contract tests for the mail backbone: the three faces of the
  * local "user mailbox" — ingress (import into the managed mailbox), notify
  * (Pub/Sub-shaped push with watch semantics), egress (SENT detection and
  * delivery to the customer mail server) — plus proxy passthrough fidelity.

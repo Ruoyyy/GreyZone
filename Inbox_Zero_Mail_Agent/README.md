@@ -191,7 +191,7 @@ reply with `reply_to` to continue the thread.
 - The Gmail emulator is a patched build
   (`patches/@inbox-zero__emulate@0.11.1.patch`) with dense history IDs — the
   app's history cursor math breaks on the upstream 21-digit IDs. Details in
-  `patches/README.md` and `plan.md`.
+  `patches/README.md`.
 - `apps/web/.tmp/` holds runtime state (customer outbox, transport token,
   logs). It is regenerated on demand; delete it to reset the customer side.
 - The Inbox Zero app runs from source, not from the prebuilt image: several
@@ -201,4 +201,4 @@ reply with `reply_to` to continue the thread.
   only; Postgres and Redis come from the base `docker-compose.yml`.
 - Security model: the app-side auto-reply pipeline and the customer MCP
   tools are separate trust domains. The customer holds only `TRANSPORT_TOKEN`;
-  the managed mailbox credentials stay inside the app. See `plan.md` §2.
+  the managed mailbox credentials stay inside the app.

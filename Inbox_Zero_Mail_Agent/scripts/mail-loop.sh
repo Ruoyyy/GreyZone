@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 一条命令拉起本地邮件闭环(plan.md 的实现)。
+# 一条命令拉起本地邮件闭环。
 #
 #   bash scripts/mail-loop.sh up      起全套(幂等,可重复跑)
 #   bash scripts/mail-loop.sh down    停全套(容器与数据卷保留)

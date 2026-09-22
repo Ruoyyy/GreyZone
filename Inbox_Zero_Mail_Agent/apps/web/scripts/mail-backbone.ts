@@ -1,5 +1,5 @@
 /**
- * Mail backbone for the local Gmail emulator deployment (plan.md §2–§3).
+ * Mail backbone for the local Gmail emulator deployment.
  *
  * Extends the emulator into a near-real mail server with three faces:
  *  - ingress: POST /transport/inbound accepts {envelope, raw} from the
@@ -17,7 +17,7 @@
  * the app points GOOGLE_BASE_URL at this process. The emulator authenticates
  * any unknown bearer token as its first seeded user, which must be the
  * managed mailbox; that fallback is also why the API face must stay
- * unreachable from the customer side (plan.md §2).
+ * unreachable from the customer side.
  */
 import { randomUUID } from "node:crypto";
 import {

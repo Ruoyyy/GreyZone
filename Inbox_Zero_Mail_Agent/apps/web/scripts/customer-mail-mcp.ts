@@ -1,5 +1,5 @@
 /**
- * MCP server for the external customer mail role (plan.md §D).
+ * MCP server for the external customer mail role.
  *
  * Exposes the customer's mailbox to an agent via stdio, so an agent can
  * drive the closed-loop mail tests: send mails as the external customer,
