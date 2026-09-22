@@ -115,8 +115,9 @@ up() {
   transport="$(cat "$APP/.tmp/customer-mail/.transport-token" 2>/dev/null || true)"
   [ -n "$transport" ] || die "缺少 transport token,先跑: bash scripts/mail-loop-init.sh"
 
-  say "启动基础设施(db/redis)"
+  say "启动基础设施(db/redis/cron)"
   docker compose up -d db redis serverless-redis-http >/dev/null 2>&1 || true
+  docker compose up -d --no-deps cron >/dev/null 2>&1 || true
 
   say "启动邮件闭环(模拟器/骨干/客户服务器)"
   TRANSPORT_TOKEN="$transport" \
