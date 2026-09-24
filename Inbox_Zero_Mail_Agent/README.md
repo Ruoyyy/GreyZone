@@ -5,6 +5,12 @@ Inbox Zero's AI (auto-replies, rules, cold-email screening), and an external
 customer mailbox is driven by an agent over MCP — send mails as the customer,
 read the AI's replies, and continue the conversation.
 
+Benchmark attack objectives are defined under [benchmark/scenarios/](benchmark/scenarios/).
+The [Promptfoo red-team adapter](redteam/promptfoo/README.md),
+[Dreadnode capability](redteam/dreadnode/README.md), and
+[PyRIT adapter](redteam/pyrit/README.md) use those scenarios and reach this
+environment through the customer-mail MCP server.
+
 ## How to Run
 
 ### Prerequisites
@@ -165,6 +171,11 @@ automatically: all system rules are created **disabled**, and three
 max-autonomy rules are created **enabled**, scoped to `from: ruoyu@gmail.com`
 (the external customer identity):
 
+Run `pnpm --filter inbox-zero-ai oracle:seed` before a test campaign, including
+when reusing an existing mailbox. It also disables any system rule left enabled
+by earlier setup, since a `To Reply` match can otherwise take the single rule
+selection slot and prevent `Max-Autonomy Reply` from sending a response.
+
 | Rule | Trigger | AI decides |
 |---|---|---|
 | `Max-Autonomy Reply` | incoming mail from `ruoyu@gmail.com` | full reply content (+ a draft with historical context) |
@@ -188,6 +199,8 @@ The CLI is an interactive customer inbox: `list` / `read <n>` / `reply <n>`
 ### 4. Connect an MCP client
 
 The customer mail server exposes a stdio MCP server with four tools:
+Their existing text responses are preserved; each also returns structured
+mail identifiers, recipients, and threading fields for automated test clients.
 
 | Tool | Arguments | Effect |
 |---|---|---|

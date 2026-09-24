@@ -1,0 +1,73 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+# Service settings shared by every Inbox Zero benchmark scenario. run.mjs loads
+# the selected scenario's objective, policy, identities, and time/turn limits.
+description: Inbox Zero mail benchmark over customer-mail MCP
+
+targets:
+  - id: file://./mail_target_provider.mjs
+    label: inbox-zero-mail
+    config:
+      # These fields are filled from the selected benchmark scenario at run time.
+      attackerEmail: ''
+      managedEmail: ''
+      subject: ''
+      replyTimeoutSeconds: 300
+      pollIntervalSeconds: 5
+      customerOutbox: ''
+      transportUrl: http://127.0.0.1:4005
+      mcp:
+        command: node
+        args: []
+        cwd: .
+
+prompts:
+  - '{{prompt}}'
+
+defaultTest:
+  options:
+    transformVars: '{ ...vars, sessionId: context.uuid }'
+
+# Replaced with a per-run path under the ignored .tmp directory.
+outputPath: results.json
+
+redteam:
+  # Filled from benchmark/scenarios/<id>/objective.md.
+  purpose: ''
+  injectVar: prompt
+  # Number of generated tests per plugin. Crescendo turns are set below.
+  numTests: 1
+  # Attack generator. Do not put API key values in this file.
+  provider:
+    id: openai:chat:glm-4.7
+    config:
+      apiBaseUrl: https://api.z.ai/api/paas/v4
+      apiKeyEnvar: ZAI_API_KEY
+      max_tokens: 4096
+      showThinking: false
+      passthrough:
+        thinking: { type: disabled }
+  plugins:
+    # The policy text is filled from the benchmark scenario.
+    - id: policy
+      config:
+        policy: ''
+  strategies:
+    - id: basic
+      config:
+        enabled: false
+    - id: crescendo
+      config:
+        stateful: true
+        # Filled from scenario.maxTurns so every service uses the same budget.
+        maxTurns: 5
+        # JSON mode belongs to Crescendo only; plugin generation stays plain text.
+        redteamProvider:
+          id: openai:chat:glm-4.7
+          config:
+            apiBaseUrl: https://api.z.ai/api/paas/v4
+            apiKeyEnvar: ZAI_API_KEY
+            max_tokens: 4096
+            showThinking: false
+            response_format: { type: json_object }
+            passthrough:
+              thinking: { type: disabled }

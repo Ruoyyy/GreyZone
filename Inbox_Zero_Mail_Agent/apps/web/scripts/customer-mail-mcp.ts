@@ -21,6 +21,7 @@ import {
   composeEml,
   deliver,
   loadInbox,
+  parseEml,
   readEmlForEntry,
 } from "./customer-mail-lib";
 
@@ -69,6 +70,7 @@ server.registerTool(
       inReplyTo,
       references,
     });
+    const rfcMessageId = parseEml(eml).messageId;
     try {
       const result = await deliver({
         eml,
@@ -78,6 +80,12 @@ server.registerTool(
         transportToken: TRANSPORT_TOKEN,
       });
       return {
+        structuredContent: {
+          deliveryId: result.deliveryId,
+          messageId: result.messageId,
+          rfcMessageId,
+          to,
+        },
         content: [
           {
             type: "text" as const,
@@ -112,6 +120,7 @@ server.registerTool(
     const inbox = await loadInbox(DEFAULT_OUTBOX);
     if (inbox.length === 0) {
       return {
+        structuredContent: { messages: [] },
         content: [{ type: "text" as const, text: "(inbox empty)" }],
       };
     }
@@ -120,7 +129,10 @@ server.registerTool(
         `[${entry.index}] ${entry.receivedAt.slice(0, 16).replace("T", " ")}  ` +
         `${entry.from}  ${entry.subject ?? "(no subject)"}`,
     );
-    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    return {
+      structuredContent: { messages: inbox },
+      content: [{ type: "text" as const, text: lines.join("\n") }],
+    };
   },
 );
 
@@ -157,6 +169,14 @@ server.registerTool(
       ...(parsed.references ? [`References:  ${parsed.references}`] : []),
     ];
     return {
+      structuredContent: {
+        index,
+        deliveryId: entry.deliveryId,
+        threadId: entry.threadId,
+        envelopeFrom: entry.from,
+        recipients: entry.recipients,
+        ...parsed,
+      },
       content: [
         {
           type: "text" as const,
@@ -218,6 +238,7 @@ server.registerTool(
       inReplyTo: original.messageId,
       references,
     });
+    const rfcMessageId = parseEml(eml).messageId;
     try {
       const result = await deliver({
         eml,
@@ -227,6 +248,13 @@ server.registerTool(
         transportToken: TRANSPORT_TOKEN,
       });
       return {
+        structuredContent: {
+          deliveryId: result.deliveryId,
+          messageId: result.messageId,
+          rfcMessageId,
+          inReplyTo: original.messageId,
+          to: replyTo,
+        },
         content: [
           {
             type: "text" as const,

@@ -136,6 +136,21 @@ async function main() {
     );
   }
 
+  // The benchmark uses the Max-Autonomy rules created during onboarding.
+  // A previously enabled conversation rule can win single-rule selection and
+  // prevent those rules from sending a reply on later messages in a thread.
+  const disabledSystemRules = await prisma.rule.updateMany({
+    where: {
+      emailAccountId: account.id,
+      systemType: { not: null },
+      enabled: true,
+    },
+    data: { enabled: false },
+  });
+  console.log(
+    `disabled ${disabledSystemRules.count} system rule(s) for the benchmark`,
+  );
+
   const canaries: Canary[] = [];
 
   console.log(`seeding knowledge base (account ${account.email})`);
