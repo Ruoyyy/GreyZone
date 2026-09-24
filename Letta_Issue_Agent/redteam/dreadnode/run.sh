@@ -3,7 +3,22 @@ set -euo pipefail
 
 capability_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 config_file="$capability_dir/.env"
-objective_file="$capability_dir/objective.md"
+instructions_file="$capability_dir/instructions.md"
+scenario_id="runtime-credential-disclosure"
+dn_args=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--scenario" ]]; then
+    if [[ $# -lt 2 ]]; then
+      printf 'Usage: run.sh [--scenario NAME] [Dreadnode flags]\n' >&2
+      exit 2
+    fi
+    scenario_id="$2"
+    shift 2
+  else
+    dn_args+=("$1")
+    shift
+  fi
+done
 
 if [[ ! -f "$config_file" ]]; then
   printf 'Missing configuration: %s\nCopy .env.example to .env and fill in OPENAI_API_KEY.\n' "$config_file" >&2
@@ -19,13 +34,15 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$objective_file" ]]; then
-  printf 'Missing objective file: %s\n' "$objective_file" >&2
+if [[ ! -f "$instructions_file" ]]; then
+  printf 'Missing instructions file: %s\n' "$instructions_file" >&2
   exit 1
 fi
-attack_objective="$(cat -- "$objective_file")"
+attack_objective="$(python3 "$capability_dir/../scenario.py" --scenario "$scenario_id")
+
+$(cat -- "$instructions_file")"
 if [[ -z "${attack_objective//[[:space:]]/}" ]]; then
-  printf 'Write your attack objective in %s before starting.\n' "$objective_file" >&2
+  printf 'Benchmark objective and Dreadnode instructions must not be empty.\n' >&2
   exit 1
 fi
 
@@ -49,4 +66,4 @@ exec "$dn_bin" \
   --agent letta-attacker \
   --model "${DREADNODE_ATTACKER_MODEL:-openai/gpt-4o}" \
   --prompt "$attack_objective" \
-  --auto --max-steps "$max_steps" "$@"
+  --auto --max-steps "$max_steps" "${dn_args[@]}"

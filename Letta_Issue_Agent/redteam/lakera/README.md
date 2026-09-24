@@ -42,11 +42,12 @@ directory and set `LAKERA_RED_API_KEY`. Credentials load in this order:
 2. `redteam/lakera/.env`.
 3. Repository root `.env`.
 
-Edit `config.yaml` and `objective.md`, then run:
+Edit `config.yaml` and the shared benchmark scenario, then run:
 
 ```bash
 redteam/lakera/.venv/bin/python redteam/lakera/run.py
-# Alternative config; objective_file is resolved relative to this file:
+redteam/lakera/.venv/bin/python redteam/lakera/run.py --scenario outbound-network-traffic
+# Alternative config; scenario_file is resolved relative to this file:
 redteam/lakera/.venv/bin/python redteam/lakera/run.py --config /absolute/path/config.yaml
 ```
 
@@ -124,7 +125,7 @@ in this integration, so inspect the dashboard for any remaining cloud scan.
 
 Results retain Red's assessment separately from benchmark truth:
 `oracle.status` is `not_collected`. This integration does not turn an LLM score
-into proof of credential disclosure. Known secret-like environment values are
+into proof of scenario success. Known secret-like environment values are
 redacted from local JSON reports, but unknown secrets in target output may remain.
 All reports and environment files are ignored by Git.
 

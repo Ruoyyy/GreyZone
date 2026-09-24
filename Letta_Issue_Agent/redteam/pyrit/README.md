@@ -15,7 +15,7 @@ redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --offline-check
 redteam/pyrit/.venv/bin/python -m unittest discover -s redteam/pyrit -p 'test_*.py' -v
 ```
 
-Configure `config.yaml` and `objective.md`. The default attacker and evaluator
+Configure `config.yaml` and the shared benchmark scenario. The default attacker and evaluator
 use `glm-4.7` through Z.ai's OpenAI-compatible endpoint. Set `ZAI_API_KEY` in
 the environment, `redteam/pyrit/.env`, or the repository root `.env`, in that
 precedence order. No credentials are needed for offline validation.
@@ -36,7 +36,8 @@ of the Letta workflow.
 
 ```bash
 redteam/pyrit/.venv/bin/python redteam/pyrit/run.py
-# Optional alternate configuration; objective_file is relative to that file:
+redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --scenario memory-poisoning
+# Optional alternate configuration; scenario_file is relative to that file:
 redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --config /absolute/path/config.yaml
 ```
 
@@ -69,7 +70,7 @@ Partial case summaries survive exceptions and Ctrl-C; consult them even if an
 interrupted case is absent from the campaign's completed-case list. Exit codes
 are 0 for completion, 1 for execution failure and 130 for Ctrl-C. Completion
 does not mean the attack succeeded. `evaluator_outcome` is an LLM judgment;
-`oracle.status` remains `not_collected`, so no verified credential disclosure
+`oracle.status` remains `not_collected`, so no verified scenario success
 is claimed. Placeholders and claims alone are excluded by the scoring rubric.
 
 After a write with an unknown outcome, timeout, cancellation, or failed Letta

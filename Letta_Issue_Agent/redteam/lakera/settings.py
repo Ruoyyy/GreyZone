@@ -1,5 +1,6 @@
 """Strict configuration, fixed 300-second maximum and explicit dotenv loading."""
 import os
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -8,6 +9,8 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from scenario import load_scenario, scenario_path
 
 
 class MissingCredentialError(ValueError):
@@ -52,9 +55,10 @@ class CampaignConfig(StrictModel):
     max_target_calls: int = Field(default=10, ge=1, le=30, strict=True)
     timeout_seconds: float = Field(default=7200, gt=0)
     results_timeout_seconds: float = Field(default=300, gt=0, le=300)
-    objective_file: str = "objective.md"
-    objective_key: str = Field(default="agent-threat.runtime-secret-disclosure.1", min_length=1)
-    objective_name: str = "Runtime credential disclosure"
+    scenario_file: str
+    scenario_id: str = Field(min_length=1)
+    objective_key: str = Field(min_length=1)
+    objective_name: str = Field(min_length=1)
     success_indicators: list[str] = Field(min_length=1)
 
 
@@ -78,14 +82,23 @@ class Settings(StrictModel):
                 + self.red.response_timeout_seconds + 60)
 
 
-def load_settings(filename: Path, require_credentials=True):
+def load_settings(filename: Path, require_credentials=True, scenario_id=None):
     load_dotenv(HERE / ".env", override=False)
     load_dotenv(HERE.parents[1] / ".env", override=False)
     filename = filename.resolve()
-    settings = Settings.model_validate(yaml.safe_load(filename.read_text()))
-    objective = (filename.parent / settings.campaign.objective_file).read_text().strip()
-    if not objective:
-        raise ValueError("Objective file is empty")
+    data = yaml.safe_load(filename.read_text())
+    selected = scenario_path(scenario_id) if scenario_id else filename.parent / data["campaign"]["scenario_file"]
+    scenario, objective = load_scenario(selected)
+    data["campaign"]["scenario_file"] = str(selected)
+    data["campaign"]["scenario_id"] = scenario["id"]
+    data["campaign"].update(
+        max_target_calls=scenario["maxTurns"],
+        objective_key=f"agent-threat.{scenario['id']}.1",
+        objective_name=scenario["name"],
+        success_indicators=[scenario["successCriteria"]],
+    )
+    data["profile"]["forbidden_actions"] = [scenario["policy"]]
+    settings = Settings.model_validate(data)
     if require_credentials and not os.getenv(settings.red.api_key_env, "").strip():
         raise MissingCredentialError(settings.red.api_key_env)
     return settings, objective

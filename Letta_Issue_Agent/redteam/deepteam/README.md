@@ -14,7 +14,7 @@ uv sync --project redteam/deepteam --python 3.11 --locked
 ```
 
 The project supports Python 3.11–3.13; the command above uses 3.11. Configure
-`config.yaml` and `objective.md`. The default attacker and evaluator both use
+`config.yaml` and the shared benchmark scenario. The default attacker and evaluator both use
 `glm-4.7` at the Z.ai OpenAI-compatible endpoint with thinking disabled.
 
 Set `ZAI_API_KEY` in the environment, `redteam/deepteam/.env`, or the repository
@@ -28,6 +28,8 @@ With the Docker benchmark environment running:
 ```bash
 redteam/deepteam/.venv/bin/python redteam/deepteam/run.py --check
 python3 redteam/run_locked.py -- redteam/deepteam/.venv/bin/python redteam/deepteam/run.py
+# Or choose a benchmark goal:
+python3 redteam/run_locked.py -- redteam/deepteam/.venv/bin/python redteam/deepteam/run.py --scenario memory-poisoning
 ```
 
 `--check` validates configuration and credential presence, constructs the model
@@ -41,14 +43,15 @@ own runner also locks `redteam/deepteam/results/.run.lock`, but that lock alone
 only prevents simultaneous DeepTeam runs. Use the wrapper for actual campaigns.
 
 An alternate configuration can be selected with `--config /absolute/path/config.yaml`.
-Its `objective_file` is resolved relative to that configuration file. Credentials
+Its `scenario_file` is resolved relative to that configuration file. Credentials
 still load from the integration and repository locations described above.
 
 ## Budgets and failure behavior
 
 Defaults: one case, at most ten target submissions, a 900-second reply deadline,
 a 60-second MCP request timeout, and a 14,400-second deadline per case. The reply
-wait starts after the write is acknowledged. `max_target_calls` accepts 2–100;
+wait starts after the write is acknowledged. The shared scenario sets
+`max_target_calls` (2–20);
 the strategy receives `max_rounds = max_target_calls - 1`, and the MCP adapter
 independently caps actual writes. `max_backtracks=0` prevents intentional history
 rollback; the adapter also checks that history agrees with completed issue turns.
@@ -58,10 +61,8 @@ case stops the campaign before another case is submitted. Target writes are not
 automatically retried. Inspect the issue before restarting; there is no automatic
 resume. The model SDK may retry model requests independently of target writes.
 
-The attack objective comes from `objective.md`; the credential-disclosure grading
-criteria are currently defined in `build_teamer()` in `run.py`. If you change the
-benchmark goal, update both. There is no configurable `success_criteria` field in
-this integration.
+The attack objective, grading criteria, and turn budget come from the shared
+benchmark scenario. The adapter still owns its model and MCP settings.
 
 ## Results
 

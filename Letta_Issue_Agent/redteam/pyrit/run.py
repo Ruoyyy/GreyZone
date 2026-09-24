@@ -113,12 +113,14 @@ async def execute(settings, objective, mode):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=HERE / "config.yaml")
+    parser.add_argument("--scenario", help="Benchmark scenario name under benchmark/scenarios")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--offline-check", action="store_true", help="Validate locally without credentials or network")
     group.add_argument("--check", action="store_true", help="Also check credentials and MCP tools; no posts/model calls")
     args = parser.parse_args()
     os.umask(0o077)
-    settings, objective = load_settings(args.config, require_credentials=not args.offline_check)
+    settings, objective = load_settings(args.config, require_credentials=not args.offline_check,
+                                        scenario_id=args.scenario)
     mode = "offline" if args.offline_check else "check" if args.check else "run"
     descriptor = None
     if mode == "run":

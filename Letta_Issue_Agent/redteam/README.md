@@ -3,6 +3,10 @@
 Each integration keeps its configuration, dependencies, scripts, and run artifacts
 in its own directory:
 
+The shared attack goals, success criteria, and turn budgets live in the
+[benchmark scenarios](../benchmark/README.md). Pass `--scenario NAME` to select
+one for a run; the default is `runtime-credential-disclosure`.
+
 - [Promptfoo](promptfoo/README.md): Gitea issue/comment testing through the MCP gateway.
 - [Dreadnode](dreadnode/README.md): An autonomous attacker capability using the same gateway.
 - [DeepTeam](deepteam/README.md): Crescendo attacks through the same issue/comment gateway.
@@ -21,11 +25,13 @@ From the repository root:
 cd redteam/promptfoo
 npm ci
 npm run smoke
-python3 ../run_locked.py -- node --env-file=../../.env --run redteam
+python3 ../run_locked.py -- npm run redteam
+# Select another scenario:
+python3 ../run_locked.py -- npm run redteam -- --scenario memory-poisoning
 ```
 
-Use Node 22.22.0 or newer. The final command loads provider credentials from the
-repository root `.env`; if they are already exported, use `python3 ../run_locked.py -- npm run redteam`.
+Use Node 22.22.0 or newer. The launcher loads `ZAI_API_KEY` from the repository
+root `.env` when it is not already exported in the shell.
 
 Promptfoo previously ran from `redteam/`; its working directory is now
 `redteam/promptfoo/`. Internal provider and fixture paths remain relative to that
@@ -38,6 +44,8 @@ From the repository root:
 
 ```bash
 python3 redteam/run_locked.py -- bash redteam/dreadnode/run.sh
+# Select another scenario:
+python3 redteam/run_locked.py -- bash redteam/dreadnode/run.sh --scenario outbound-network-traffic
 ```
 
 See the integration README for installation and configuration.
@@ -50,6 +58,8 @@ From the repository root:
 uv sync --project redteam/deepteam --python 3.11 --locked
 redteam/deepteam/.venv/bin/python redteam/deepteam/run.py --check
 python3 redteam/run_locked.py -- redteam/deepteam/.venv/bin/python redteam/deepteam/run.py
+# Select another scenario:
+python3 redteam/run_locked.py -- redteam/deepteam/.venv/bin/python redteam/deepteam/run.py --scenario memory-poisoning
 ```
 
 Set `ZAI_API_KEY` in the environment, `redteam/deepteam/.env`, or the root `.env`.
@@ -67,6 +77,8 @@ uv sync --project redteam/pyrit --python 3.11 --locked
 redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --offline-check
 redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --check
 redteam/pyrit/.venv/bin/python redteam/pyrit/run.py
+# Select another scenario:
+redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --scenario memory-poisoning
 ```
 
 See the integration README for configuration, offline tests and result semantics.
@@ -79,6 +91,8 @@ From the repository root:
 uv sync --project redteam/lakera --python 3.11 --locked
 redteam/lakera/.venv/bin/python redteam/lakera/run.py --check
 redteam/lakera/.venv/bin/python redteam/lakera/run.py
+# Select another scenario:
+redteam/lakera/.venv/bin/python redteam/lakera/run.py --scenario outbound-network-traffic
 ```
 
 Set `LAKERA_RED_API_KEY` in `redteam/lakera/.env` or the environment before

@@ -114,12 +114,14 @@ async def execute(settings, objective):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=HERE / "config.yaml")
+    parser.add_argument("--scenario", help="Benchmark scenario name under benchmark/scenarios")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--offline-check", action="store_true")
     group.add_argument("--check", action="store_true", help="Read-only MCP check; no Red scan or posts")
     args = parser.parse_args()
     os.umask(0o077)
-    settings, objective = load_settings(args.config, require_credentials=not (args.check or args.offline_check))
+    settings, objective = load_settings(args.config, require_credentials=not (args.check or args.offline_check),
+                                        scenario_id=args.scenario)
     if args.check or args.offline_check:
         return asyncio.run(check(settings, objective, args.check))
     sys.path.insert(0, str(HERE.parent))
@@ -143,7 +145,7 @@ def startup_error(exc):
     if isinstance(exc, FileNotFoundError):
         return f"Configuration or objective file not found: {exc.filename}"
     if isinstance(exc, ValueError) and str(exc) == "Objective file is empty":
-        return "Objective file is empty; fill in the configured objective_file."
+        return "Objective file is empty; fill in the benchmark scenario's objective.md."
     return f"Startup failed ({type(exc).__name__}); check configuration and MCP connectivity."
 
 

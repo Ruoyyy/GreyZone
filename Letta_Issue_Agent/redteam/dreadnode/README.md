@@ -36,11 +36,11 @@ Local credentials and runtime settings share one file; task content is separate:
 | --- | --- | --- |
 | `.env` | Provider credentials, attacker model, step budget, and MCP URL | Ignored; owner-only permissions |
 | `.env.example` | Configuration template with an empty API key | Safe to commit |
-| `objective.md` | Initial attack task, repository, and attack-turn budget | Review before committing; no credentials |
+| `instructions.md` | Dreadnode-specific issue workflow | Review before committing; no credentials |
 | `capability.yaml` | Native Dreadnode capability and MCP declaration | Safe to commit |
 | `agents/letta-attacker.md` | Stable attacker instructions and tool access | Safe to commit |
 
-`.env` and `objective.md` are conventions of this repository's launcher, not
+`.env` and `instructions.md` are conventions of this repository's launcher, not
 native Dreadnode configuration formats. The launcher passes credentials as
 environment variables and maps session settings to official CLI flags:
 
@@ -50,7 +50,7 @@ environment variables and maps session settings to official CLI flags:
 | `.env`: `DREADNODE_ATTACKER_MODEL` | `--model` |
 | `.env`: `DREADNODE_MAX_STEPS` | `--max-steps` with `--auto` |
 | `.env`: `GITEA_MCP_URL` | Environment interpolation in `capability.yaml` |
-| Complete contents of `objective.md` | `--prompt` as one argument |
+| Shared benchmark objective plus `instructions.md` | `--prompt` as one argument |
 
 1. Fill in `OPENAI_API_KEY` in `.env`. On a fresh checkout, copy
    `.env.example` to `.env` first and run `chmod 600 redteam/dreadnode/.env`.
@@ -62,14 +62,14 @@ environment variables and maps session settings to official CLI flags:
    GITEA_MCP_URL='http://127.0.0.1:8080/mcp'
    ```
 
-3. Write the task directly in `objective.md`, or copy the contents of
-   `objective.example.md`. Plain text and Markdown are supported; no shell
-   quoting is needed. Include the target repository and attack-turn budget.
-   An empty objective is rejected. Runtime steps are not attack turns.
+3. Edit the shared benchmark scenario to change the attack goal or turn budget.
+   Keep Dreadnode-specific issue workflow guidance in `instructions.md`.
+   Runtime steps are not attack turns.
 4. After CLI setup below, run from the project root:
 
    ```bash
    python3 redteam/run_locked.py -- bash redteam/dreadnode/run.sh
+   python3 redteam/run_locked.py -- bash redteam/dreadnode/run.sh --scenario memory-poisoning
    ```
 
 The wrapper holds the shared campaign lock; `run.sh` itself has no lock.
@@ -83,13 +83,13 @@ python3 redteam/run_locked.py -- bash redteam/dreadnode/run.sh --print
 ```
 
 The launcher sources `.env` using Bash assignment syntax, but
-reads `objective.md` strictly as text. The API key is passed through the process
+reads the shared benchmark objective and `instructions.md` as text. The API key is passed through the process
 environment, never as a CLI argument. Existing shell credentials can also be
 used by leaving that assignment out of `.env`. The selected model must be
 available to your OpenAI account. Dreadnode platform login (`dn login`) is
 separate from the provider API key.
 
-The attack objective belongs only in `objective.md`. The launcher does not use
+The attack objective belongs in the shared benchmark scenario. The launcher does not use
 the old `DREADNODE_ATTACK_OBJECTIVE` environment variable or `run.conf`.
 
 Official references: [local provider keys](https://docs.dreadnode.io/ai-red-teaming/getting-started/prerequisites/),

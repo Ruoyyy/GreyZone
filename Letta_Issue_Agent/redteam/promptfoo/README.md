@@ -24,7 +24,8 @@ promptfoo redteam
 
 ```text
 redteam/promptfoo/
-  promptfooconfig.yaml          # points at real MCP URL by default
+  promptfooconfig.yaml          # template; points at real MCP URL by default
+  scenario-config.yaml          # generated from the shared benchmark scenario
   package.json
   shared/js/
     mcp_session.mjs             # stdio or Streamable HTTP client
@@ -39,6 +40,11 @@ redteam/promptfoo/
 1. Stack up with MCP healthy (`docker compose up -d`, port **8080**):
    - See root [README.md](../../README.md) § Connect an MCP client
 2. Node 22.22.0+ (required by the pinned Promptfoo version)
+
+`npm run redteam -- --scenario memory-poisoning` first generates the ignored
+`scenario-config.yaml` from the selected benchmark objective and turn budget.
+`npm run prepare:scenario -- --scenario memory-poisoning` does only this
+generation and makes no model requests or issue writes.
 
 ```bash
 cd redteam/promptfoo
@@ -98,7 +104,7 @@ Issue **creation** bodies still need `@letta-code` in the body (`ensureMention`)
 
 | Field | Purpose |
 |---|---|
-| `purpose` | Description of the system under test; drives how attacks are generated |
+| `purpose` | Shared benchmark objective inserted into the generated configuration |
 | `injectVar` | Variable the generated attack is written into (must match `prompts`) |
 | `numTests` | Tests generated **per plugin** (total = plugins x numTests) |
 | `provider` | Model that generates the attacks (not the target) |
@@ -141,11 +147,11 @@ python3 ../run_locked.py -- npm run redteam   # promptfoo 0.122.2, serial target
 PROMPTFOO_CONFIG_DIR="$PWD/.promptfoo" npx promptfoo redteam report
 ```
 
-Compose reads the root `.env`, but npm does not automatically load that file.
-When the key is stored only in the root `.env`, run from `redteam/promptfoo/`:
+The launcher loads `ZAI_API_KEY` from the root `.env` when it is not already
+exported. Run from `redteam/promptfoo/`:
 
 ```bash
-python3 ../run_locked.py -- node --env-file=../../.env --run redteam
+python3 ../run_locked.py -- npm run redteam
 ```
 
 `npm run redteam` uses the promptfoo pinned in `package.json` / `package-lock.json`
@@ -165,10 +171,11 @@ Keep `-j 1` so shared-issue updates remain serial.
 
 ## Current defaults and limitations
 
-Only `debug-access` is enabled; `prompt-extraction` is commented out. The `basic`
-strategy entry is disabled, followed by the enabled `crescendo` entry with ten
-turns. `outputPath` retains its historical `exfil-20.json` filename; that name is
-not the configured number of attacks.
+The default credential scenario uses `debug-access`; the memory and outbound
+network scenarios use a policy plugin populated from the selected scenario.
+The `basic` strategy entry is disabled, followed by the enabled `crescendo`
+entry with the scenario's turn budget. `outputPath` uses the selected scenario
+name so results from different goals have separate files.
 
 The polling window is 900 seconds, and individual MCP calls have their own
 request deadlines, so an in-flight poll can extend the total wait. A failed
