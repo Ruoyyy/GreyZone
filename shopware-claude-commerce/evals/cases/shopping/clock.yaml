@@ -1,0 +1,39 @@
+# Date awareness. The prompt carries a local time only when the session context has a
+# clock (ClockContext.now / timezone); without one the model falls back to its
+# training-era year. These cases pin that a date the agent proposes is never in a past
+# year and that a deadline already behind us is recognised as such. Graded on the whole
+# surface (prose and cards) with a regex against 20(2[0-5]).
+
+- id: shop-clock-001-arrival-date-not-in-past-year
+  title: An arrival date derived from the delivery time is a real calendar date, not one in a past year
+  tags: [context]
+  set: ci
+  state:
+    seen_products: [$OIL]
+  message: If I order the olive oil today, on which date should it arrive? Please name the date.
+  expect:
+    - regex: {pattern: "\\b20(2[0-5])\\b", must_match: false, surface: answer}
+    - regex: {pattern: "\\b20[2-9]\\d\\b|\\b(january|february|march|april|may|june|july|august|september|october|november|december|januar|februar|märz|mai|juni|juli|oktober|dezember)\\b|\\b\\d{1,2}\\.\\d{1,2}\\.\\d{2,4}\\b", must_match: true}
+    - tool_not_called: [add_to_cart]
+    - no_internal_ids_in_text
+  notes: >
+    The delivery time (2–4 working days) comes from the product data; the calendar date
+    is the agent's arithmetic on today. Naming a day in 2020–2025 means the turn had no
+    clock or ignored it. A reply that declines to name a date at all also fails: the
+    customer asked for one.
+
+- id: shop-clock-002-past-deadline-recognised
+  title: A delivery deadline that already lies in the past is recognised as past
+  tags: [context]
+  set: ci
+  negative_of: shop-clock-001-arrival-date-not-in-past-year
+  state:
+    seen_products: [$OIL]
+  message: I need the olive oil by 24 December 2025 at the latest — will it make it?
+  expect:
+    - text_contains: ["past", "already", "passed", "behind us", "vergangen", "vorbei", "no longer possible", "not possible", "did you mean", "do you mean"]
+    - tool_not_called: [add_to_cart]
+    - no_internal_ids_in_text
+  notes: >
+    The twin of the case above: the date is given, and it is behind us. An agent that
+    promises delivery "well before 24 December 2025" has no idea what day it is.

@@ -1,0 +1,371 @@
+/*
+ * Copyright 2026 shopware AG
+ * SPDX-License-Identifier: MIT
+ *
+ * One Tailwind build for the shell and both vendored web UIs. The apps' own globals.css are
+ * scoped to html.demo-theme-storefront / html.demo-theme-merchant (build/scope-css.mjs) so
+ * their conflicting design tokens switch with the active view.
+ */
+@import "tailwindcss";
+@source "../vendor/web-shared";
+@source "../vendor/storefront-web";
+@source "../vendor/merchant-web";
+@source "./";
+@import "../vendor/web-shared/portal/portal.css";
+@import "../vendor/storefront-web/app/globals.scoped.css";
+@import "../vendor/merchant-web/app/globals.scoped.css";
+
+:root {
+  --demo-bar-h: 44px;
+  --demo-blue: #189eff;
+  --demo-blue-strong: #0f7fd3;
+  --demo-ink: #1e2c4f;
+  --demo-ink-soft: #66708a;
+  --demo-line: rgba(30, 44, 79, 0.12);
+  --demo-ground: #f4f5f8;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: "Inter", "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--demo-ground);
+  color: var(--demo-ink);
+}
+
+/* The vendored apps size themselves to the viewport; inside the shell they get the area below the bar. */
+.demo-view {
+  position: absolute;
+  inset: var(--demo-bar-h) 0 0 0;
+  overflow: hidden;
+  /* The apps use `position: fixed; inset: 0` for drawers and dialogs (cart, key dialog …).
+     `contain: layout paint` makes this view their containing block and `isolation` keeps their
+     z-index local, so no overlay ever covers the demo bar. */
+  contain: layout paint;
+  isolation: isolate;
+}
+.demo-view .h-dvh,
+.demo-view .min-h-dvh,
+.demo-view .h-screen,
+.demo-view .min-h-screen {
+  height: 100%;
+  min-height: 0;
+}
+
+.demo-frame {
+  position: absolute;
+  inset: var(--demo-bar-h) 0 0 0;
+  width: 100%;
+  height: calc(100% - var(--demo-bar-h));
+  border: 0;
+  background: #fff;
+}
+
+/* Shell chrome (Shopware blue accents, portal-style ink). */
+.demo-bar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: var(--demo-bar-h);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: #fff;
+  border-bottom: 1px solid var(--demo-line);
+  z-index: 50;
+  font-size: 13px;
+}
+.demo-bar__mark {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--demo-blue);
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+}
+.demo-bar__title {
+  font-weight: 700;
+  letter-spacing: 0.005em;
+  white-space: nowrap;
+}
+.demo-bar__tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: 8px;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--demo-ground);
+}
+.demo-tab {
+  border: 0;
+  border-radius: 8px;
+  padding: 5px 11px;
+  background: transparent;
+  color: var(--demo-ink-soft);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.demo-tab:hover:not(:disabled) {
+  color: var(--demo-ink);
+}
+.demo-tab[aria-selected="true"] {
+  background: #fff;
+  color: var(--demo-ink);
+  box-shadow: 0 1px 2px rgba(30, 44, 79, 0.12);
+}
+.demo-tab:disabled {
+  opacity: 0.45;
+  cursor: progress;
+}
+.demo-bar__status {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--demo-ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.demo-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffd166;
+  flex: none;
+}
+.demo-dot--ready {
+  background: #2ed47a;
+}
+.demo-dot--error {
+  background: #ff5c5c;
+}
+.demo-dot--busy {
+  animation: demo-pulse 0.9s ease-in-out infinite;
+}
+@keyframes demo-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.demo-pill {
+  border: 1px solid var(--demo-line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: #fff;
+  color: var(--demo-ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.demo-pill:hover {
+  border-color: var(--demo-blue);
+  color: var(--demo-blue-strong);
+}
+.demo-pill--accent {
+  background: var(--demo-blue);
+  border-color: var(--demo-blue);
+  color: #fff;
+}
+.demo-pill--accent:hover {
+  background: var(--demo-blue-strong);
+  color: #fff;
+}
+
+/* Boot screen */
+.demo-boot {
+  position: absolute;
+  inset: var(--demo-bar-h) 0 0 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(1200px 600px at 50% -10%, #e6f3ff 0%, var(--demo-ground) 60%);
+  z-index: 40;
+}
+.demo-boot__card {
+  width: min(560px, calc(100vw - 32px));
+  border-radius: 20px;
+  background: #fff;
+  border: 1px solid var(--demo-line);
+  box-shadow: 0 24px 60px rgba(30, 44, 79, 0.16);
+  padding: 28px 28px 22px;
+}
+.demo-boot__card h1 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.demo-boot__card p {
+  margin: 0;
+  color: var(--demo-ink-soft);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.demo-steps {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.demo-steps li {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  font-size: 13.5px;
+}
+.demo-steps__icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--demo-ground);
+  color: var(--demo-ink-soft);
+}
+.demo-steps__icon--done {
+  background: #e4f3ea;
+  color: #1f7a4d;
+}
+.demo-steps__icon--active {
+  background: #e6f3ff;
+  color: var(--demo-blue-strong);
+  animation: demo-pulse 0.9s ease-in-out infinite;
+}
+.demo-steps__icon--error {
+  background: #fceeee;
+  color: #b3261e;
+}
+.demo-steps__meta {
+  color: var(--demo-ink-soft);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+.demo-boot__detail {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--demo-ground);
+  color: var(--demo-ink-soft);
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.demo-boot__foot {
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--demo-ink-soft);
+  line-height: 1.5;
+}
+
+/* Dialog (BYOK) */
+.demo-dialog__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(30, 44, 79, 0.35);
+  display: grid;
+  place-items: center;
+  z-index: 100;
+}
+.demo-dialog {
+  width: min(520px, calc(100vw - 32px));
+  border-radius: 16px;
+  background: #fff;
+  padding: 22px 24px;
+  box-shadow: 0 24px 60px rgba(30, 44, 79, 0.25);
+  font-size: 14px;
+}
+.demo-dialog h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+  font-weight: 800;
+}
+.demo-dialog p {
+  margin: 0 0 12px;
+  color: var(--demo-ink-soft);
+  line-height: 1.5;
+}
+.demo-dialog label {
+  display: block;
+  font-weight: 600;
+  font-size: 12.5px;
+  margin: 12px 0 4px;
+}
+.demo-dialog input {
+  width: 100%;
+  border: 1px solid var(--demo-line);
+  border-radius: 10px;
+  padding: 9px 11px;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.demo-dialog input:focus {
+  outline: 2px solid rgba(24, 158, 255, 0.45);
+  border-color: var(--demo-blue);
+}
+.demo-dialog__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+.demo-choice {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--demo-line);
+  border-radius: 12px;
+  margin-top: 8px;
+  cursor: pointer;
+}
+.demo-choice[data-active="true"] {
+  border-color: var(--demo-blue);
+  background: #e6f3ff;
+}
+.demo-choice strong {
+  display: block;
+  font-size: 13.5px;
+}
+.demo-choice span {
+  color: var(--demo-ink-soft);
+  font-size: 12.5px;
+}
+
+.demo-hidden {
+  display: none !important;
+}
+
+.demo-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  background: var(--demo-ink);
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  z-index: 120;
+  box-shadow: 0 10px 30px rgba(30, 44, 79, 0.3);
+  max-width: min(680px, calc(100vw - 32px));
+}

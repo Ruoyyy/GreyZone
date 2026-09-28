@@ -1,0 +1,225 @@
+<template id="captions-template" data-composition-id="captions" data-width="1920" data-height="1080">
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+
+
+<style data-brand-tokens>
+      @font-face { font-family: 'Inter'; src: url('assets/fonts/Inter-400.woff2') format('woff2'); font-weight: 400; font-style: normal; font-display: block; }
+      @font-face { font-family: 'Inter'; src: url('assets/fonts/Inter-700.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: block; }
+      :root {
+      --ink: #F3F6FA;
+      --cream: #0B1220;
+      --tile: #111A2E;
+      --tile-strong: #1B2740;
+      --coral: #189EFF;
+      --warm: #D97757;
+      --muted: #8A94A6;
+      --navy: #060B16;
+      --navy-soft: #0E1628;
+      --navy-elev: #141F36;
+      --cap-ink: #F3F6FA;
+      --cap-canvas: #0B1220;
+      --cap-accent: #189EFF;
+      --cap-accent-2: #D97757;
+      --font-display: "Inter", system-ui, serif;
+      --font-body: "Inter", system-ui, sans-serif;
+      --cap-band-top: 900px;
+      --cap-band-height: 180px;
+      }
+    </style>
+
+<style>
+  #captions-root {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .caption-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    pointer-events: none;
+  }
+  /* the keep-out band, from captionBand(H) — frame content stays above it */
+  .caption-stage {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: var(--cap-band-top, 900px);
+    height: var(--cap-band-height, 180px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .caption-group {
+    /* every group is absolutely stacked over the SAME band — exactly one shown at a
+       time via opacity. Must be absolute: in-flow groups would lay out side-by-side. */
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+  }
+
+  /* THE lifted cream card — warm cream fill, 1px hairline ink border, one soft warm
+     shadow (code-editorial's only elevation language), 12px radius, no tilt */
+  .caption-pill {
+    max-width: 78%;
+    padding: 22px 44px 26px;
+    background: var(--cap-canvas, #faf9f5);
+    border: 1px solid color-mix(in srgb, var(--cap-ink, #141413) 12%, transparent);
+    border-radius: 12px;
+    box-shadow:
+      0 1px 3px color-mix(in srgb, var(--cap-ink, #141413) 8%, transparent),
+      0 4px 16px color-mix(in srgb, var(--cap-ink, #141413) 4%, transparent);
+  }
+  .caption-line {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.12em 0.3em;
+    font-family: "Inter", Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(40px, 4.4vw, 56px);
+    line-height: 1.24;
+    letter-spacing: -0.02em;
+  }
+
+  /* upcoming — faint warm ink, no underline */
+  .caption-word {
+    display: inline-block;
+    padding: 0 0.02em 0.06em;
+    color: color-mix(in srgb, var(--cap-ink, #141413) 40%, var(--cap-canvas, #faf9f5));
+    border-bottom: 3px solid transparent;
+  }
+  /* current word — full ink under the coral voltage underline (the brand's signature
+     inline-link gesture; border-bottom = underline without layout shift) */
+  .caption-word.is-active {
+    color: var(--cap-ink, #141413);
+    border-bottom: 3px solid var(--cap-accent, #cc785c);
+  }
+  /* already spoken — solid warm ink, underline cleared */
+  .caption-word.is-spoken {
+    color: var(--cap-ink, #141413);
+    border-bottom: 3px solid transparent;
+  }
+
+  /* optional per-word accents (dormant until a word-classer tags them) */
+  /* brand / key term — the expressive EB Garamond italic */
+  .caption-word.cap-brand {
+    font-style: italic;
+    color: var(--cap-ink, #141413);
+  }
+  .caption-word.cap-brand.is-active {
+    border-bottom: 3px solid var(--cap-accent, #cc785c);
+  }
+  /* numerals / data — slightly recessed warm ink */
+  .caption-word.cap-num {
+    color: color-mix(in srgb, var(--cap-ink, #141413) 72%, var(--cap-canvas, #faf9f5));
+  }
+  /* emphasis — a persistent coral voltage underline */
+  .caption-word.cap-cta {
+    border-bottom: 3px solid var(--cap-accent-2, #b5654a);
+    color: var(--cap-ink, #141413);
+  }
+
+  @media (max-aspect-ratio: 9/16) {
+    .caption-pill {
+      max-width: 92%;
+    }
+    .caption-line {
+      font-size: clamp(34px, 5.4vw, 46px);
+    }
+  }
+</style>
+
+<div
+  id="captions-root"
+  data-composition-id="captions"
+  data-timeline-locked
+  data-start="0"
+  data-duration="149.338"
+  data-fps="30"
+  data-width="1920"
+  data-height="1080"
+>
+  <div class="caption-layer" aria-hidden="true">
+    <div id="caption-stage" class="caption-stage"></div>
+  </div>
+</div>
+
+<script>
+  // captions.mjs injects the engine's scene-aware groups + real duration here.
+  var GROUPS = [{"id":"caption-group-0","frame":1,"start":0.04,"end":1.07,"text":"September","words":[{"id":"caption-word-0-0","text":"September","start":0.04,"end":0.95}]},{"id":"caption-group-1","frame":1,"start":1.24,"end":1.87,"text":"2nd,","words":[{"id":"caption-word-1-0","text":"2nd,","start":1.24,"end":1.87}]},{"id":"caption-group-2","frame":1,"start":1.87,"end":3.43,"text":"2026.","words":[{"id":"caption-word-2-0","text":"2026.","start":1.87,"end":3.38}]},{"id":"caption-group-3","frame":1,"start":3.43,"end":4.45,"text":"Anthropic publishes","words":[{"id":"caption-word-3-0","text":"Anthropic","start":3.43,"end":3.96},{"id":"caption-word-3-1","text":"publishes","start":3.97,"end":4.33}]},{"id":"caption-group-4","frame":1,"start":4.62,"end":6.05,"text":"an open-source blueprint","words":[{"id":"caption-word-4-0","text":"an","start":4.62,"end":4.73},{"id":"caption-word-4-1","text":"open-source","start":4.73,"end":5.34},{"id":"caption-word-4-2","text":"blueprint","start":5.44,"end":5.94}]},{"id":"caption-group-5","frame":1,"start":6.05,"end":7.53,"text":"for commerce agents.","words":[{"id":"caption-word-5-0","text":"for","start":6.05,"end":6.17},{"id":"caption-word-5-1","text":"commerce","start":6.24,"end":6.81},{"id":"caption-word-5-2","text":"agents.","start":6.81,"end":7.44}]},{"id":"caption-group-6","frame":1,"start":7.53,"end":8.72,"text":"One day later","words":[{"id":"caption-word-6-0","text":"One","start":7.53,"end":7.74},{"id":"caption-word-6-1","text":"day","start":7.76,"end":8.02},{"id":"caption-word-6-2","text":"later","start":8.02,"end":8.66}]},{"id":"caption-group-7","frame":1,"start":8.72,"end":9.79,"text":"this is Shopware's","words":[{"id":"caption-word-7-0","text":"this","start":8.72,"end":8.85},{"id":"caption-word-7-1","text":"is","start":8.85,"end":8.91},{"id":"caption-word-7-2","text":"Shopware's","start":8.99,"end":9.79}]},{"id":"caption-group-8","frame":1,"start":9.79,"end":11.05,"text":"implementation.","words":[{"id":"caption-word-8-0","text":"implementation.","start":9.79,"end":11}]},{"id":"caption-group-9","frame":1,"start":11.05,"end":11.614,"text":"Running.","words":[{"id":"caption-word-9-0","text":"Running.","start":11.05,"end":11.584}]},{"id":"caption-group-10","frame":2,"start":11.614,"end":12.174,"text":"This is","words":[{"id":"caption-word-10-0","text":"This","start":11.614,"end":11.974},{"id":"caption-word-10-1","text":"is","start":11.974,"end":12.144}]},{"id":"caption-group-11","frame":2,"start":12.174,"end":12.574,"text":"not a","words":[{"id":"caption-word-11-0","text":"not","start":12.174,"end":12.474},{"id":"caption-word-11-1","text":"a","start":12.474,"end":12.574}]},{"id":"caption-group-12","frame":2,"start":12.574,"end":13.614,"text":"Claude shop.","words":[{"id":"caption-word-12-0","text":"Claude","start":12.574,"end":13.074},{"id":"caption-word-12-1","text":"shop.","start":13.074,"end":13.614}]},{"id":"caption-group-13","frame":2,"start":13.614,"end":14.634,"text":"It's Shopware as","words":[{"id":"caption-word-13-0","text":"It's","start":13.614,"end":13.884},{"id":"caption-word-13-1","text":"Shopware","start":13.884,"end":14.484},{"id":"caption-word-13-2","text":"as","start":14.484,"end":14.634}]},{"id":"caption-group-14","frame":2,"start":14.634,"end":15.194,"text":"the commerce","words":[{"id":"caption-word-14-0","text":"the","start":14.634,"end":14.864},{"id":"caption-word-14-1","text":"commerce","start":14.864,"end":15.074}]},{"id":"caption-group-15","frame":2,"start":15.594,"end":17.404,"text":"execution layer the system","words":[{"id":"caption-word-15-0","text":"execution","start":15.594,"end":16.164},{"id":"caption-word-15-1","text":"layer","start":16.164,"end":16.584},{"id":"caption-word-15-2","text":"the","start":16.614,"end":16.854},{"id":"caption-word-15-3","text":"system","start":16.854,"end":17.284}]},{"id":"caption-group-16","frame":2,"start":17.464,"end":18.324,"text":"any agent runs","words":[{"id":"caption-word-16-0","text":"any","start":17.464,"end":17.664},{"id":"caption-word-16-1","text":"agent","start":17.664,"end":18.064},{"id":"caption-word-16-2","text":"runs","start":18.194,"end":18.204}]},{"id":"caption-group-17","frame":2,"start":18.594,"end":18.889,"text":"on.","words":[{"id":"caption-word-17-0","text":"on.","start":18.594,"end":18.954}]},{"id":"caption-group-18","frame":3,"start":18.889,"end":19.659,"text":"Two agents.","words":[{"id":"caption-word-18-0","text":"Two","start":18.889,"end":19.059},{"id":"caption-word-18-1","text":"agents.","start":19.089,"end":19.659}]},{"id":"caption-group-19","frame":3,"start":19.659,"end":20.389,"text":"Shopping:","words":[{"id":"caption-word-19-0","text":"Shopping:","start":19.659,"end":20.389}]},{"id":"caption-group-20","frame":3,"start":20.389,"end":21.069,"text":"search,","words":[{"id":"caption-word-20-0","text":"search,","start":20.389,"end":20.959}]},{"id":"caption-group-21","frame":3,"start":21.069,"end":21.689,"text":"compare,","words":[{"id":"caption-word-21-0","text":"compare,","start":21.069,"end":21.689}]},{"id":"caption-group-22","frame":3,"start":21.689,"end":22.069,"text":"a real","words":[{"id":"caption-word-22-0","text":"a","start":21.689,"end":21.759},{"id":"caption-word-22-1","text":"real","start":21.759,"end":22.069}]},{"id":"caption-group-23","frame":3,"start":22.069,"end":22.429,"text":"cart,","words":[{"id":"caption-word-23-0","text":"cart,","start":22.069,"end":22.399}]},{"id":"caption-group-24","frame":3,"start":22.429,"end":22.959,"text":"hand off","words":[{"id":"caption-word-24-0","text":"hand","start":22.429,"end":22.719},{"id":"caption-word-24-1","text":"off","start":22.719,"end":22.959}]},{"id":"caption-group-25","frame":3,"start":22.959,"end":24.509,"text":"to Shopware checkout.","words":[{"id":"caption-word-25-0","text":"to","start":22.959,"end":23.109},{"id":"caption-word-25-1","text":"Shopware","start":23.109,"end":23.829},{"id":"caption-word-25-2","text":"checkout.","start":23.829,"end":24.479}]},{"id":"caption-group-26","frame":3,"start":24.509,"end":25.399,"text":"Merchant:","words":[{"id":"caption-word-26-0","text":"Merchant:","start":24.509,"end":25.279}]},{"id":"caption-group-27","frame":3,"start":25.579,"end":26.019,"text":"analyze,","words":[{"id":"caption-word-27-0","text":"analyze,","start":25.579,"end":26.019}]},{"id":"caption-group-28","frame":3,"start":26.019,"end":26.579,"text":"stage,","words":[{"id":"caption-word-28-0","text":"stage,","start":26.019,"end":26.579}]},{"id":"caption-group-29","frame":3,"start":26.579,"end":27.719,"text":"a human approves,","words":[{"id":"caption-word-29-0","text":"a","start":26.579,"end":26.689},{"id":"caption-word-29-1","text":"human","start":26.689,"end":27.019},{"id":"caption-word-29-2","text":"approves,","start":27.019,"end":27.719}]},{"id":"caption-group-30","frame":3,"start":27.719,"end":28.202,"text":"apply.","words":[{"id":"caption-word-30-0","text":"apply.","start":27.719,"end":28.182}]},{"id":"caption-group-31","frame":4,"start":28.202,"end":30.602,"text":"Anthropic's blueprint packages pinned,","words":[{"id":"caption-word-31-0","text":"Anthropic's","start":28.202,"end":28.882},{"id":"caption-word-31-1","text":"blueprint","start":28.882,"end":29.512},{"id":"caption-word-31-2","text":"packages","start":29.512,"end":30.172},{"id":"caption-word-31-3","text":"pinned,","start":30.172,"end":30.582}]},{"id":"caption-group-32","frame":4,"start":30.602,"end":31.782,"text":"unmodified.","words":[{"id":"caption-word-32-0","text":"unmodified.","start":30.602,"end":31.762}]},{"id":"caption-group-33","frame":4,"start":31.782,"end":32.982,"text":"Two thin Shopware","words":[{"id":"caption-word-33-0","text":"Two","start":31.782,"end":32.002},{"id":"caption-word-33-1","text":"thin","start":32.002,"end":32.312},{"id":"caption-word-33-2","text":"Shopware","start":32.422,"end":32.912}]},{"id":"caption-group-34","frame":4,"start":32.982,"end":33.822,"text":"backends.","words":[{"id":"caption-word-34-0","text":"backends.","start":32.982,"end":33.822}]},{"id":"caption-group-35","frame":4,"start":33.822,"end":34.352,"text":"MCP on","words":[{"id":"caption-word-35-0","text":"MCP","start":33.822,"end":34.042},{"id":"caption-word-35-1","text":"on","start":34.182,"end":34.352}]},{"id":"caption-group-36","frame":4,"start":34.352,"end":35.702,"text":"both sides:","words":[{"id":"caption-word-36-0","text":"both","start":34.352,"end":34.782},{"id":"caption-word-36-1","text":"sides:","start":34.782,"end":35.682}]},{"id":"caption-group-37","frame":4,"start":35.702,"end":37.902,"text":"shoppers over UCP-MCP,","words":[{"id":"caption-word-37-0","text":"shoppers","start":35.702,"end":36.562},{"id":"caption-word-37-1","text":"over","start":36.562,"end":37.002},{"id":"caption-word-37-2","text":"UCP-MCP,","start":37.002,"end":37.902}]},{"id":"caption-group-38","frame":4,"start":37.902,"end":38.602,"text":"merchants over","words":[{"id":"caption-word-38-0","text":"merchants","start":37.902,"end":38.442},{"id":"caption-word-38-1","text":"over","start":38.442,"end":38.602}]},{"id":"caption-group-39","frame":4,"start":38.602,"end":38.992,"text":"the Admin","words":[{"id":"caption-word-39-0","text":"the","start":38.602,"end":38.812},{"id":"caption-word-39-1","text":"Admin","start":38.812,"end":38.872}]},{"id":"caption-group-40","frame":4,"start":39.292,"end":41.702,"text":"MCP dry-run previews computed","words":[{"id":"caption-word-40-0","text":"MCP","start":39.292,"end":40.082},{"id":"caption-word-40-1","text":"dry-run","start":40.102,"end":40.542},{"id":"caption-word-40-2","text":"previews","start":40.542,"end":41.162},{"id":"caption-word-40-3","text":"computed","start":41.162,"end":41.702}]},{"id":"caption-group-41","frame":4,"start":41.702,"end":42.902,"text":"on the server.","words":[{"id":"caption-word-41-0","text":"on","start":41.702,"end":42.022},{"id":"caption-word-41-1","text":"the","start":42.022,"end":42.162},{"id":"caption-word-41-2","text":"server.","start":42.162,"end":42.872}]},{"id":"caption-group-42","frame":4,"start":42.902,"end":43.392,"text":"REST is","words":[{"id":"caption-word-42-0","text":"REST","start":42.902,"end":43.182},{"id":"caption-word-42-1","text":"is","start":43.252,"end":43.392}]},{"id":"caption-group-43","frame":4,"start":43.392,"end":44.489,"text":"the fallback.","words":[{"id":"caption-word-43-0","text":"the","start":43.392,"end":43.642},{"id":"caption-word-43-1","text":"fallback.","start":43.642,"end":44.459}]},{"id":"caption-group-44","frame":5,"start":44.489,"end":45.039,"text":"One curl","words":[{"id":"caption-word-44-0","text":"One","start":44.489,"end":44.709},{"id":"caption-word-44-1","text":"curl","start":44.709,"end":45.039}]},{"id":"caption-group-45","frame":5,"start":45.039,"end":46.309,"text":"to the well-known","words":[{"id":"caption-word-45-0","text":"to","start":45.039,"end":45.149},{"id":"caption-word-45-1","text":"the","start":45.219,"end":45.449},{"id":"caption-word-45-2","text":"well-known","start":45.449,"end":46.199}]},{"id":"caption-group-46","frame":5,"start":46.309,"end":46.719,"text":"endpoint","words":[{"id":"caption-word-46-0","text":"endpoint","start":46.309,"end":46.599}]},{"id":"caption-group-47","frame":5,"start":46.999,"end":48.219,"text":"and Shopware announces","words":[{"id":"caption-word-47-0","text":"and","start":46.999,"end":47.199},{"id":"caption-word-47-1","text":"Shopware","start":47.199,"end":47.619},{"id":"caption-word-47-2","text":"announces","start":47.619,"end":48.219}]},{"id":"caption-group-48","frame":5,"start":48.219,"end":49.189,"text":"what it speaks,","words":[{"id":"caption-word-48-0","text":"what","start":48.219,"end":48.609},{"id":"caption-word-48-1","text":"it","start":48.709,"end":48.829},{"id":"caption-word-48-2","text":"speaks,","start":48.829,"end":49.069}]},{"id":"caption-group-49","frame":5,"start":49.459,"end":49.619,"text":"and the","words":[{"id":"caption-word-49-0","text":"and","start":49.459,"end":49.539},{"id":"caption-word-49-1","text":"the","start":49.539,"end":49.619}]},{"id":"caption-group-50","frame":5,"start":49.619,"end":50.089,"text":"keys it","words":[{"id":"caption-word-50-0","text":"keys","start":49.619,"end":49.899},{"id":"caption-word-50-1","text":"it","start":49.899,"end":50.039}]},{"id":"caption-group-51","frame":5,"start":50.089,"end":51.019,"text":"signs with.","words":[{"id":"caption-word-51-0","text":"signs","start":50.089,"end":50.499},{"id":"caption-word-51-1","text":"with.","start":50.499,"end":50.899}]},{"id":"caption-group-52","frame":6,"start":51.077,"end":51.927,"text":"Three things","words":[{"id":"caption-word-52-0","text":"Three","start":51.077,"end":51.407},{"id":"caption-word-52-1","text":"things","start":51.407,"end":51.887}]},{"id":"caption-group-53","frame":6,"start":51.927,"end":53.047,"text":"a bolt-on can't","words":[{"id":"caption-word-53-0","text":"a","start":51.927,"end":51.997},{"id":"caption-word-53-1","text":"bolt-on","start":51.997,"end":52.507},{"id":"caption-word-53-2","text":"can't","start":52.507,"end":52.927}]},{"id":"caption-group-54","frame":6,"start":53.127,"end":53.237,"text":"do:","words":[{"id":"caption-word-54-0","text":"do:","start":53.127,"end":53.147}]},{"id":"caption-group-55","frame":6,"start":53.237,"end":54.637,"text":"native UCP,","words":[{"id":"caption-word-55-0","text":"native","start":53.237,"end":53.927},{"id":"caption-word-55-1","text":"UCP,","start":53.927,"end":54.547}]},{"id":"caption-group-56","frame":6,"start":54.637,"end":54.987,"text":"dry-run","words":[{"id":"caption-word-56-0","text":"dry-run","start":54.637,"end":54.867}]},{"id":"caption-group-57","frame":6,"start":55.317,"end":55.927,"text":"previews from","words":[{"id":"caption-word-57-0","text":"previews","start":55.317,"end":55.627},{"id":"caption-word-57-1","text":"from","start":55.627,"end":55.917}]},{"id":"caption-group-58","frame":6,"start":55.927,"end":56.557,"text":"the core,","words":[{"id":"caption-word-58-0","text":"the","start":55.927,"end":56.107},{"id":"caption-word-58-1","text":"core,","start":56.207,"end":56.467}]},{"id":"caption-group-59","frame":6,"start":56.557,"end":58.197,"text":"and commerce semantics","words":[{"id":"caption-word-59-0","text":"and","start":56.557,"end":56.677},{"id":"caption-word-59-1","text":"commerce","start":56.677,"end":57.247},{"id":"caption-word-59-2","text":"semantics","start":57.247,"end":58.107}]},{"id":"caption-group-60","frame":6,"start":58.197,"end":59.037,"text":"promotions,","words":[{"id":"caption-word-60-0","text":"promotions,","start":58.197,"end":59.007}]},{"id":"caption-group-61","frame":6,"start":59.037,"end":59.587,"text":"rules,","words":[{"id":"caption-word-61-0","text":"rules,","start":59.037,"end":59.507}]},{"id":"caption-group-62","frame":6,"start":59.587,"end":60.327,"text":"variants,","words":[{"id":"caption-word-62-0","text":"variants,","start":59.587,"end":60.327}]},{"id":"caption-group-63","frame":6,"start":60.327,"end":61.769,"text":"price disclosures.","words":[{"id":"caption-word-63-0","text":"price","start":60.327,"end":60.707},{"id":"caption-word-63-1","text":"disclosures.","start":60.707,"end":61.739}]},{"id":"caption-group-64","frame":7,"start":61.769,"end":63.199,"text":"The model proposes;","words":[{"id":"caption-word-64-0","text":"The","start":61.769,"end":62.009},{"id":"caption-word-64-1","text":"model","start":62.009,"end":62.469},{"id":"caption-word-64-2","text":"proposes;","start":62.469,"end":63.199}]},{"id":"caption-group-65","frame":7,"start":63.199,"end":63.869,"text":"a person","words":[{"id":"caption-word-65-0","text":"a","start":63.199,"end":63.289},{"id":"caption-word-65-1","text":"person","start":63.289,"end":63.749}]},{"id":"caption-group-66","frame":7,"start":63.889,"end":65.029,"text":"or a policy","words":[{"id":"caption-word-66-0","text":"or","start":63.889,"end":64.119},{"id":"caption-word-66-1","text":"a","start":64.119,"end":64.129},{"id":"caption-word-66-2","text":"policy","start":64.249,"end":64.959}]},{"id":"caption-group-67","frame":7,"start":65.029,"end":66.009,"text":"applies.","words":[{"id":"caption-word-67-0","text":"applies.","start":65.029,"end":65.979}]},{"id":"caption-group-68","frame":7,"start":66.009,"end":67.809,"text":"Provenance gates accept only","words":[{"id":"caption-word-68-0","text":"Provenance","start":66.009,"end":66.709},{"id":"caption-word-68-1","text":"gates","start":66.709,"end":67.079},{"id":"caption-word-68-2","text":"accept","start":67.079,"end":67.439},{"id":"caption-word-68-3","text":"only","start":67.529,"end":67.789}]},{"id":"caption-group-69","frame":7,"start":67.809,"end":68.839,"text":"IDs the session","words":[{"id":"caption-word-69-0","text":"IDs","start":67.809,"end":67.979},{"id":"caption-word-69-1","text":"the","start":67.979,"end":68.239},{"id":"caption-word-69-2","text":"session","start":68.239,"end":68.839}]},{"id":"caption-group-70","frame":7,"start":68.839,"end":69.069,"text":"has","words":[{"id":"caption-word-70-0","text":"has","start":68.839,"end":68.949}]},{"id":"caption-group-71","frame":7,"start":69.129,"end":69.489,"text":"seen.","words":[{"id":"caption-word-71-0","text":"seen.","start":69.129,"end":69.459}]},{"id":"caption-group-72","frame":7,"start":69.489,"end":70.859,"text":"Signed requests,","words":[{"id":"caption-word-72-0","text":"Signed","start":69.489,"end":69.969},{"id":"caption-word-72-1","text":"requests,","start":69.969,"end":70.819}]},{"id":"caption-group-73","frame":7,"start":70.859,"end":71.949,"text":"a one-time handoff","words":[{"id":"caption-word-73-0","text":"a","start":70.859,"end":70.889},{"id":"caption-word-73-1","text":"one-time","start":70.889,"end":71.429},{"id":"caption-word-73-2","text":"handoff","start":71.429,"end":71.849}]},{"id":"caption-group-74","frame":7,"start":71.949,"end":72.689,"text":"code,","words":[{"id":"caption-word-74-0","text":"code,","start":71.949,"end":72.659}]},{"id":"caption-group-75","frame":7,"start":72.689,"end":73.889,"text":"a least-privilege","words":[{"id":"caption-word-75-0","text":"a","start":72.689,"end":72.729},{"id":"caption-word-75-1","text":"least-privilege","start":72.729,"end":73.769}]},{"id":"caption-group-76","frame":7,"start":74.059,"end":74.849,"text":"Integration.","words":[{"id":"caption-word-76-0","text":"Integration.","start":74.059,"end":74.819}]},{"id":"caption-group-77","frame":7,"start":74.849,"end":76.049,"text":"And checkout completes","words":[{"id":"caption-word-77-0","text":"And","start":74.849,"end":75.019},{"id":"caption-word-77-1","text":"checkout","start":75.019,"end":75.569},{"id":"caption-word-77-2","text":"completes","start":75.569,"end":75.929}]},{"id":"caption-group-78","frame":7,"start":76.219,"end":77.329,"text":"in Shopware never","words":[{"id":"caption-word-78-0","text":"in","start":76.219,"end":76.279},{"id":"caption-word-78-1","text":"Shopware","start":76.369,"end":76.829},{"id":"caption-word-78-2","text":"never","start":76.969,"end":77.219}]},{"id":"caption-group-79","frame":7,"start":77.329,"end":77.619,"text":"in the","words":[{"id":"caption-word-79-0","text":"in","start":77.329,"end":77.399},{"id":"caption-word-79-1","text":"the","start":77.399,"end":77.579}]},{"id":"caption-group-80","frame":7,"start":77.619,"end":78.12,"text":"agent.","words":[{"id":"caption-word-80-0","text":"agent.","start":77.619,"end":78.08}]},{"id":"caption-group-81","frame":8,"start":78.12,"end":78.62,"text":"Watch it","words":[{"id":"caption-word-81-0","text":"Watch","start":78.12,"end":78.47},{"id":"caption-word-81-1","text":"it","start":78.47,"end":78.62}]},{"id":"caption-group-82","frame":8,"start":78.62,"end":79.11,"text":"run.","words":[{"id":"caption-word-82-0","text":"run.","start":78.62,"end":79}]},{"id":"caption-group-83","frame":8,"start":79.11,"end":79.7,"text":"Search the","words":[{"id":"caption-word-83-0","text":"Search","start":79.11,"end":79.4},{"id":"caption-word-83-1","text":"the","start":79.47,"end":79.7}]},{"id":"caption-group-84","frame":8,"start":79.7,"end":80.83,"text":"live catalog.","words":[{"id":"caption-word-84-0","text":"live","start":79.7,"end":80.01},{"id":"caption-word-84-1","text":"catalog.","start":80.01,"end":80.8}]},{"id":"caption-group-85","frame":8,"start":80.83,"end":81.19,"text":"Add to","words":[{"id":"caption-word-85-0","text":"Add","start":80.83,"end":81.03},{"id":"caption-word-85-1","text":"to","start":81.03,"end":81.19}]},{"id":"caption-group-86","frame":8,"start":81.19,"end":82.37,"text":"a real Shopware","words":[{"id":"caption-word-86-0","text":"a","start":81.19,"end":81.27},{"id":"caption-word-86-1","text":"real","start":81.27,"end":81.6},{"id":"caption-word-86-2","text":"Shopware","start":81.6,"end":82.37}]},{"id":"caption-group-87","frame":8,"start":82.37,"end":82.91,"text":"cart.","words":[{"id":"caption-word-87-0","text":"cart.","start":82.37,"end":82.91}]},{"id":"caption-group-88","frame":8,"start":82.91,"end":83.45,"text":"Then Check","words":[{"id":"caption-word-88-0","text":"Then","start":82.91,"end":83.15},{"id":"caption-word-88-1","text":"Check","start":83.22,"end":83.39}]},{"id":"caption-group-89","frame":8,"start":83.45,"end":84.73,"text":"out on Shopware.","words":[{"id":"caption-word-89-0","text":"out","start":83.45,"end":83.56},{"id":"caption-word-89-1","text":"on","start":83.56,"end":83.68},{"id":"caption-word-89-2","text":"Shopware.","start":83.68,"end":84.72}]},{"id":"caption-group-90","frame":8,"start":84.73,"end":85.44,"text":"Same cart,","words":[{"id":"caption-word-90-0","text":"Same","start":84.73,"end":84.98},{"id":"caption-word-90-1","text":"cart,","start":85.06,"end":85.32}]},{"id":"caption-group-91","frame":8,"start":85.48,"end":86.46,"text":"same total in","words":[{"id":"caption-word-91-0","text":"same","start":85.48,"end":85.78},{"id":"caption-word-91-1","text":"total","start":85.78,"end":86.2},{"id":"caption-word-91-2","text":"in","start":86.2,"end":86.34}]},{"id":"caption-group-92","frame":8,"start":86.52,"end":87.12,"text":"the shop's","words":[{"id":"caption-word-92-0","text":"the","start":86.52,"end":86.62},{"id":"caption-word-92-1","text":"shop's","start":86.62,"end":87.12}]},{"id":"caption-group-93","frame":8,"start":87.12,"end":88.03,"text":"own checkout.","words":[{"id":"caption-word-93-0","text":"own","start":87.12,"end":87.37},{"id":"caption-word-93-1","text":"checkout.","start":87.37,"end":87.99}]},{"id":"caption-group-94","frame":9,"start":88.03,"end":88.49,"text":"A price","words":[{"id":"caption-word-94-0","text":"A","start":88.03,"end":88.08},{"id":"caption-word-94-1","text":"price","start":88.08,"end":88.49}]},{"id":"caption-group-95","frame":9,"start":88.49,"end":89.56,"text":"change is staged","words":[{"id":"caption-word-95-0","text":"change","start":88.49,"end":88.98},{"id":"caption-word-95-1","text":"is","start":88.99,"end":89.15},{"id":"caption-word-95-2","text":"staged","start":89.15,"end":89.44}]},{"id":"caption-group-96","frame":9,"start":89.72,"end":90.72,"text":"as a server-side","words":[{"id":"caption-word-96-0","text":"as","start":89.72,"end":89.82},{"id":"caption-word-96-1","text":"a","start":89.82,"end":89.89},{"id":"caption-word-96-2","text":"server-side","start":89.89,"end":90.72}]},{"id":"caption-group-97","frame":9,"start":90.72,"end":91.65,"text":"dry run","words":[{"id":"caption-word-97-0","text":"dry","start":90.72,"end":91.24},{"id":"caption-word-97-1","text":"run","start":91.24,"end":91.53}]},{"id":"caption-group-98","frame":9,"start":91.8,"end":92.17,"text":"over the","words":[{"id":"caption-word-98-0","text":"over","start":91.8,"end":91.96},{"id":"caption-word-98-1","text":"the","start":91.96,"end":92.17}]},{"id":"caption-group-99","frame":9,"start":92.17,"end":93.47,"text":"Admin MCP","words":[{"id":"caption-word-99-0","text":"Admin","start":92.17,"end":92.52},{"id":"caption-word-99-1","text":"MCP","start":92.6,"end":93.35}]},{"id":"caption-group-100","frame":9,"start":93.73,"end":94.26,"text":"before and","words":[{"id":"caption-word-100-0","text":"before","start":93.73,"end":94.12},{"id":"caption-word-100-1","text":"and","start":94.12,"end":94.26}]},{"id":"caption-group-101","frame":9,"start":94.26,"end":95.33,"text":"after become the","words":[{"id":"caption-word-101-0","text":"after","start":94.26,"end":94.54},{"id":"caption-word-101-1","text":"become","start":94.57,"end":95.07},{"id":"caption-word-101-2","text":"the","start":95.07,"end":95.33}]},{"id":"caption-group-102","frame":9,"start":95.33,"end":95.99,"text":"diff.","words":[{"id":"caption-word-102-0","text":"diff.","start":95.33,"end":95.96}]},{"id":"caption-group-103","frame":9,"start":95.99,"end":97.52,"text":"Nothing touches the shop","words":[{"id":"caption-word-103-0","text":"Nothing","start":95.99,"end":96.49},{"id":"caption-word-103-1","text":"touches","start":96.49,"end":96.98},{"id":"caption-word-103-2","text":"the","start":97.05,"end":97.24},{"id":"caption-word-103-3","text":"shop","start":97.24,"end":97.4}]},{"id":"caption-group-104","frame":9,"start":97.68,"end":99.19,"text":"until someone approves.","words":[{"id":"caption-word-104-0","text":"until","start":97.68,"end":97.91},{"id":"caption-word-104-1","text":"someone","start":97.91,"end":98.44},{"id":"caption-word-104-2","text":"approves.","start":98.44,"end":99.19}]},{"id":"caption-group-105","frame":9,"start":99.19,"end":99.61,"text":"Then one","words":[{"id":"caption-word-105-0","text":"Then","start":99.19,"end":99.48},{"id":"caption-word-105-1","text":"one","start":99.48,"end":99.49}]},{"id":"caption-group-106","frame":9,"start":99.76,"end":101.053,"text":"call replays it.","words":[{"id":"caption-word-106-0","text":"call","start":99.76,"end":100.01},{"id":"caption-word-106-1","text":"replays","start":100.01,"end":100.48},{"id":"caption-word-106-2","text":"it.","start":100.56,"end":100.96}]},{"id":"caption-group-107","frame":10,"start":101.053,"end":102.063,"text":"Build your own","words":[{"id":"caption-word-107-0","text":"Build","start":101.053,"end":101.443},{"id":"caption-word-107-1","text":"your","start":101.443,"end":101.783},{"id":"caption-word-107-2","text":"own","start":101.783,"end":101.943}]},{"id":"caption-group-108","frame":10,"start":102.063,"end":103.293,"text":"with Claude Code:","words":[{"id":"caption-word-108-0","text":"with","start":102.063,"end":102.343},{"id":"caption-word-108-1","text":"Claude","start":102.433,"end":102.813},{"id":"caption-word-108-2","text":"Code:","start":102.813,"end":103.293}]},{"id":"caption-group-109","frame":10,"start":103.293,"end":104.533,"text":"add the marketplace,","words":[{"id":"caption-word-109-0","text":"add","start":103.293,"end":103.453},{"id":"caption-word-109-1","text":"the","start":103.453,"end":103.653},{"id":"caption-word-109-2","text":"marketplace,","start":103.653,"end":104.533}]},{"id":"caption-group-110","frame":10,"start":104.533,"end":105.183,"text":"install the","words":[{"id":"caption-word-110-0","text":"install","start":104.533,"end":105.013},{"id":"caption-word-110-1","text":"the","start":105.013,"end":105.063}]},{"id":"caption-group-111","frame":10,"start":105.503,"end":105.793,"text":"plugin,","words":[{"id":"caption-word-111-0","text":"plugin,","start":105.503,"end":105.793}]},{"id":"caption-group-112","frame":10,"start":105.793,"end":107.373,"text":"run scaffold.","words":[{"id":"caption-word-112-0","text":"run","start":105.793,"end":106.213},{"id":"caption-word-112-1","text":"scaffold.","start":106.213,"end":107.333}]},{"id":"caption-group-113","frame":10,"start":107.373,"end":108.493,"text":"Five commands,","words":[{"id":"caption-word-113-0","text":"Five","start":107.373,"end":107.663},{"id":"caption-word-113-1","text":"commands,","start":107.663,"end":108.493}]},{"id":"caption-group-114","frame":10,"start":108.493,"end":109.263,"text":"six Shopware","words":[{"id":"caption-word-114-0","text":"six","start":108.493,"end":108.653},{"id":"caption-word-114-1","text":"Shopware","start":108.773,"end":109.143}]},{"id":"caption-group-115","frame":10,"start":109.583,"end":109.973,"text":"skills,","words":[{"id":"caption-word-115-0","text":"skills,","start":109.583,"end":109.933}]},{"id":"caption-group-116","frame":10,"start":109.973,"end":111.063,"text":"from UCP mapping","words":[{"id":"caption-word-116-0","text":"from","start":109.973,"end":110.253},{"id":"caption-word-116-1","text":"UCP","start":110.253,"end":110.493},{"id":"caption-word-116-2","text":"mapping","start":110.493,"end":111.063}]},{"id":"caption-group-117","frame":10,"start":111.063,"end":112.732,"text":"to German compliance.","words":[{"id":"caption-word-117-0","text":"to","start":111.063,"end":111.223},{"id":"caption-word-117-1","text":"German","start":111.223,"end":111.713},{"id":"caption-word-117-2","text":"compliance.","start":111.713,"end":112.682}]},{"id":"caption-group-118","frame":11,"start":112.732,"end":114.452,"text":"Tested like software:","words":[{"id":"caption-word-118-0","text":"Tested","start":112.732,"end":113.192},{"id":"caption-word-118-1","text":"like","start":113.192,"end":113.522},{"id":"caption-word-118-2","text":"software:","start":113.522,"end":114.452}]},{"id":"caption-group-119","frame":11,"start":114.452,"end":114.927,"text":"a hundred","words":[{"id":"caption-word-119-0","text":"a","start":114.452,"end":114.511},{"id":"caption-word-119-1","text":"hundred","start":114.511,"end":114.927}]},{"id":"caption-group-120","frame":11,"start":114.927,"end":115.402,"text":"and seven","words":[{"id":"caption-word-120-0","text":"and","start":114.927,"end":115.105},{"id":"caption-word-120-1","text":"seven","start":115.105,"end":115.402}]},{"id":"caption-group-121","frame":11,"start":115.402,"end":116.472,"text":"eval cases,","words":[{"id":"caption-word-121-0","text":"eval","start":115.402,"end":115.792},{"id":"caption-word-121-1","text":"cases,","start":115.832,"end":116.472}]},{"id":"caption-group-122","frame":11,"start":116.472,"end":117.242,"text":"every positive","words":[{"id":"caption-word-122-0","text":"every","start":116.472,"end":116.762},{"id":"caption-word-122-1","text":"positive","start":116.762,"end":117.242}]},{"id":"caption-group-123","frame":11,"start":117.242,"end":117.442,"text":"with a","words":[{"id":"caption-word-123-0","text":"with","start":117.242,"end":117.402},{"id":"caption-word-123-1","text":"a","start":117.402,"end":117.442}]},{"id":"caption-group-124","frame":11,"start":117.442,"end":119.372,"text":"negative twin family without","words":[{"id":"caption-word-124-0","text":"negative","start":117.442,"end":118.212},{"id":"caption-word-124-1","text":"twin","start":118.212,"end":118.692},{"id":"caption-word-124-2","text":"family","start":118.702,"end":118.972},{"id":"caption-word-124-3","text":"without","start":118.972,"end":119.322}]},{"id":"caption-group-125","frame":11,"start":119.372,"end":119.932,"text":"a size,","words":[{"id":"caption-word-125-0","text":"a","start":119.372,"end":119.402},{"id":"caption-word-125-1","text":"size,","start":119.402,"end":119.892}]},{"id":"caption-group-126","frame":11,"start":119.932,"end":120.642,"text":"discard then","words":[{"id":"caption-word-126-0","text":"discard","start":119.932,"end":120.512},{"id":"caption-word-126-1","text":"then","start":120.512,"end":120.522}]},{"id":"caption-group-127","frame":11,"start":120.872,"end":122.052,"text":"apply refused,","words":[{"id":"caption-word-127-0","text":"apply","start":120.872,"end":121.282},{"id":"caption-word-127-1","text":"refused,","start":121.282,"end":122.052}]},{"id":"caption-group-128","frame":11,"start":122.052,"end":123.842,"text":"Grundpreis byte-exact,","words":[{"id":"caption-word-128-0","text":"Grundpreis","start":122.052,"end":122.994},{"id":"caption-word-128-1","text":"byte-exact,","start":122.994,"end":123.842}]},{"id":"caption-group-129","frame":11,"start":123.842,"end":124.862,"text":"injection in a","words":[{"id":"caption-word-129-0","text":"injection","start":123.842,"end":124.552},{"id":"caption-word-129-1","text":"in","start":124.642,"end":124.782},{"id":"caption-word-129-2","text":"a","start":124.782,"end":124.862}]},{"id":"caption-group-130","frame":11,"start":124.862,"end":126.672,"text":"product description.","words":[{"id":"caption-word-130-0","text":"product","start":124.862,"end":125.462},{"id":"caption-word-130-1","text":"description.","start":125.462,"end":126.552}]},{"id":"caption-group-131","frame":11,"start":126.702,"end":127.282,"text":"CI gates","words":[{"id":"caption-word-131-0","text":"CI","start":126.702,"end":126.832},{"id":"caption-word-131-1","text":"gates","start":126.832,"end":127.232}]},{"id":"caption-group-132","frame":11,"start":127.282,"end":128.212,"text":"pass rate,","words":[{"id":"caption-word-132-0","text":"pass","start":127.282,"end":127.512},{"id":"caption-word-132-1","text":"rate,","start":127.622,"end":128.142}]},{"id":"caption-group-133","frame":11,"start":128.212,"end":128.932,"text":"cache hits","words":[{"id":"caption-word-133-0","text":"cache","start":128.212,"end":128.582},{"id":"caption-word-133-1","text":"hits","start":128.582,"end":128.932}]},{"id":"caption-group-134","frame":11,"start":128.932,"end":129.562,"text":"and cost","words":[{"id":"caption-word-134-0","text":"and","start":128.932,"end":129.192},{"id":"caption-word-134-1","text":"cost","start":129.192,"end":129.462}]},{"id":"caption-group-135","frame":11,"start":129.562,"end":130.375,"text":"per turn.","words":[{"id":"caption-word-135-0","text":"per","start":129.562,"end":129.772},{"id":"caption-word-135-1","text":"turn.","start":129.812,"end":130.282}]},{"id":"caption-group-136","frame":12,"start":130.375,"end":130.925,"text":"Shopware is","words":[{"id":"caption-word-136-0","text":"Shopware","start":130.375,"end":130.795},{"id":"caption-word-136-1","text":"is","start":130.805,"end":130.925}]},{"id":"caption-group-137","frame":12,"start":130.925,"end":132.145,"text":"the Commerce Operating","words":[{"id":"caption-word-137-0","text":"the","start":130.925,"end":131.095},{"id":"caption-word-137-1","text":"Commerce","start":131.175,"end":131.585},{"id":"caption-word-137-2","text":"Operating","start":131.585,"end":132.145}]},{"id":"caption-group-138","frame":12,"start":132.145,"end":132.945,"text":"System for","words":[{"id":"caption-word-138-0","text":"System","start":132.145,"end":132.645},{"id":"caption-word-138-1","text":"for","start":132.695,"end":132.845}]},{"id":"caption-group-139","frame":12,"start":132.945,"end":134.415,"text":"the Agent Economy.","words":[{"id":"caption-word-139-0","text":"the","start":132.945,"end":133.115},{"id":"caption-word-139-1","text":"Agent","start":133.125,"end":133.515},{"id":"caption-word-139-2","text":"Economy.","start":133.525,"end":134.365}]},{"id":"caption-group-140","frame":12,"start":134.415,"end":135.005,"text":"Next,","words":[{"id":"caption-word-140-0","text":"Next,","start":134.415,"end":135.005}]},{"id":"caption-group-141","frame":12,"start":135.005,"end":136.305,"text":"in progress:","words":[{"id":"caption-word-141-0","text":"in","start":135.005,"end":135.225},{"id":"caption-word-141-1","text":"progress:","start":135.235,"end":136.265}]},{"id":"caption-group-142","frame":12,"start":136.305,"end":138.255,"text":"SwagCommerceAgentTools,","words":[{"id":"caption-word-142-0","text":"SwagCommerceAgentTools,","start":136.305,"end":138.205}]},{"id":"caption-group-143","frame":12,"start":138.255,"end":139.345,"text":"agent tools and","words":[{"id":"caption-word-143-0","text":"agent","start":138.255,"end":138.645},{"id":"caption-word-143-1","text":"tools","start":138.645,"end":139.075},{"id":"caption-word-143-2","text":"and","start":139.085,"end":139.345}]},{"id":"caption-group-144","frame":12,"start":139.345,"end":141.935,"text":"staged changes inside Shopware.","words":[{"id":"caption-word-144-0","text":"staged","start":139.345,"end":139.785},{"id":"caption-word-144-1","text":"changes","start":139.785,"end":140.405},{"id":"caption-word-144-2","text":"inside","start":140.405,"end":140.965},{"id":"caption-word-144-3","text":"Shopware.","start":140.965,"end":141.815}]},{"id":"caption-group-145","frame":12,"start":142.055,"end":143.475,"text":"Repository link in the","words":[{"id":"caption-word-145-0","text":"Repository","start":142.055,"end":142.775},{"id":"caption-word-145-1","text":"link","start":142.775,"end":143.075},{"id":"caption-word-145-2","text":"in","start":143.075,"end":143.225},{"id":"caption-word-145-3","text":"the","start":143.225,"end":143.415}]},{"id":"caption-group-146","frame":12,"start":143.475,"end":144.375,"text":"description.","words":[{"id":"caption-word-146-0","text":"description.","start":143.475,"end":144.325}]},{"id":"caption-group-147","frame":12,"start":144.375,"end":145.925,"text":"Five commands and it","words":[{"id":"caption-word-147-0","text":"Five","start":144.375,"end":144.705},{"id":"caption-word-147-1","text":"commands","start":144.705,"end":145.455},{"id":"caption-word-147-2","text":"and","start":145.455,"end":145.735},{"id":"caption-word-147-3","text":"it","start":145.735,"end":145.925}]},{"id":"caption-group-148","frame":12,"start":145.925,"end":146.725,"text":"runs.","words":[{"id":"caption-word-148-0","text":"runs.","start":145.925,"end":146.605}]}];
+  var DURATION = 149.338;
+
+  (function () {
+    var stage = document.getElementById("caption-stage");
+
+    // build DOM: one .caption-group per group, .caption-word per word
+    GROUPS.forEach(function (group, g) {
+      var groupEl = document.createElement("div");
+      groupEl.className = "caption-group";
+      groupEl.id = "caption-group-" + g;
+      var pill = document.createElement("div");
+      pill.className = "caption-pill";
+      var line = document.createElement("div");
+      line.className = "caption-line";
+      (group.words || []).forEach(function (w, i) {
+        var span = document.createElement("span");
+        span.className = "caption-word";
+        span.id = "caption-word-" + g + "-" + i;
+        span.textContent = String(w.text);
+        line.appendChild(span);
+      });
+      pill.appendChild(line);
+      groupEl.appendChild(pill);
+      stage.appendChild(groupEl);
+    });
+
+    window.__timelines = window.__timelines || {};
+    var tl = gsap.timeline({ paused: true });
+
+    GROUPS.forEach(function (group, g) {
+      var groupEl = document.getElementById("caption-group-" + g);
+      var words = group.words || [];
+      var next = GROUPS[g + 1];
+      var isLast = g === GROUPS.length - 1;
+      var start = Math.max(0, Number(group.start));
+      var end = isLast ? DURATION : Math.min(Number(next.start), Number(group.end) + 0.3);
+      if (end <= start) end = start + 0.01;
+
+      // group on/off — exactly one group visible at a time
+      tl.set(groupEl, { opacity: 1 }, start);
+      tl.set(groupEl, { opacity: 0 }, end);
+
+      // 3-state karaoke via className SETS — seek-safe (gsap.set applies on the
+      // engine's frame-by-frame seek; .call callbacks would NOT fire).
+      words.forEach(function (w, i) {
+        var el = document.getElementById("caption-word-" + g + "-" + i);
+        var at = Math.max(start, Number(w.start));
+        tl.set(el, { className: "caption-word" }, start); // upcoming (also resets on reverse-seek)
+        tl.set(el, { className: "caption-word is-active" }, at); // current
+        tl.fromTo(el, { scale: 0.98 }, { scale: 1, duration: 0.16, ease: "power1.out" }, at);
+        if (i + 1 < words.length) {
+          var nextAt = Math.max(start, Number(words[i + 1].start));
+          tl.set(el, { className: "caption-word is-spoken" }, nextAt); // demote when next activates
+        }
+      });
+      if (words.length) {
+        var lastEl = document.getElementById("caption-word-" + g + "-" + (words.length - 1));
+        var lastSpoken = Math.min(end, Number(words[words.length - 1].end) + 0.1);
+        tl.set(lastEl, { className: "caption-word is-spoken" }, lastSpoken);
+      }
+    });
+
+    // full-span anchor so the sub-comp timeline spans the whole video
+    tl.to({}, { duration: DURATION }, 0);
+    window.__timelines["captions"] = tl;
+  })();
+</script>
+
+<style>
+  .caption-line { line-height: 1.1 !important; }
+</style>
+</template>

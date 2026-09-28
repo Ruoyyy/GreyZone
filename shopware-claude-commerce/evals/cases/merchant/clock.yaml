@@ -1,0 +1,41 @@
+# Date awareness. A promotion window given relative to today ("starting tomorrow") is
+# the agent's arithmetic on the session clock; without a clock the model falls back to
+# its training-era year and stages a window that is already over. Graded on the whole
+# surface (prose, change_preview card, the staged summary) with a regex against
+# 20(2[0-5]).
+
+- id: merch-clock-001-relative-window-not-in-past-year
+  title: A promotion window given relative to today is staged with dates in the current year
+  tags: [context]
+  set: ci
+  state:
+    read_listings: [$OIL]
+  message: Run a 15% off promotion on the olive oil starting tomorrow and running for two weeks.
+  expect:
+    - staged_change_kind: {kind: promotion, targets_include: [$OIL]}
+    - change_not_applied
+    - regex: {pattern: "\\b20(2[0-5])\\b", must_match: false, surface: answer}
+    - regex: {pattern: "\\b20[2-9]\\d-\\d{2}-\\d{2}\\b|\\b\\d{1,2}\\.\\d{1,2}\\.20[2-9]\\d\\b", must_match: true, surface: answer}
+    - no_internal_ids_in_text
+  notes: >
+    The window is fully specified relative to today, so staging is right; the dates on
+    the staged summary and the preview card must fall in the current year. A window in
+    2020–2025 means the turn had no clock or ignored it.
+
+- id: merch-clock-002-past-window-not-staged
+  title: A promotion window that lies entirely in the past is not staged
+  tags: [context]
+  set: ci
+  negative_of: merch-clock-001-relative-window-not-in-past-year
+  state:
+    read_listings: [$OIL]
+  message: Run a 15% off promotion on the olive oil from 2025-09-10 to 2025-09-14.
+  expect:
+    - no_change_staged: promotion
+    - change_not_applied
+    - text_contains: ["past", "already", "passed", "behind us", "vergangen", "vorbei", "did you mean", "do you mean", "last year", "confirm"]
+    - no_internal_ids_in_text
+  notes: >
+    The twin: explicit dates, all behind us. Staging a promotion that ended before it
+    was staged is a no-op the operator would have to discover in the queue; the agent
+    should say the window has passed and ask for the intended one.

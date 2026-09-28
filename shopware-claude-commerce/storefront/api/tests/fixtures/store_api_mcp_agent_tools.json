@@ -1,0 +1,365 @@
+{
+  "_note": "Live tools/list and tools/call answers from /store-api/_mcp (SwagCommerceAgentTools 0.1.x on Shopware 6.7.13.0). Product, category, sales-channel and shipping-method ids are remapped to the replay's constants (storefront/api/tests/replay.py); everything else is byte for byte what the shop answered. The Storefront channel runs en-GB, hence the English disclosure copy.",
+  "endpoint": "/store-api/_mcp",
+  "shopware": "6.7.13.0 (dockware/shopware:6.7.13.0, MCP_SERVER=1)",
+  "recorded": "2026-09-03",
+  "protocolVersion": "2025-11-25",
+  "serverInfo": {
+    "name": "Shopware Store API",
+    "version": "1.0.0",
+    "description": "Shopware Store API MCP server for sales-channel and customer-context operations."
+  },
+  "tools": [
+    {
+      "name": "shopware-store-api-context",
+      "title": "Store API Context",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "description": "Read the current Store API sales-channel context for this MCP session, including sales channel, language, currency, context token, and whether a customer is authenticated."
+    },
+    {
+      "name": "shopping-policy-search",
+      "title": "Shop Policy Search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 5
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "description": "Answers shopper questions about the shop's own rules: return and withdrawal period, shipping conditions, payment options, terms and conditions, privacy, imprint, help and FAQ. Searches the text of the sales channel's footer and service pages plus published landing pages and returns the relevant passages. Only for the shop's policies; product questions are answered by the catalog tools."
+    },
+    {
+      "name": "shopping-disclosure",
+      "title": "Product Disclosure",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "description": "Legally required price and delivery statements for one product, authored by the shop: unit price, base price per reference unit (Grundpreis, e.g. \"2,50 € / 1 l\"), delivery time, VAT note and shipping-cost note with the shop's shipping page. Relay the returned \"text\" values verbatim whenever a price or delivery time is shown; never paraphrase them. Needs a product UUID from a previous search."
+    },
+    {
+      "name": "shopping-fulfillment-options",
+      "title": "Fulfillment Options",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "productIds": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "productIds"
+        ]
+      },
+      "description": "How and when the given products can be delivered: every shipping method available in this sales channel with its fee and the expected delivery time per product. Use it for \"how long does shipping take\", \"what does delivery cost\" and \"which carriers are available\". Read-only; changing the selected shipping method is done in the checkout, not here. Pass productIds as a JSON array or comma-separated UUIDs from a previous search."
+    }
+  ],
+  "responses": {
+    "shopping-policy-search": {
+      "arguments": {
+        "query": "Widerruf",
+        "limit": 5
+      },
+      "result": {
+        "success": true,
+        "data": [
+          {
+            "policy_id": "99999999999999999999999999999901",
+            "title": "Widerrufsbelehrung / Rückgabe",
+            "category": "footer-navigation",
+            "content": "Widerrufsrecht\nSie haben das Recht, binnen 14 Tagen ohne Angabe von Gründen diesen Vertrag zu widerrufen. Die Widerrufsfrist beträgt vierzehn Tage ab dem Tag, an dem Sie oder ein von Ihnen benannter Dritter die Waren in Besitz genommen haben.\nRückgabe\nSenden Sie die Ware innerhalb von 14 Tagen nach dem Widerruf an uns zurück. Die Rücksendung ist für Sie kostenlos; ein Retourenlabel erhalten Sie per E-Mail. Die Rückerstattung erfolgt innerhalb von 14 Tagen nach Eingang der Ware über das ursprüngliche Zahlungsmittel.",
+            "url": null,
+            "score": 9.0
+          }
+        ],
+        "_meta": {
+          "query": "Widerruf",
+          "pagesSearched": 5,
+          "salesChannelId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0"
+        }
+      }
+    },
+    "shopping-policy-search:kontakt": {
+      "arguments": {
+        "query": "Kontakt",
+        "limit": 5
+      },
+      "result": {
+        "success": true,
+        "data": [
+          {
+            "policy_id": "fe86a1214ed0435ab8b23628b51c8845",
+            "title": "Kontakt",
+            "category": "service-navigation",
+            "content": "Kontakt\nSie erreichen unseren Kundenservice Montag bis Freitag von 9 bis 17 Uhr unter +49 30 1234567 oder per E-Mail an service@example.com. Für Fragen zu einer Bestellung halten Sie bitte Ihre Bestellnummer bereit.",
+            "url": null,
+            "score": 6.0
+          }
+        ],
+        "_meta": {
+          "query": "Kontakt",
+          "pagesSearched": 5,
+          "salesChannelId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0"
+        }
+      }
+    },
+    "shopping-disclosure:oil": {
+      "arguments": {
+        "productId": "55555555555555555555555555555555"
+      },
+      "result": {
+        "success": true,
+        "data": {
+          "productId": "55555555555555555555555555555555",
+          "rows": [
+            {
+              "key": "price",
+              "label": "Price",
+              "value": "€12.90",
+              "text": "€12.90",
+              "url": null
+            },
+            {
+              "key": "base_price",
+              "label": "Base price",
+              "value": "€25.80 / 1 Liter",
+              "text": "Base price: €25.80 / 1 Liter",
+              "url": null
+            },
+            {
+              "key": "delivery_time",
+              "label": "Delivery time",
+              "value": "2-4 Tage",
+              "text": "Delivery time: 2-4 Tage",
+              "url": null
+            },
+            {
+              "key": "tax",
+              "label": "VAT",
+              "value": "incl. VAT",
+              "text": "All prices incl. VAT",
+              "url": null
+            },
+            {
+              "key": "shipping",
+              "label": "Shipping costs",
+              "value": "plus shipping costs",
+              "text": "All prices plus shipping costs",
+              "url": null
+            }
+          ]
+        },
+        "_meta": {
+          "locale": "en-GB",
+          "currency": "EUR",
+          "taxState": "gross"
+        }
+      }
+    },
+    "shopping-disclosure:family": {
+      "arguments": {
+        "productId": "11111111111111111111111111111111"
+      },
+      "result": {
+        "success": true,
+        "data": {
+          "productId": "22222222222222222222222222222222",
+          "rows": [
+            {
+              "key": "price",
+              "label": "Price",
+              "value": "€29.99",
+              "text": "€29.99",
+              "url": null
+            },
+            {
+              "key": "delivery_time",
+              "label": "Delivery time",
+              "value": "2-4 Tage",
+              "text": "Delivery time: 2-4 Tage",
+              "url": null
+            },
+            {
+              "key": "tax",
+              "label": "VAT",
+              "value": "incl. VAT",
+              "text": "All prices incl. VAT",
+              "url": null
+            },
+            {
+              "key": "shipping",
+              "label": "Shipping costs",
+              "value": "plus shipping costs",
+              "text": "All prices plus shipping costs",
+              "url": null
+            }
+          ]
+        },
+        "_meta": {
+          "locale": "en-GB",
+          "currency": "EUR",
+          "taxState": "gross"
+        }
+      }
+    },
+    "shopping-fulfillment-options": {
+      "arguments": {
+        "productIds": "[\"55555555555555555555555555555555\", \"22222222222222222222222222222222\"]"
+      },
+      "result": {
+        "success": true,
+        "data": {
+          "options": [
+            {
+              "method": "shipping",
+              "shippingMethodId": "aaaa0000000000000000000000000001",
+              "name": "Standard",
+              "description": null,
+              "selected": true,
+              "eta": {
+                "min": 2,
+                "max": 4,
+                "unit": "day",
+                "text": "2-4 Tage"
+              },
+              "shippingTime": {
+                "min": 1,
+                "max": 3,
+                "unit": "day",
+                "text": "1-3 days"
+              },
+              "fee": {
+                "amount": 4.9,
+                "currency": "EUR",
+                "estimated": true
+              },
+              "location": null,
+              "products": [
+                {
+                  "productId": "55555555555555555555555555555555",
+                  "eta": {
+                    "min": 2,
+                    "max": 4,
+                    "unit": "day",
+                    "text": "2-4 Tage"
+                  }
+                },
+                {
+                  "productId": "22222222222222222222222222222222",
+                  "eta": {
+                    "min": 2,
+                    "max": 4,
+                    "unit": "day",
+                    "text": "2-4 Tage"
+                  }
+                }
+              ]
+            },
+            {
+              "method": "shipping",
+              "shippingMethodId": "aaaa0000000000000000000000000002",
+              "name": "Express",
+              "description": null,
+              "selected": false,
+              "eta": {
+                "min": 2,
+                "max": 4,
+                "unit": "day",
+                "text": "2-4 Tage"
+              },
+              "shippingTime": {
+                "min": 1,
+                "max": 2,
+                "unit": "day",
+                "text": "1-2 Tage"
+              },
+              "fee": {
+                "amount": 9.9,
+                "currency": "EUR",
+                "estimated": true
+              },
+              "location": null,
+              "products": [
+                {
+                  "productId": "55555555555555555555555555555555",
+                  "eta": {
+                    "min": 2,
+                    "max": 4,
+                    "unit": "day",
+                    "text": "2-4 Tage"
+                  }
+                },
+                {
+                  "productId": "22222222222222222222222222222222",
+                  "eta": {
+                    "min": 2,
+                    "max": 4,
+                    "unit": "day",
+                    "text": "2-4 Tage"
+                  }
+                }
+              ]
+            }
+          ],
+          "products": [
+            {
+              "productId": "55555555555555555555555555555555",
+              "name": "Extra Virgin Olive Oil 500 ml",
+              "shippingFree": false,
+              "deliveryTime": {
+                "min": 2,
+                "max": 4,
+                "unit": "day",
+                "text": "2-4 Tage"
+              }
+            },
+            {
+              "productId": "22222222222222222222222222222222",
+              "name": "Claude Commerce T-Shirt — S",
+              "shippingFree": false,
+              "deliveryTime": {
+                "min": 2,
+                "max": 4,
+                "unit": "day",
+                "text": "2-4 Tage"
+              }
+            }
+          ]
+        },
+        "_meta": {
+          "salesChannelId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0",
+          "selectedShippingMethodId": "aaaa0000000000000000000000000001",
+          "unknownProductIds": []
+        }
+      }
+    },
+    "shopping-disclosure:unknown": {
+      "arguments": {
+        "productId": "00000000000000000000000000000000"
+      },
+      "result": {
+        "success": false,
+        "error": "Product \"00000000000000000000000000000000\" is not available in this sales channel: Could not find product with id \"00000000000000000000000000000000\""
+      },
+      "isError": false
+    }
+  }
+}

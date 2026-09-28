@@ -1,0 +1,39 @@
+parameters:
+    level: max
+    phpVersion: 80200
+    treatPhpDocTypesAsCertain: false
+    reportUnmatchedIgnoredErrors: true
+    checkFunctionNameCase: true
+    tmpDir: .phpstan.cache
+    paths:
+        - src
+        - tests
+    bootstrapFiles:
+        - tests/TestBootstrap.php
+    scanFiles:
+        # Shopware < 6.7.14 does not ship the attribute; the shim mirrors trunk.
+        - tests/compat/McpToolGroup.php
+    ignoreErrors:
+        # src/ is clean at level max. The tests decode the tools' JSON envelopes
+        # with json_decode() and assert on nested keys; at level max every such
+        # access is "mixed". Typing those fixtures would only duplicate the
+        # response shapes the assertions already pin down, so the mixed-derived
+        # identifiers are ignored for tests only.
+        -
+            identifier: offsetAccess.nonOffsetAccessible
+            path: tests/*
+        -
+            identifier: argument.type
+            path: tests/*
+        -
+            identifier: return.type
+            path: tests/*
+        -
+            identifier: method.nonObject
+            path: tests/*
+        -
+            identifier: cast.string
+            path: tests/*
+        -
+            identifier: preInc.type
+            path: tests/*

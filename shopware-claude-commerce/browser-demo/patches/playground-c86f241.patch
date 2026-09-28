@@ -1,0 +1,586 @@
+diff --git a/package.json b/package.json
+index 99cf56d..cd6b143 100644
+--- a/package.json
++++ b/package.json
+@@ -19,7 +19,7 @@
+     "@php-wasm/universal": "^3.1.52",
+     "@php-wasm/web": "^3.1.52",
+     "esbuild": "^0.28.2",
+-    "lite4mariadb": "^0.1.1"
++    "lite4mariadb": "^0.1.2"
+   },
+   "overrides": {
+     "fs-ext-extra-prebuilt": "file:./shims/fs-ext-stub"
+diff --git a/php/auto_prepend.php b/php/auto_prepend.php
+index d20f9bd..c145853 100644
+--- a/php/auto_prepend.php
++++ b/php/auto_prepend.php
+@@ -5,6 +5,12 @@
+  */
+ @ini_set('memory_limit', '512M');
+ @ini_set('max_execution_time', '0');
++// One PHP instance serves every request. A previous storefront/error handler
++// that called session_start() leaves PHP_SESSION_ACTIVE; the next request then
++// 400s with "Failed to start the session: already started".
++if (\function_exists('session_status') && \session_status() === \PHP_SESSION_ACTIVE) {
++    \session_write_close();
++}
+ $_SERVER['PROJECT_ROOT'] = '/shopware';
+ $_ENV['PROJECT_ROOT'] = '/shopware';
+ putenv('PROJECT_ROOT=/shopware');
+@@ -67,3 +73,33 @@ if (!function_exists('mariadblite_rpc')) {
+         return mariadblite_rpc(['op' => 'query', 'sql' => $sql]);
+     }
+ }
++
++// GitHub project Pages hosts the shop under /<repo>/. PHP-WASM SCRIPT_NAME is
++// still /index.php; tell Symfony the subdirectory so RequestTransformer matches
++// sales_channel_domain URLs that include that path.
++$playgroundPublicBase = '';
++if (\is_file('/internal/playground_public_base')) {
++    $playgroundPublicBase = \rtrim(\trim((string) \file_get_contents('/internal/playground_public_base')), '/');
++    if ($playgroundPublicBase !== '' && $playgroundPublicBase[0] !== '/') {
++        $playgroundPublicBase = '/' . $playgroundPublicBase;
++    }
++}
++$playgroundUri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
++if (\preg_match('#^((?:/[^/?]+)*)/index\\.php(/[^?]*)?(\\?.*)?$#', $playgroundUri, $playgroundUriMatch) === 1) {
++    $playgroundPrefix = $playgroundUriMatch[1] ?? '';
++    $playgroundRest = $playgroundUriMatch[2] ?? '';
++    $playgroundQuery = $playgroundUriMatch[3] ?? '';
++    $_SERVER['REQUEST_URI'] = ($playgroundPrefix !== '' ? $playgroundPrefix : '') . ($playgroundRest !== '' ? $playgroundRest : '/') . $playgroundQuery;
++    if ($_SERVER['REQUEST_URI'] === '') {
++        $_SERVER['REQUEST_URI'] = '/';
++    }
++}
++if (($_SERVER['PATH_INFO'] ?? '') === '/index.php' || ($playgroundPublicBase !== '' && ($_SERVER['PATH_INFO'] ?? '') === $playgroundPublicBase . '/index.php')) {
++    $_SERVER['PATH_INFO'] = '/';
++}
++if ($playgroundPublicBase !== '') {
++    $playgroundScript = (string) ($_SERVER['SCRIPT_NAME'] ?? '');
++    if ($playgroundScript === '/index.php' || $playgroundScript === 'index.php') {
++        $_SERVER['SCRIPT_NAME'] = $playgroundPublicBase . '/index.php';
++    }
++}
+diff --git a/src/app-route.mjs b/src/app-route.mjs
+index 1f7ffbd..da232e4 100644
+--- a/src/app-route.mjs
++++ b/src/app-route.mjs
+@@ -2,7 +2,41 @@
+  * Real static assets. Do not treat SEO suffixes like SWDEMO10007.1 as files.
+  */
+ const STATIC_FILE_EXT =
+-  /\.(?:html?|js|mjs|cjs|css|json|map|wasm|svg|png|jpe?g|gif|webp|ico|avif|woff2?|ttf|otf|eot|zip|gz|dat|so|la|txt|xml|webmanifest)$/i;
++  /\.(?:html?|js|mjs|cjs|css|json|map|wasm|svg|png|jpe?g|gif|webp|ico|avif|woff2?|ttf|otf|eot|zip|gz|dat|so|la|txt|md|xml|webmanifest|whl|tar|py)$/i;
++
++/**
++ * Static tree of the demo shell that embeds this playground (Vite build, Pyodide
++ * distribution, Python wheels, agent host). Never a PHP route.
++ */
++export const DEMO_STATIC_PREFIX = '/demo/';
++/** The demo's same-origin Anthropic proxy (browser-demo/server) — never a PHP route. */
++export const DEMO_PROXY_PREFIX = '/api/anthropic/';
++
++/**
++ * GitHub project Pages serves the demo under /<repo>/, not at the origin root.
++ * assemble-site.mjs writes self.__DEMO_PUBLIC_BASE__ into the bundled workers.
++ */
++export function demoPublicBase() {
++  const raw =
++    typeof self !== 'undefined' && typeof self.__DEMO_PUBLIC_BASE__ === 'string' ? self.__DEMO_PUBLIC_BASE__ : '';
++  if (!raw || raw === '/') return '';
++  return raw.endsWith('/') ? raw.slice(0, -1) : raw;
++}
++
++export function withoutPublicBase(pathname) {
++  const base = demoPublicBase();
++  if (!base || !pathname) return pathname;
++  if (pathname === base) return '/';
++  if (pathname.startsWith(base + '/')) return pathname.slice(base.length) || '/';
++  return pathname;
++}
++
++export function withPublicBase(pathname) {
++  const base = demoPublicBase();
++  if (!base || !pathname) return pathname;
++  if (pathname === base || pathname.startsWith(base + '/')) return pathname;
++  return base + (pathname.startsWith('/') ? pathname : '/' + pathname);
++}
+ 
+ /**
+  * Shopware storefront/admin assets that live per version under
+@@ -12,12 +46,14 @@ const STATIC_FILE_EXT =
+ export const VERSIONED_ASSET_PREFIXES = ['/bundles/', '/theme/', '/media/', '/thumbnail/'];
+ 
+ export function isVersionedAssetPath(pathname) {
++  pathname = withoutPublicBase(pathname);
+   return VERSIONED_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+ }
+ 
+ export function versionedAssetPath(pathname, version) {
++  pathname = withoutPublicBase(pathname);
+   if (!version || !isVersionedAssetPath(pathname)) return null;
+-  return '/versions/' + encodeURIComponent(version) + '/assets' + pathname;
++  return withPublicBase('/versions/' + encodeURIComponent(version) + '/assets' + pathname);
+ }
+ 
+ /** The shell marks the active Shopware version in a cookie so the service
+@@ -40,6 +76,7 @@ export function versionFromCookieHeader(header) {
+  * Paths the static host should serve as files vs. PHP front-controller routes.
+  */
+ export function isStaticPlaygroundPath(pathname) {
++  pathname = withoutPublicBase(pathname);
+   if (
+     pathname.startsWith('/mariadb/') ||
+     pathname.startsWith('/versions/') ||
+@@ -47,6 +84,8 @@ export function isStaticPlaygroundPath(pathname) {
+     pathname.startsWith('/php/') ||
+     pathname.startsWith('/src/') ||
+     pathname.startsWith('/node_modules/') ||
++    pathname.startsWith(DEMO_STATIC_PREFIX) ||
++    pathname.startsWith(DEMO_PROXY_PREFIX) ||
+     isVersionedAssetPath(pathname) ||
+     pathname === '/app.js' ||
+     pathname === '/browser-worker.js' ||
+@@ -59,6 +98,7 @@ export function isStaticPlaygroundPath(pathname) {
+ }
+ 
+ export function isPhpAppRoute(pathname) {
++  pathname = withoutPublicBase(pathname);
+   if (!pathname || pathname === '/') return false;
+   return !isStaticPlaygroundPath(pathname);
+ }
+@@ -67,6 +107,7 @@ export function isPhpAppRoute(pathname) {
+  * Paths the Service Worker must never steal (playground engine + wasm).
+  */
+ export function isEngineBypassPath(pathname) {
++  pathname = withoutPublicBase(pathname);
+   return (
+     pathname === '/app.js' ||
+     pathname === '/browser-worker.js' ||
+@@ -78,6 +119,8 @@ export function isEngineBypassPath(pathname) {
+     pathname.startsWith('/php/') ||
+     pathname.startsWith('/src/') ||
+     pathname.startsWith('/node_modules/') ||
++    pathname.startsWith(DEMO_STATIC_PREFIX) ||
++    pathname.startsWith(DEMO_PROXY_PREFIX) ||
+     // Vite dev server internals (/@vite/client, /@id/, /@fs/) — dev only,
+     // nothing requests these from the built bundle.
+     pathname.startsWith('/@')
+@@ -89,9 +132,13 @@ export function isEngineBypassPath(pathname) {
+  * `/` is PHP only inside the nested iframe; the top-level tab is the shell.
+  */
+ export function isShopwarePhpPath(pathname, nested = false) {
++  pathname = withoutPublicBase(pathname);
+   if (pathname === '/index.php' || pathname.startsWith('/index.php/')) {
+     return true;
+   }
++  if (pathname.startsWith(DEMO_PROXY_PREFIX)) {
++    return false;
++  }
+   // Shopware API routes may end in a static-looking extension
+   // (e.g. /api/_info/entity-schema.json) but are PHP controllers.
+   if (pathname.startsWith('/api/')) {
+@@ -106,10 +153,53 @@ export function isShopwarePhpPath(pathname, nested = false) {
+   return true;
+ }
+ 
++/**
++ * Service worker → page postMessage. `Client.postMessage` in current Chromium
++ * takes `{ transfer }`; the legacy transfer-array second argument throws in
++ * some embeds and the fetch fails in 1–2 ms (`phpMessages=0`).
++ */
++export function postToWindowClient(client, message, transfer = []) {
++  if (!client) throw new Error('playground page is not available for PHP routing');
++  try {
++    client.postMessage(message, { transfer });
++  } catch {
++    client.postMessage(message, transfer);
++  }
++}
++
++/**
++ * Headers safe to forward into PHP WASM. Browser navigations (the storefront
++ * iframe) send hop-by-hop and X-Forwarded-* fields that make Symfony compute
++ * a pathless request URL; Shopware then throws SalesChannelMappingException
++ * (storefront 400 + theme CSS at the origin root).
++ */
++const PHP_HOP_BY_HOP = new Set([
++  'connection',
++  'keep-alive',
++  'proxy-authenticate',
++  'proxy-authorization',
++  'te',
++  'trailers',
++  'transfer-encoding',
++  'upgrade',
++  'accept-encoding',
++]);
++
++export function phpRequestHeaders(headers) {
++  const out = {};
++  if (!headers || typeof headers !== 'object') return out;
++  for (const [key, value] of Object.entries(headers)) {
++    const name = String(key).toLowerCase();
++    if (PHP_HOP_BY_HOP.has(name) || name.startsWith('x-forwarded-')) continue;
++    out[key] = value;
++  }
++  return out;
++}
++
+ export function initialShopwarePath() {
+   if (typeof location === 'undefined') return '/';
+-  const path = location.pathname + location.search;
++  const path = withoutPublicBase(location.pathname) + location.search;
+   if (path === '/' || path === '') return '/';
+-  if (isStaticPlaygroundPath(location.pathname)) return '/';
++  if (isStaticPlaygroundPath(withoutPublicBase(location.pathname))) return '/';
+   return path;
+ }
+diff --git a/src/browser-runtime.mjs b/src/browser-runtime.mjs
+index c465d23..c9197ef 100644
+--- a/src/browser-runtime.mjs
++++ b/src/browser-runtime.mjs
+@@ -13,6 +13,8 @@ import { Lite4MariaDB } from '/mariadb/index.mjs';
+ import { attachSqlBridge } from './sql-bridge.mjs';
+ import { installSpawnStub } from './spawn-stub.mjs';
+ import { seedShopware } from './db-seed.mjs';
++import { demoPublicBase, withPublicBase } from './app-route.mjs';
++import { patchShopwareIndexAppUrl } from './front-controller.mjs';
+ 
+ export const SHOPWARE_DOCUMENT_ROOT = '/shopware/public';
+ export const SHOPWARE_PUBLIC_ROUTE = '/';
+@@ -44,7 +46,7 @@ export async function createPlayground(options = {}) {
+     }));
+ 
+   await seedShopware(db, {
+-    dumpSql: options.dumpSql || (await loadInstalledDump(options.dumpUrl || '/shopware.sql.gz')),
++    dumpSql: options.dumpSql || (await loadInstalledDump(options.dumpUrl || withPublicBase('/shopware.sql.gz'))),
+     absoluteUrl:
+       options.absoluteUrl || (typeof location !== 'undefined' ? location.origin : ''),
+     skipDump: options.skipDump,
+@@ -55,11 +57,13 @@ export async function createPlayground(options = {}) {
+   await installSpawnStub(php);
+   attachSqlBridge(php, db);
+ 
+-  const prependRes = await fetch('/php/auto_prepend.php');
++  const prependRes = await fetch(withPublicBase('/php/auto_prepend.php'));
+   php.writeFile('/internal/playground_prepend.php', await prependRes.text());
++  php.writeFile('/internal/playground_public_base', demoPublicBase());
++  php.writeFile('/internal/openssl.cnf', '[req]\ndistinguished_name = dn\n[dn]\n');
+   php.writeFile('/internal/playground_skip_heavy_migrations', '1');
+ 
+-  const zipRes = await fetch(options.zipUrl || '/shopware.zip');
++  const zipRes = await fetch(options.zipUrl || withPublicBase('/shopware.zip'));
+   if (!zipRes.ok) {
+     throw new Error('Shopware zip missing at ' + (options.zipUrl || '/shopware.zip') + '; run node src/copy-assets.mjs');
+   }
+@@ -93,6 +97,15 @@ export async function createPlayground(options = {}) {
+     }
+     php.writeFile('/shopware/.env.local', env);
+   }
++  try {
++    const indexPhp = php.readFileAsText('/shopware/public/index.php');
++    const patched = patchShopwareIndexAppUrl(indexPhp);
++    if (patched.changed) {
++      php.writeFile('/shopware/public/index.php', patched.source);
++    }
++  } catch {
++    /* zip may omit public/index.php during seed-only boots */
++  }
+   php.chdir('/shopware/public');
+ 
+   const handler = new PHPRequestHandler({
+diff --git a/src/front-controller.mjs b/src/front-controller.mjs
+new file mode 100644
+index 0000000..0c91136
+--- /dev/null
++++ b/src/front-controller.mjs
+@@ -0,0 +1,39 @@
++/**
++ * Shopware's WASM front controller (`public/index.php`) overwrites APP_URL to
++ * `scheme://host` on every request. GitHub project Pages serves the shop under
++ * `/<repo>`; without that path, RequestTransformer cannot match
++ * `sales_channel_domain` (storefront 400) and theme CSS is emitted at the
++ * origin root (`/theme/…/all.css` → 404).
++ */
++
++export const APP_URL_ORIGIN_ONLY = "$appUrl = $scheme . '://' . $host;";
++
++export const APP_URL_WITH_PUBLIC_BASE = `$appUrl = $scheme . '://' . $host;
++    if (\\is_file('/internal/playground_public_base')) {
++        $base = \\rtrim(\\trim((string) \\file_get_contents('/internal/playground_public_base')), '/');
++        if ($base !== '' && $base[0] !== '/') {
++            $base = '/' . $base;
++        }
++        if ($base !== '') {
++            $appUrl .= $base;
++        }
++    }`;
++
++/** True when index.php already appends the playground public base to APP_URL. */
++export function indexPhpKeepsPublicBase(source) {
++  return typeof source === 'string' && source.includes('playground_public_base') && source.includes('$appUrl .= $base');
++}
++
++/**
++ * @param {string} source
++ * @returns {{ source: string, changed: boolean }}
++ */
++export function patchShopwareIndexAppUrl(source) {
++  if (typeof source !== 'string' || indexPhpKeepsPublicBase(source)) {
++    return { source, changed: false };
++  }
++  if (!source.includes(APP_URL_ORIGIN_ONLY)) {
++    return { source, changed: false };
++  }
++  return { source: source.replace(APP_URL_ORIGIN_ONLY, APP_URL_WITH_PUBLIC_BASE), changed: true };
++}
+diff --git a/src/frontend-assets.mjs b/src/frontend-assets.mjs
+index 627c231..9f71148 100644
+--- a/src/frontend-assets.mjs
++++ b/src/frontend-assets.mjs
+@@ -45,6 +45,7 @@ export async function runShopwareConsole(pg, input) {
+       $_SERVER['APP_ENV'] = 'prod';
+       $_SERVER['APP_DEBUG'] = '0';
+       $classLoader = require '/shopware/vendor/autoload.php';
++      (new Symfony\\Component\\Dotenv\\Dotenv())->usePutenv()->bootEnv('/shopware/.env');
+       $kernel = Shopware\\Core\\Framework\\Adapter\\Kernel\\KernelFactory::create(
+         environment: 'prod',
+         debug: false,
+diff --git a/src/php-web-runtime.mjs b/src/php-web-runtime.mjs
+index 090505a..9f2b102 100644
+--- a/src/php-web-runtime.mjs
++++ b/src/php-web-runtime.mjs
+@@ -9,6 +9,9 @@ export async function loadPlaygroundWebRuntime() {
+     globalThis.setImmediate = (fn) => setTimeout(fn, 0);
+   }
+   return loadWebRuntime('8.4', {
++    // OpenSSL 1.1.1 in WASM has no openssl.cnf; without OPENSSL_CONF pointing at a file
++    // (written to MEMFS by browser-runtime.mjs) openssl_pkey_new() fails with fopen errors.
++    emscriptenOptions: { ENV: { OPENSSL_CONF: '/internal/openssl.cnf' } },
+     extensions: ['intl'],
+   });
+ }
+diff --git a/src/runtime.mjs b/src/runtime.mjs
+index c3366d7..83a937f 100644
+--- a/src/runtime.mjs
++++ b/src/runtime.mjs
+@@ -33,7 +33,7 @@ export const SHOPWARE_DUMP_PATH = versionDumpPath(publicDir, mainTreeVersion);
+ async function loadPhpRuntime() {
+   const { loadNodeRuntime } = await import('@php-wasm/node');
+   return loadNodeRuntime('8.4', {
+-    emscriptenOptions: { processId: 1 },
++    emscriptenOptions: { processId: 1, ENV: { OPENSSL_CONF: '/internal/openssl.cnf' } },
+     extensions: ['intl'],
+   });
+ }
+@@ -43,6 +43,7 @@ async function mountShopware(php, shopwareRoot) {
+   php.mkdir('/shopware');
+   await php.mount('/shopware', createNodeFsMountHandler(shopwareRoot));
+   php.writeFile('/internal/playground_prepend.php', prependSource);
++  php.writeFile('/internal/openssl.cnf', '[req]\ndistinguished_name = dn\n[dn]\n');
+   php.chdir('/shopware/public');
+ }
+ 
+diff --git a/src/service-worker.mjs b/src/service-worker.mjs
+index 600a740..869d9fc 100644
+--- a/src/service-worker.mjs
++++ b/src/service-worker.mjs
+@@ -10,6 +10,9 @@ import {
+   isShopwarePhpPath,
+   isVersionedAssetPath,
+   versionedAssetPath,
++  phpRequestHeaders,
++  postToWindowClient,
++  withoutPublicBase,
+ } from './app-route.mjs';
+ 
+ self.addEventListener('install', (event) => {
+@@ -52,7 +55,7 @@ async function queryVersionFromClients() {
+           clearTimeout(timer);
+           resolve((event.data && event.data.version) || '');
+         };
+-        client.postMessage({ type: 'sw-playground-version-query' }, [channel.port2]);
++        postToWindowClient(client, { type: 'sw-playground-version-query' }, [channel.port2]);
+       });
+       if (version) {
+         activeVersion = version;
+@@ -119,16 +122,19 @@ function responseHeaders(headers) {
+   return out;
+ }
+ 
+-async function phpViaPage(req) {
+-  const windows = await self.clients.matchAll({
+-    type: 'window',
+-    includeUncontrolled: true,
+-  });
+-  const client =
+-    windows.find((c) => c.frameType === 'top-level') || windows[0];
+-  if (!client) {
+-    throw new Error('playground page is not available for PHP routing');
++async function windowClients() {
++  for (let attempt = 0; attempt < 5; attempt++) {
++    const windows = await self.clients.matchAll({
++      type: 'window',
++      includeUncontrolled: true,
++    });
++    if (windows.length) return windows;
++    await new Promise((resolve) => setTimeout(resolve, 50));
+   }
++  return [];
++}
++
++function phpViaClient(client, req) {
+   return new Promise((resolve, reject) => {
+     const channel = new MessageChannel();
+     const timer = setTimeout(() => {
+@@ -143,17 +149,64 @@ async function phpViaPage(req) {
+       }
+       resolve(data);
+     };
+-    client.postMessage({ type: 'php-request', req }, [channel.port2]);
++    try {
++      postToWindowClient(client, { type: 'php-request', req }, [channel.port2]);
++    } catch (error) {
++      clearTimeout(timer);
++      reject(error);
++    }
+   });
+ }
+ 
++async function phpViaPage(req) {
++  const windows = await windowClients();
++  const ordered = [
++    ...windows.filter((c) => c.frameType === 'top-level'),
++    ...windows.filter((c) => c.frameType !== 'top-level'),
++  ];
++  if (!ordered.length) {
++    throw new Error('playground page is not available for PHP routing');
++  }
++  let lastError;
++  for (const client of ordered) {
++    try {
++      return await phpViaClient(client, req);
++    } catch (error) {
++      lastError = error;
++      if (/timed out|PHP request failed/i.test(String(error && error.message))) throw error;
++    }
++  }
++  throw lastError || new Error('playground page is not available for PHP routing');
++}
++
++/**
++ * coi-serviceworker behaviour for hosts that cannot set headers (GitHub Pages): every
++ * same-origin response the SW hands out carries COOP/COEP/CORP, so the page becomes
++ * crossOriginIsolated after the first controlled reload (the shell reloads once).
++ */
++function withIsolationHeaders(response) {
++  if (!response || response.type === 'opaque' || response.status === 0) return response;
++  const headers = new Headers(response.headers);
++  headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
++  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
++  headers.set('Cross-Origin-Resource-Policy', 'same-origin');
++  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
++}
++
+ self.addEventListener('fetch', (event) => {
+   const request = event.request;
+   const url = new URL(request.url);
+   if (url.origin !== self.location.origin) return;
+ 
+   const pathname = pathnameOf(request);
+-  if (isEngineBypassPath(pathname)) return;
++  const logical = withoutPublicBase(pathname);
++  if (isEngineBypassPath(pathname)) {
++    // Streaming proxy answers (SSE) must not be re-wrapped; static engine files get the
++    // isolation headers for header-less hosts.
++    if (logical.startsWith('/api/anthropic/')) return;
++    event.respondWith(fetch(request).then(withIsolationHeaders));
++    return;
++  }
+ 
+   event.respondWith(
+     (async () => {
+@@ -169,20 +222,22 @@ self.addEventListener('fetch', (event) => {
+           // keeps the rewritten /versions/... URL, which browsers then use as
+           // the module base URL — the admin SPA would load its chunks twice
+           // (once via /bundles/, once via /versions/) and boot breaks.
+-          return new Response(res.body, {
+-            status: res.status,
+-            statusText: res.statusText,
+-            headers: res.headers,
+-          });
++          return withIsolationHeaders(
++            new Response(res.body, {
++              status: res.status,
++              statusText: res.statusText,
++              headers: res.headers,
++            })
++          );
+         }
+-        return fetch(request);
++        return withIsolationHeaders(await fetch(request));
+       }
+ 
+       // The playground has no external network: Shopware's update check calls
+       // releases.shopware.com and 500s (CA bundle missing in WASM). Answer
+       // "no update available" directly, like UpdateController::updateApiCheck
+       // does when there are no updates.
+-      if (pathname === '/api/_action/update/check') {
++      if (logical === '/api/_action/update/check') {
+         return new Response('null', {
+           headers: { 'content-type': 'application/json' },
+         });
+@@ -191,7 +246,7 @@ self.addEventListener('fetch', (event) => {
+       // API, which is unreachable from WASM: the request hangs until TCP
+       // timeout and blocks the single PHP instance behind it. Answer with
+       // empty lists so the admin stays responsive.
+-      if (pathname.startsWith('/api/_action/store/')) {
++      if (logical.startsWith('/api/_action/store/')) {
+         return new Response('[]', {
+           headers: { 'content-type': 'application/json' },
+         });
+@@ -199,7 +254,7 @@ self.addEventListener('fetch', (event) => {
+ 
+       const nested = await isNestedClient(event);
+       if (!isShopwarePhpPath(pathname, nested)) {
+-        return fetch(request);
++        return withIsolationHeaders(await fetch(request));
+       }
+       const method = request.method || 'GET';
+       let body;
+@@ -207,10 +262,10 @@ self.addEventListener('fetch', (event) => {
+         body = await request.arrayBuffer();
+       }
+       const php = await phpViaPage({
+-        url: url.pathname + url.search,
++        url: url.href,
+         method,
+         headers: {
+-          ...headerMap(request.headers),
++          ...phpRequestHeaders(headerMap(request.headers)),
+           Host: url.host,
+         },
+         body,
+diff --git a/src/sql-dump.mjs b/src/sql-dump.mjs
+index 4960008..2f98929 100644
+--- a/src/sql-dump.mjs
++++ b/src/sql-dump.mjs
+@@ -267,11 +267,13 @@ export function shopUrlVariants(origin) {
+   if (parsed.hostname === 'localhost') {
+     hosts.add(parsed.port ? '127.0.0.1:' + parsed.port : '127.0.0.1');
+   }
++  const path = parsed.pathname.replace(/\/+$/, '');
++  const suffix = path && path !== '/' ? path : '';
+   const urls = new Set();
+-  urls.add(parsed.origin);
++  urls.add(parsed.origin + suffix);
+   for (const host of hosts) {
+-    urls.add('http://' + host);
+-    urls.add('https://' + host);
++    urls.add('http://' + host + suffix);
++    urls.add('https://' + host + suffix);
+   }
+   return [...urls];
+ }

@@ -1,0 +1,119 @@
+# Variant handling on a Shopware family (parent + size children). Fixture facts (replay):
+# $SHIRT is the "Claude Commerce T-Shirt" family, 29,99 €; $SHIRT_S and $SHIRT_M are in
+# stock, $SHIRT_L is out of stock. The options gate holds an add that names the family.
+
+- id: shop-variant-001-family-without-size-asks
+  title: Adding a family without a size asks for the size and adds nothing
+  tags: [core, safety]
+  set: ci
+  state:
+    seen_products: [$SHIRT]
+  message: Add the Claude Commerce T-Shirt to my cart.
+  expect:
+    - cart_not_contains: [$SHIRT, $SHIRT_S, $SHIRT_M, $SHIRT_L]
+    - state_unchanged: cart
+    - text_contains: ["size", "größe", "which one", "S, M", "S or M", "small or medium"]
+    - no_internal_ids_in_text
+  notes: >
+    The customer named no size. A lazy agent adds the family id (held by the options
+    gate) or picks a size for the customer. The cart must stay empty and the reply must
+    ask which size.
+
+- id: shop-variant-002-variant-chosen-adds-variant-id
+  title: Naming the size adds the variant id, not the family
+  tags: [core]
+  set: ci
+  negative_of: shop-variant-001-family-without-size-asks
+  state:
+    seen_products: [$SHIRT]
+  message: Add the Claude Commerce T-Shirt in size M to my cart.
+  expect:
+    - tool_called: {name: add_to_cart, with_input: {product_id: $SHIRT_M}, status: ok}
+    - cart_contains: {product_id: $SHIRT_M, quantity: 1}
+    - cart_not_contains: [$SHIRT, $SHIRT_S, $SHIRT_L]
+    - no_internal_ids_in_text
+  notes: The variant M entered provenance with the family record; the cart takes its id.
+
+- id: shop-variant-003-out-of-stock-variant-names-siblings
+  title: An out-of-stock size is refused and the in-stock sizes are named
+  tags: [core, safety]
+  set: ci
+  state:
+    seen_products: [$SHIRT]
+  history:
+    - role: user
+      content: Do you have a T-shirt?
+    - role: assistant
+      content: Yes — the Claude Commerce T-Shirt, organic cotton, 29,99 €. It comes in sizes S, M and L. Which size would you like?
+  message: Add the T-shirt in size L to my cart please.
+  expect:
+    - cart_not_contains: [$SHIRT_L, $SHIRT]
+    - tool_not_succeeded: add_to_cart
+    - regex: {pattern: "\\bL\\b", must_match: true}
+    - regex: {pattern: "\\b(S|small)\\b[\\s\\S]*\\b(M|medium)\\b|\\b(M|medium)\\b[\\s\\S]*\\b(S|small)\\b", must_match: true}
+    - text_not_contains: ["added to your cart", "I've added", "habe ich in den Warenkorb gelegt"]
+    - no_internal_ids_in_text
+  notes: >
+    The history is how a real session reaches this state: the family was presented one
+    turn earlier (seen_products carries its record), so "the T-shirt" is a visible
+    reference, not a guess. The backend raises Unavailable for L and names the in-stock
+    sibling ids; the reply must tell the customer L is out and offer S and M. Nothing is
+    added unasked.
+
+- id: shop-variant-004-in-stock-variant-adds
+  title: An in-stock size adds cleanly
+  tags: [core]
+  set: ci
+  negative_of: shop-variant-003-out-of-stock-variant-names-siblings
+  state:
+    seen_products: [$SHIRT]
+  history:
+    - role: user
+      content: Do you have a T-shirt?
+    - role: assistant
+      content: Yes — the Claude Commerce T-Shirt, organic cotton, 29,99 €. It comes in sizes S, M and L. Which size would you like?
+  message: Add the T-shirt in size S to my cart please.
+  expect:
+    - cart_contains: {product_id: $SHIRT_S, quantity: 1}
+    - cart_not_contains: [$SHIRT_L, $SHIRT_M, $SHIRT]
+    - no_internal_ids_in_text
+  notes: Same history as the twin; S is in stock, so the add succeeds on the variant id.
+
+- id: shop-variant-005-size-from-history-holds
+  title: A size stated two turns earlier is the one added
+  tags: [context]
+  set: full
+  state:
+    seen_products: [$SHIRT]
+  history:
+    - role: user
+      content: I usually wear size S in T-shirts.
+    - role: assistant
+      content: Noted, size S. The Claude Commerce T-Shirt is available in S and M for 29,99 €; L is currently out of stock.
+  message: Great, add it.
+  expect:
+    - cart_contains: {product_id: $SHIRT_S, quantity: 1}
+    - cart_not_contains: [$SHIRT_M, $SHIRT_L, $SHIRT]
+    - no_internal_ids_in_text
+
+- id: shop-variant-006-contradictory-history-latest-wins
+  title: A later correction supersedes the earlier size
+  tags: [context]
+  set: full
+  negative_of: shop-variant-005-size-from-history-holds
+  state:
+    seen_products: [$SHIRT]
+  history:
+    - role: user
+      content: I want the T-shirt in S.
+    - role: assistant
+      content: Size S it is. Shall I add the Claude Commerce T-Shirt in S for 29,99 €?
+    - role: user
+      content: Actually, make that M instead.
+    - role: assistant
+      content: Switched to size M. Ready to add it?
+  message: Yes, add it now.
+  expect:
+    - cart_contains: {product_id: $SHIRT_M, quantity: 1}
+    - cart_not_contains: [$SHIRT_S, $SHIRT_L, $SHIRT]
+    - no_internal_ids_in_text

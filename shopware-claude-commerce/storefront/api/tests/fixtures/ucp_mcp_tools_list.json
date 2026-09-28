@@ -1,0 +1,275 @@
+{
+  "_note": "Live tools/list from /ucp/mcp (Store API MCP via SwagAgenticCommerce proxy). Netless tests replay this.",
+  "endpoint": "/ucp/mcp",
+  "shopware": "6.7.13.0 (dockware/shopware:6.7.13.0, MCP_SERVER=1)",
+  "recorded": "2026-09-03",
+  "protocolVersion": "2025-11-25",
+  "serverInfo": {
+    "name": "Shopware Store API",
+    "version": "1.0.0",
+    "description": "Shopware Store API MCP server for sales-channel and customer-context operations."
+  },
+  "tools": [
+    {
+      "name": "shopware-store-api-context",
+      "title": "Store API Context",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "description": "Read the current Store API sales-channel context for this MCP session, including sales channel, language, currency, context token, and whether a customer is authenticated."
+    },
+    {
+      "name": "cancel_cart",
+      "title": "UCP Cart Cancel",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "description": "Cancel a cart through the shared UCP cart capability. Always use dryRun=true (the default) to validate the request without persisting it, then set dryRun=false to commit."
+    },
+    {
+      "name": "create_cart",
+      "title": "UCP Cart Create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "object",
+            "default": {}
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "description": "Create a cart through the shared UCP cart capability. The payload parameter is a JSON object string matching the UCP cart.create request. Always use dryRun=true (the default) to validate the request without persisting it, then set dryRun=false to commit."
+    },
+    {
+      "name": "get_cart",
+      "title": "UCP Cart Get",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "description": "Load a cart by id through the shared UCP cart capability."
+    },
+    {
+      "name": "update_cart",
+      "title": "UCP Cart Update",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object",
+            "default": {}
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "description": "Set or change the quantity of a line item, or add, remove, or replace the line items, in an existing cart through the shared UCP cart capability. Use this, NOT get_cart, for any change to the cart contents or line-item quantities. The payload parameter is a JSON object string matching the UCP cart.update request: it must repeat the cart id as \"id\" and carry the complete \"line_items\" array. line_items replaces the cart contents rather than patching them, so always resend every line you want to keep. Always use dryRun=true (the default) to validate the request without persisting it, then set dryRun=false to commit."
+    },
+    {
+      "name": "lookup_catalog",
+      "title": "UCP Catalog Lookup",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "string",
+            "default": "[]"
+          }
+        }
+      },
+      "description": "Load products by id from the current Store API sales-channel catalog through the shared UCP catalog capability. The ids parameter is a string, NOT an array: pass a JSON array string such as [\"id-a\",\"id-b\"], or a single id, or a comma-separated list of ids."
+    },
+    {
+      "name": "search_catalog",
+      "title": "UCP Catalog Search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "default": ""
+          },
+          "limit": {
+            "type": "integer",
+            "default": 10
+          }
+        }
+      },
+      "description": "Search the current Store API sales-channel catalog through the same UCP catalog capability used by REST, A2A, and embedded flows."
+    },
+    {
+      "name": "cancel_checkout",
+      "title": "UCP Checkout Cancel",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "description": "Cancel a checkout session through the shared UCP checkout capability. Always use dryRun=true (the default) to validate the request without persisting it, then set dryRun=false to commit."
+    },
+    {
+      "name": "complete_checkout",
+      "title": "UCP Checkout Complete",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object",
+            "default": {}
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "description": "Complete a checkout session through the shared UCP checkout capability. This places the order and takes payment. With dryRun=true (the default) nothing is placed: the current checkout is read back and reported together with anything that would block a commit. Set dryRun=false only once the buyer has confirmed the purchase. The payload parameter is a JSON object string matching the UCP checkout.complete request; UCP requires a payment object here. Omit it to charge the sales channel default (invoice/offline) method, which needs nothing from the buyer."
+    },
+    {
+      "name": "create_checkout",
+      "title": "UCP Checkout Create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "object",
+            "default": {}
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "description": "Create a checkout session through the shared UCP checkout capability. The payload parameter is a JSON object string matching the UCP checkout.create request. \"line_items\" is always required, even when empty. To convert an existing cart into a checkout send \"cart_id\" together with \"line_items\": [] and the cart is reused as-is; send line_items to start from scratch instead. \"discounts\": {\"codes\": [...]}, \"fulfillment\" and \"buyer_consent\" are also accepted even though the published request schema omits them. Always use dryRun=true (the default) to validate the request without persisting it, then set dryRun=false to commit."
+    },
+    {
+      "name": "get_checkout",
+      "title": "UCP Checkout Get",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "description": "Load a checkout session by id through the shared UCP checkout capability."
+    },
+    {
+      "name": "update_checkout",
+      "title": "UCP Checkout Update",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object",
+            "default": {}
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "description": "Update a checkout session through the shared UCP checkout capability. The payload parameter is a JSON object string matching the UCP checkout.update request. line_items is required and replaces the checkout contents rather than patching them, so resend every line you want to keep even when you only mean to change the buyer or the fulfillment address. Always use dryRun=true (the default) to validate the request without persisting it, then set dryRun=false to commit."
+    },
+    {
+      "name": "apply_discount",
+      "title": "UCP Discount Apply",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cartId": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "cartId",
+          "code"
+        ]
+      },
+      "description": "Apply a discount code to a cart through the shared UCP discount capability. Always use dryRun=true (the default) to check whether the code would be accepted without persisting it, then set dryRun=false to commit."
+    },
+    {
+      "name": "get_order",
+      "title": "UCP Order Get",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "description": "Load an order by id through the shared UCP order capability."
+    }
+  ]
+}

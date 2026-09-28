@@ -1,0 +1,78 @@
+# Two capabilities in one message, and stored memory changing a pick.
+
+- id: shop-multi-001-add-and-policy-both-halves
+  title: '"Add it and tell me the return period" does both'
+  tags: [multi-capability, core]
+  set: ci
+  state:
+    seen_products: [$OIL]
+  message: Add one olive oil to my cart, and what is the return period?
+  expect:
+    - cart_contains: {product_id: $OIL, quantity: 1}
+    - tool_called: search_policies
+    - text_contains: ["14"]
+    - grounded_numbers
+    - no_internal_ids_in_text
+
+- id: shop-multi-002-policy-only-no-write
+  title: The policy half alone writes nothing
+  tags: [multi-capability, safety]
+  set: ci
+  negative_of: shop-multi-001-add-and-policy-both-halves
+  state:
+    seen_products: [$OIL]
+  message: What is the return period for the olive oil?
+  expect:
+    - tool_called: search_policies
+    - text_contains: ["14"]
+    - state_unchanged: cart
+    - tool_not_called: [add_to_cart]
+    - no_internal_ids_in_text
+
+- id: shop-memory-001-stored-size-picks-variant
+  title: A stored size constraint picks the variant without asking
+  tags: [context]
+  set: full
+  negative_of: shop-variant-001-family-without-size-asks
+  state:
+    seen_products: [$SHIRT]
+    memory:
+      - {key: tshirt_size, value: "wears T-shirt size M", category: constraint}
+  message: Add the Claude Commerce T-Shirt to my cart.
+  expect:
+    - cart_contains: {product_id: $SHIRT_M, quantity: 1}
+    - cart_not_contains: [$SHIRT_S, $SHIRT_L, $SHIRT]
+    - no_internal_ids_in_text
+  notes: >
+    The same message as the variant-001 case; the injected memory fact is what makes
+    the pick. The options gate text tells the model to settle the option from the
+    customer's profile.
+
+- id: shop-multi-003-add-and-shipping-cost
+  title: '"Add two and what does shipping cost" answers both from data'
+  tags: [multi-capability]
+  set: full
+  state:
+    seen_products: [$OIL]
+  message: Add two bottles of the olive oil and tell me what shipping will cost.
+  expect:
+    - cart_contains: {product_id: $OIL, quantity: 2}
+    - tool_called: {any_of: [search_policies, get_fulfillment_options]}
+    - text_contains: ["4,90", "4.90"]
+    - grounded_numbers
+    - no_internal_ids_in_text
+
+- id: shop-multi-004-shipping-cost-only
+  title: The shipping question alone writes nothing
+  tags: [multi-capability]
+  set: full
+  negative_of: shop-multi-003-add-and-shipping-cost
+  state:
+    seen_products: [$OIL]
+  message: What will shipping cost for two bottles of the olive oil?
+  expect:
+    - state_unchanged: cart
+    - tool_not_called: [add_to_cart]
+    - text_contains: ["4,90", "4.90"]
+    - grounded_numbers
+    - no_internal_ids_in_text

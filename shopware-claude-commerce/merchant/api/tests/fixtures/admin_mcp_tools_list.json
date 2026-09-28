@@ -1,0 +1,746 @@
+{
+  "_note": "Live tools/list from /api/_mcp as admin (full allowlist). The claude-merchant-agent integration sees the subset in docs/shopware-mapping.md. The agent-* tools are SwagCommerceAgentTools (this repo, shopware-plugins/) recorded 2026-09-03 through the integration token; FakeAdmin lists them only with agent_tools=True.",
+  "endpoint": "/api/_mcp",
+  "shopware": "6.7.13.0 (dockware/shopware:6.7.13.0, MCP_SERVER=1)",
+  "recorded": "2026-09-03",
+  "protocolVersion": "2025-11-25",
+  "serverInfo": {
+    "name": "Shopware",
+    "version": "1.0.0"
+  },
+  "tools": [
+    {
+      "name": "merchant-order-summary",
+      "title": "Order Summary",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "orderNumber": {
+            "type": "string",
+            "default": ""
+          },
+          "orderId": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "description": "The right tool when the user names ONE order and wants everything about it — customer, line items, payment status, delivery status. Provide either orderNumber (e.g. \"10001\") or orderId (UUID). Single order only: shopware-entity-search handles multi-order queries. Read-only: it never alters the order; shopware-order-state does that. Returns {success, data: {id, orderNumber, status, amountTotal, customer, lineItems, transactions, deliveries}}."
+    },
+    {
+      "name": "merchant-customer-lookup",
+      "title": "Customer Lookup",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "default": ""
+          },
+          "customerNumber": {
+            "type": "string",
+            "default": ""
+          },
+          "customerId": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "description": "Pull up one customer account by email, customer number, or UUID — profile plus order history and lifetime order total. Provide at least one identifier. Single customer only: shopware-entity-search handles requests that span more than one customer. Returns {success, data: {id, email, customerNumber, firstName, lastName, group, orderCount, orderTotalAmount, recentOrders: [...]}}."
+    },
+    {
+      "name": "merchant-product-create",
+      "title": "Product Create",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "productNumber": {
+            "type": "string"
+          },
+          "grossPrice": {
+            "type": "number"
+          },
+          "taxRate": {
+            "type": "number",
+            "default": 19
+          },
+          "currencyCode": {
+            "type": "string",
+            "default": "EUR"
+          },
+          "stock": {
+            "type": "integer",
+            "default": 0
+          },
+          "description": {
+            "type": "string",
+            "default": ""
+          },
+          "categories": {
+            "type": "string",
+            "default": ""
+          },
+          "active": {
+            "type": "boolean",
+            "default": true
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "name",
+          "productNumber",
+          "grossPrice"
+        ]
+      },
+      "description": "The right tool for adding a brand-new product, article, or item to the catalog. Give it plain values (name, product number, price, tax rate) — it resolves tax rate to tax ID, currency ISO code to currency ID, exact category names to category IDs, and builds the nested price structure. New products only; for a product that is already in the catalog, shopware-entity-upsert is the raw fallback. Defaults to dryRun=true. Returns the generated payload in dryRun mode, or the created product ID on commit."
+    },
+    {
+      "name": "merchant-revenue-report",
+      "title": "Revenue Report",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "groupBy": {
+            "type": "string",
+            "default": "day"
+          },
+          "salesChannelId": {
+            "type": "string",
+            "default": ""
+          },
+          "page": {
+            "type": "integer",
+            "default": 1
+          },
+          "limit": {
+            "type": "integer",
+            "default": 31
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ]
+      },
+      "description": "Money totals over a date range — revenue, turnover, total sales, average order value, period-over-period comparison. Provide ISO 8601 dates (e.g. \"2025-01-01\"). Excludes cancelled orders. Optional groupBy: day (default), week, month. Use page/limit to paginate the timeline buckets. Never a per-product ranking — merchant-bestseller-report does that. Returns {success, data: {period, totalRevenue, orderCount, averageOrderValue, timeline: [{date, revenue}]}, _meta: {page, limit, total}}."
+    },
+    {
+      "name": "merchant-bestseller-report",
+      "title": "Bestseller Report",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 10
+          },
+          "salesChannelId": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ]
+      },
+      "description": "Ranks individual products by units sold in a date range — best sellers, top performers, which products shifted the most units. Excludes cancelled orders. Provide ISO 8601 dates (e.g. \"2025-01-01\"). Per-product ranking only, not shop-wide money totals over time — merchant-revenue-report does that. Returns {success, data: {period, bestsellers: [{productId, productNumber, name, totalQuantity, orderCount, totalRevenue}]}}."
+    },
+    {
+      "name": "merchant-storefront-search",
+      "title": "Storefront Search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "salesChannelId": {
+            "type": "string",
+            "default": ""
+          },
+          "criteria": {
+            "type": "string",
+            "default": "{}"
+          },
+          "customerId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "default": null
+          },
+          "properties": {
+            "type": "string",
+            "default": "{}"
+          },
+          "term": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "description": "Customer-facing full-text product discovery and browsing — NOT for looking up a product by its exact productNumber or field value (use shopware-entity-search for that). Returns prices resolved for the sales channel including customer group pricing, tax rules, and product visibility. Use term for full-text search. Use the properties parameter to filter by human-readable property names (e.g. {\"Color\": \"Red\", \"Size\": \"42\"}) — the tool resolves names to IDs automatically. Pass salesChannelId to select the channel (see shopware://sales-channels); optionally pass customerId for customer-specific pricing."
+    },
+    {
+      "name": "merchant-cart-manage",
+      "title": "Cart Manage",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "salesChannelId": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string",
+            "default": ""
+          },
+          "productId": {
+            "type": "string",
+            "default": ""
+          },
+          "quantity": {
+            "type": "integer",
+            "default": 1
+          },
+          "lineItemId": {
+            "type": "string",
+            "default": ""
+          },
+          "customerId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "salesChannelId",
+          "action"
+        ]
+      },
+      "description": "Manage a storefront shopping cart. Actions: \"create\" (new cart, returns token), \"add\" (add product by productId), \"remove\" (remove by lineItemId), \"update\" (change quantity by lineItemId), \"get\" (view current cart). Requires salesChannelId (see shopware://sales-channels resource). All actions except \"create\" require the token returned by \"create\". Optionally pass customerId for customer-specific pricing. Edits line items only — it never places or converts the cart into an order; merchant-cart-checkout does that."
+    },
+    {
+      "name": "merchant-cart-checkout",
+      "title": "Cart Checkout",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "salesChannelId": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "customerId": {
+            "type": "string"
+          },
+          "paymentMethodId": {
+            "type": "string",
+            "default": ""
+          },
+          "shippingMethodId": {
+            "type": "string",
+            "default": ""
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "salesChannelId",
+          "token",
+          "customerId"
+        ]
+      },
+      "description": "Turns a cart into a real order — place the order, complete the purchase, convert cart to order. If you already have a cart token, call this directly; do not re-create the cart. Requires that token plus salesChannelId and a customerId (registered customer). Payment and shipping methods are optional: omit them for the channel defaults, and if you don't already know the method IDs, merchant-checkout-methods will tell you. Defaults to dryRun=true for order preview."
+    },
+    {
+      "name": "merchant-checkout-methods",
+      "title": "Checkout Methods",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "salesChannelId": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "default": "all"
+          }
+        },
+        "required": [
+          "salesChannelId"
+        ]
+      },
+      "description": "Which payment methods and delivery options a sales channel offers at checkout — including whether customers can pay by a specific method. Use type \"payment\" for payment methods only, \"shipping\" for shipping methods only, or \"all\" for both. Read-only: it returns method names and IDs, it never places an order — merchant-cart-checkout does that."
+    },
+    {
+      "name": "shopware-media-upload",
+      "title": "Media Upload",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string",
+            "default": ""
+          },
+          "mediaFolderId": {
+            "type": "string",
+            "default": ""
+          },
+          "productId": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        "required": [
+          "url"
+        ]
+      },
+      "description": "Upload any image or file — including product cover images — to Shopware's media library from a URL. url is the only required parameter; productId, fileName, and mediaFolderId are all optional. Call this tool immediately with just the URL whenever the user asks to upload, import, or add an image. Returns the new mediaId."
+    },
+    {
+      "name": "shopware-order-state",
+      "title": "Order State",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "orderNumber": {
+            "type": "string",
+            "default": ""
+          },
+          "orderId": {
+            "type": "string",
+            "default": ""
+          },
+          "orderAction": {
+            "type": "string",
+            "default": ""
+          },
+          "transactionAction": {
+            "type": "string",
+            "default": ""
+          },
+          "deliveryAction": {
+            "type": "string",
+            "default": ""
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "description": "Change the state of an order, its transactions, and/or its deliveries in one call. Looks up the order by orderNumber or orderId. Provide at least one of orderAction, transactionAction, or deliveryAction. Common actions: cancel, process, complete, reopen, paid, refund, ship, retour. Always use dryRun=true (default) to preview available transitions before executing with dryRun=false. See shopware://state-machines resource for all valid states and transitions."
+    },
+    {
+      "name": "shopware-entity-upsert",
+      "title": "Entity Upsert",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "entity": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "string"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "entity",
+          "payload"
+        ]
+      },
+      "description": "Create or update Shopware entity data. Always use dryRun=true (default) first to validate, then set dryRun=false to persist. Use shopware-entity-schema to understand required fields before building the payload. Returns validation result in dryRun mode, or the written entity data on commit."
+    },
+    {
+      "name": "shopware-entity-schema",
+      "title": "Entity Schema",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "entity": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "description": "Get the field and association schema of a Shopware entity definition. Use this first to discover field names, types, and associations before building search criteria with shopware-entity-search. Returns {success, data: {fields: [...], associations: [...]}}. See shopware://entities resource for all available entity names."
+    },
+    {
+      "name": "shopware-entity-read",
+      "title": "Entity Read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "entity": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "criteria": {
+            "type": "string",
+            "default": "{}"
+          }
+        },
+        "required": [
+          "entity",
+          "id"
+        ]
+      },
+      "description": "Read a single Shopware entity by its UUID. Use when you already have an entity ID. For searching by other fields, use shopware-entity-search instead. Returns {success, data: {id, ...fields}, _meta: {}}. Pass criteria JSON to include associations or select fields."
+    },
+    {
+      "name": "shopware-entity-aggregate",
+      "title": "Entity Aggregate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "entity": {
+            "type": "string"
+          },
+          "aggregations": {
+            "type": "string"
+          },
+          "filters": {
+            "type": "string",
+            "default": "[]"
+          }
+        },
+        "required": [
+          "entity",
+          "aggregations"
+        ]
+      },
+      "description": "The correct tool for count, sum, average, and other aggregate questions. Use this — not shopware-entity-search — for any 'how many', 'total value', or 'average' query. Note: entity-search's _meta.total is pagination metadata, not a reporting count. Supports: count, avg, sum, min, max, terms, date-histogram. Returns only aggregation results, no entity rows. Pass aggregation definitions as Admin API criteria JSON."
+    },
+    {
+      "name": "shopware-entity-delete",
+      "title": "Entity Delete",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "entity": {
+            "type": "string"
+          },
+          "ids": {
+            "type": "string"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "entity",
+          "ids"
+        ]
+      },
+      "description": "Delete Shopware entities by their UUIDs. Always use dryRun=true (default) first to preview cascade effects and dependent entity deletions, then set dryRun=false to execute. Returns {success, data: {deleted, notFound}, _meta: {dryRun}}."
+    },
+    {
+      "name": "shopware-system-config-read",
+      "title": "System Config Read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "salesChannelId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "key"
+        ]
+      },
+      "description": "Read Shopware application configuration values in the core.* namespace. Pass a domain prefix (e.g. \"core.listing\") to get all keys, or a full dotted key to read a single value. For theme appearance settings (colors, logos, fonts), use shopware-theme-config instead. Optionally scope to a sales channel."
+    },
+    {
+      "name": "shopware-system-config-write",
+      "title": "System Config Write",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "salesChannelId": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "default": null
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ]
+      },
+      "description": "Modify or overwrite a Shopware system configuration value — use this whenever the user wants to change, set, or update a config key. Provide the full dotted key (e.g. 'core.basicInformation.shopName') and the new value. dryRun=true (default) shows a before/after diff without saving; set dryRun=false to persist. Optionally scope to a sales channel."
+    },
+    {
+      "name": "shopware-entity-search",
+      "title": "Entity Search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "entity": {
+            "type": "string"
+          },
+          "criteria": {
+            "type": "string",
+            "default": "{}"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 25
+          },
+          "page": {
+            "type": "integer",
+            "default": 1
+          },
+          "term": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "description": "Search and filter Shopware entities — use this to look up a product by its productNumber or any exact field value, including as the first step in Storefront cart/checkout workflows. For count/sum/average reporting, use shopware-entity-aggregate instead (the _meta.total here is pagination metadata, not a reporting count). Accepts Admin API criteria JSON. Returns {success, data: [...], _meta: {total, page, limit}}. Use shopware-entity-schema first if you need field names."
+    },
+    {
+      "name": "shopware-theme-config",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "salesChannelId": {
+            "type": "string",
+            "default": ""
+          },
+          "action": {
+            "type": "string",
+            "default": "get"
+          },
+          "config": {
+            "type": "string",
+            "default": "{}"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "description": "Read or update theme appearance settings (colors, logos, fonts) for a sales channel. Use action \"get\" to read the current theme config. Use action \"update\" with a config JSON to change values; dryRun=true (default) previews changes. Pass a salesChannelId to scope to a specific channel (see shopware://sales-channels for IDs)."
+    },
+    {
+      "name": "agent-business-snapshot",
+      "title": "Business Snapshot",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string",
+            "default": "30d"
+          },
+          "salesChannelId": {
+            "type": "string",
+            "default": ""
+          }
+        }
+      },
+      "description": "The merchant's daily digest numbers in one call: revenue, order count, average order value and units sold for a period (default 30d) with the change versus the previous period. Traffic and conversion rate are returned as null with a note because Shopware core does not measure them. Use agent-metrics-series when a value per day, week or month is needed."
+    },
+    {
+      "name": "agent-change-apply",
+      "title": "Apply Agent Change",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "changeId": {
+            "type": "string"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "changeId"
+        ]
+      },
+      "description": "Approves a staged agent change and writes it to the live catalog. Refuses changes that are not in status \"staged\". dryRun=true (default) re-runs the write in a rolled-back transaction and returns the preview without changing anything; dryRun=false performs the write, marks the change as applied and stamps the approving principal. Only the approver should call this with dryRun=false; the agent that staged the change must not."
+    },
+    {
+      "name": "agent-change-discard",
+      "title": "Discard Agent Change",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "changeId": {
+            "type": "string"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "changeId"
+        ]
+      },
+      "description": "Rejects a staged agent change so it is never written; the catalog stays untouched. Refuses changes that are not in status \"staged\". dryRun=true (default) only reports what would happen; dryRun=false marks the change as discarded and stamps the principal."
+    },
+    {
+      "name": "agent-change-list",
+      "title": "List Agent Changes",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "default": "staged"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 25
+          },
+          "page": {
+            "type": "integer",
+            "default": 1
+          }
+        }
+      },
+      "description": "Shows the changes agents have proposed for this shop and their approval state: pending (staged), already applied, or discarded. Each entry carries the before/after preview and who staged or approved it. Filter by status \"staged\" (default), \"applied\", \"discarded\" or \"all\". Read-only."
+    },
+    {
+      "name": "agent-change-stage",
+      "title": "Stage Agent Change",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "items": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "default": ""
+          },
+          "guardrailNotes": {
+            "type": "string",
+            "default": ""
+          },
+          "salesChannelId": {
+            "type": "string",
+            "default": ""
+          },
+          "currency": {
+            "type": "string",
+            "default": ""
+          },
+          "margins": {
+            "type": "string",
+            "default": ""
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "kind",
+          "items",
+          "summary"
+        ]
+      },
+      "description": "Proposes a catalog change for human approval instead of writing it: listing text (listing_update), prices (price_update) or stock/activation (inventory_action). Returns a server-computed before/after preview for every field, produced by running the real write in a rolled-back transaction. With dryRun=true (default) nothing is stored; dryRun=false records the change as \"staged\" for agent-change-apply. This tool never modifies products itself. Items are a JSON array; see the plugin README for the per-kind item shape."
+    },
+    {
+      "name": "agent-metrics-series",
+      "title": "Metrics Series",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "type": "string"
+          },
+          "period": {
+            "type": "string",
+            "default": "30d"
+          },
+          "granularity": {
+            "type": "string",
+            "default": "day"
+          },
+          "segment": {
+            "type": "string",
+            "default": ""
+          },
+          "salesChannelId": {
+            "type": "string",
+            "default": ""
+          }
+        },
+        "required": [
+          "metric"
+        ]
+      },
+      "description": "A time series of one business metric for charts and trend questions: sales, orders, aov (average order value) or units per day, week or month over a period (default 30d), optionally sliced by \"category:<uuid>\" or \"sales_channel:<uuid>\". Traffic and conversion return an empty series with a note. For a single headline figure with period comparison use agent-business-snapshot."
+    }
+  ]
+}

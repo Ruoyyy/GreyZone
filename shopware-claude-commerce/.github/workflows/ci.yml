@@ -1,0 +1,130 @@
+# Netless CI: lint + unit tests (Python), Next.js builds (web workspaces), and the
+# CommerceAgentsHandoff Shopware plugin (php -l + standalone PHPUnit suite).
+# Nothing here talks to a shop or to Anthropic; see integration.yml for that.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  python:
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # requirements.txt pins the Anthropic blueprint packages to a git commit and
+      # installs vendor/ editable; requirements-dev.txt adds pytest + ruff.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check . --output-format github
+
+      # pytest.ini lists the netless suites (storefront/api/tests, merchant/api/tests,
+      # vendor/demo_common/tests, shopware_common/tests). No shop, no API key.
+      - name: Unit tests (pytest)
+        run: pytest -q
+
+  web:
+    name: web (Node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install workspaces
+        run: npm ci
+
+      # Root package.json: "build": "npm run build --workspaces --if-present" — builds
+      # storefront/web and merchant/web (Next.js); vendor/web-shared has no build script.
+      - name: Build every workspace
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  plugin-php:
+    name: plugin-php (CommerceAgentsHandoff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PLUGIN_DIR: docker/plugins/CommerceAgentsHandoff
+      # Scratch composer project that provides phpunit + symfony/clock; the plugin's
+      # tests/bootstrap.php picks up "$(pwd)/vendor/autoload.php" from here.
+      PHPUNIT_DIR: ${{ github.workspace }}/.phpunit-scratch
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          tools: composer:v2
+          coverage: none
+
+      - name: Syntax check (php -l)
+        run: |
+          set -euo pipefail
+          find "$PLUGIN_DIR/src" "$PLUGIN_DIR/tests" -name '*.php' -print0 \
+            | xargs -0 -n1 php -l
+
+      - name: Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config --global cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-php8.4-phpunit11.5-clock7
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Install PHPUnit + symfony/clock (scratch project)
+        run: |
+          set -euo pipefail
+          mkdir -p "$PHPUNIT_DIR"
+          echo '{}' > "$PHPUNIT_DIR/composer.json"
+          composer require --working-dir="$PHPUNIT_DIR" --no-interaction --no-progress \
+            "phpunit/phpunit:^11.5" "symfony/clock:^7.3"
+
+      # phpunit.xml: standalone tests for src/Service (no kernel, no database).
+      - name: PHPUnit
+        working-directory: ${{ env.PHPUNIT_DIR }}
+        run: php vendor/bin/phpunit -c "$GITHUB_WORKSPACE/$PLUGIN_DIR/phpunit.xml"

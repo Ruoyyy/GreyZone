@@ -1,0 +1,12 @@
+# Security notes (this deployment)
+
+- Blueprint gates stay on: fencing, cart provenance, merchant staging provenance, host approval, memory validation.
+- No payment in the agent. Checkout is a handoff: the host issues a one-time, HMAC-signed, ≤120 s handoff code (ADR-10); the `CommerceAgentsHandoff` plugin verifies signature, expiry and single use, refuses when a customer is logged in, migrates the session, adopts the context token and redirects to checkout confirm. The raw context token never travels in a URL. `complete_checkout` has no code path (ADR-4).
+- Merchant `stage_*` writes nothing: it runs the Admin API MCP `shopware-entity-upsert` with `dryRun=true` and shows the server preview. Apply is `POST /api/merchant/changes/{id}/apply` after the host marks the change approved; `apply_change` and `discard_change` refuse anything that is not `STAGED`. Listing staged changes on `GET /api/merchant/changes` is what admits a change staged in another session (or before a restart) to this session's provenance, exactly like the `get_pending_changes` tool.
+- The merchant host authenticates as the Shopware Integration `claude-merchant-agent` (`client_credentials`, ACL role with read/update on the entities the staged writes need, on the Admin MCP allowlist; ADR-14). There is no admin password grant in the host.
+- Tokens (Admin, Store API, optional Identity Linking) stay on the server. They are never tool arguments or log lines.
+- The Docker shop runs UCP `signature-policy=strict`: every UCP call from the storefront host carries an RFC 9421 + RFC 9530 signature (ES256, `Content-Digest`, 120 s lifetime) with the agent key at `UCP_AGENT_SIGNING_KEY_PEM_FILE`, whose JWK is published in `agent-profile.json`. `UCP_SIGNATURE_POLICY=log` relaxes a local shop that has no agent key; never do that on a public shop.
+- `SWAG_AGENTIC_COMMERCE_UCP_PROFILE_FETCHING_DEVELOPMENT_MODE=1` is local-only (http agent profiles). Do not enable on a public shop.
+- MCP sessions: the client runs one request at a time per session (Shopware's server answers one of two concurrent calls with an empty body) and follows `_meta.resourceUri` for results the server parked behind a `shopware://tool-result/*` resource, so a large result is never read as an empty one.
+- CORS is loopback-only via `demo_common` host middleware.
+- Identity Linking is optional; without an https agent-profile `client_id` every session is a guest. When linked, the customer's context token becomes the session cart and order reads are scoped to that customer.

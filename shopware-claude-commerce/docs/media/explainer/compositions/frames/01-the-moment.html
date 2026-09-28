@@ -1,0 +1,132 @@
+<template>
+  <style>
+    @font-face { font-family: "Inter"; font-weight: 400; font-style: normal; font-display: block; src: url("assets/fonts/Inter-400.woff2") format("woff2"); }
+    @font-face { font-family: "Inter"; font-weight: 700; font-style: normal; font-display: block; src: url("assets/fonts/Inter-700.woff2") format("woff2"); }
+    @font-face { font-family: "JetBrains Mono"; font-weight: 400; font-style: normal; font-display: block; src: url("assets/fonts/JetBrainsMono-400.woff2") format("woff2"); }
+    @font-face { font-family: "JetBrains Mono"; font-weight: 700; font-style: normal; font-display: block; src: url("assets/fonts/JetBrainsMono-700.woff2") format("woff2"); }
+
+    #root { position: absolute; inset: 0; width: 1920px; height: 1080px; overflow: hidden; font-family: "Inter", sans-serif; color: #F3F6FA; }
+    .f01-bg { background-color: #0B1220;
+      background-image: linear-gradient(rgba(243,246,250,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(243,246,250,0.04) 1px, transparent 1px);
+      background-size: 96px 96px; background-position: 0 0; }
+    .f01-kicker { position: absolute; left: 120px; top: 112px; display: flex; align-items: center; gap: 14px;
+      font-family: "JetBrains Mono", monospace; font-size: 26px; letter-spacing: 0.16em; text-transform: uppercase; color: #8A94A6; }
+    .f01-kicker svg { width: 22px; height: 22px; }
+    .f01-date { position: absolute; left: 120px; top: 196px; font-size: 140px; line-height: 1.02; letter-spacing: -0.022em; transform-origin: 0 0; white-space: nowrap; }
+    .f01-line { position: absolute; left: 120px; font-size: 84px; line-height: 1.1; letter-spacing: -0.018em; white-space: nowrap; }
+    .f01-l1 { top: 340px; }
+    .f01-l2 { top: 504px; }
+    .f01-tag { position: absolute; left: 124px; top: 438px; font-family: "JetBrains Mono", monospace; font-size: 24px; letter-spacing: 0.02em; color: #D97757; }
+    .f01-rule { position: absolute; left: 120px; top: 484px; width: 1100px; height: 2px; overflow: visible; }
+    .f01-l3 { position: absolute; left: 120px; top: 640px; font-size: 148px; line-height: 1.02; letter-spacing: -0.024em; white-space: nowrap; transform-origin: 0 50%; }
+    .f01-underline { position: absolute; left: 592px; top: 802px; width: 820px; height: 6px; border-radius: 3px; background: #189EFF; transform-origin: 0 50%; }
+    .f01-running { position: absolute; left: 1448px; top: 786px; display: flex; align-items: center; gap: 12px;
+      font-family: "JetBrains Mono", monospace; font-size: 26px; letter-spacing: 0.16em; text-transform: uppercase; color: #5DB872; white-space: nowrap; }
+    .f01-running-dot { width: 14px; height: 14px; border-radius: 50%; background: #5DB872; }
+    .f01-w { display: inline-block; will-change: transform, opacity; }
+    .f01-blue { color: #189EFF; }
+  </style>
+
+  <div id="root" data-composition-id="01-the-moment" data-duration="12.084" data-width="1920" data-height="1080">
+    <div id="f01-bg" class="clip f01-bg" data-start="0" data-duration="12.084" data-track-index="0"></div>
+
+    <div id="f01-stage" class="clip" data-start="0" data-duration="12.084" data-track-index="1">
+      <div id="f01-kicker" class="f01-kicker">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9L4.9 19.1" stroke="#189EFF" stroke-width="3" stroke-linecap="round" fill="none"/></svg>
+        <span>2026-09-02</span>
+      </div>
+
+      <div id="f01-date" class="f01-date">September 2, 2026</div>
+
+      <div id="f01-l1" class="f01-line f01-l1">Anthropic publishes the blueprint.</div>
+      <div id="f01-tag" class="f01-tag">anthropics/commerce-agents · open source</div>
+
+      <svg id="f01-rule" class="f01-rule" viewBox="0 0 1100 2" preserveAspectRatio="none">
+        <line id="f01-rule-line" x1="0" y1="1" x2="1100" y2="1" stroke="rgba(243,246,250,0.2)" stroke-width="2"/>
+      </svg>
+
+      <div id="f01-l2" class="f01-line f01-l2">One day later.</div>
+
+      <div id="f01-l3" class="f01-l3">This is <span class="f01-blue">Shopware's.</span></div>
+      <div id="f01-underline" class="f01-underline"></div>
+      <div id="f01-running" class="f01-running"><span class="f01-running-dot"></span><span>running</span></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      window.__timelines = window.__timelines || {};
+      var ID = "01-the-moment";
+      var tl = gsap.timeline({ paused: true });
+      var E = "power3.out";
+
+      function splitWords(el, cls) {
+        var text = el.textContent.trim().split(/\s+/);
+        el.textContent = "";
+        return text.map(function (w, i) {
+          var s = document.createElement("span");
+          s.className = cls;
+          s.textContent = w;
+          el.appendChild(s);
+          if (i < text.length - 1) el.appendChild(document.createTextNode(" "));
+          return s;
+        });
+      }
+      // Waterfall arrival: each word whips up from below, starting before the previous settles.
+      function waterfall(spans, at, step) {
+        spans.forEach(function (s, i) {
+          tl.fromTo(s, { opacity: 0, y: 46 }, { opacity: 1, y: 0, duration: 0.55, ease: E }, at + i * step);
+        });
+      }
+      function drawLine(sel, len, at, dur) {
+        tl.fromTo(sel, { strokeDasharray: len, strokeDashoffset: len, opacity: 1 }, { strokeDashoffset: 0, duration: dur, ease: E }, at);
+      }
+
+      var kicker = document.getElementById("f01-kicker");
+      var date = document.getElementById("f01-date");
+      var l1 = document.getElementById("f01-l1");
+      var tag = document.getElementById("f01-tag");
+      var l2 = document.getElementById("f01-l2");
+      var l3 = document.getElementById("f01-l3");
+      var running = document.getElementById("f01-running");
+
+      var dateWords = splitWords(date, "f01-w");
+      var l1Words = splitWords(l1, "f01-w");
+      var l2Words = splitWords(l2, "f01-w");
+
+      // Start states for everything that arrives later (immediate, outside the timeline).
+      gsap.set([l1, tag, l2, l3, running], { opacity: 0 });
+      gsap.set(l1Words.concat(l2Words), { opacity: 0 });
+      gsap.set("#f01-rule-line", { opacity: 0 });
+      gsap.set("#f01-underline", { scaleX: 0 });
+
+      // Scene 1 (0.0–1.6s): kicker + the date, word by word ("September" @0.05, "2nd" @1.22, "2026" @1.87).
+      tl.fromTo(kicker, { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.6, ease: E }, 0.0);
+      tl.fromTo(dateWords[0], { opacity: 0, y: 46 }, { opacity: 1, y: 0, duration: 0.6, ease: E }, 0.1);
+      tl.fromTo(dateWords[1], { opacity: 0, y: 46 }, { opacity: 1, y: 0, duration: 0.6, ease: E }, 1.2);
+      tl.fromTo(dateWords[2], { opacity: 0, y: 46 }, { opacity: 1, y: 0, duration: 0.6, ease: E }, 1.85);
+
+      // Scene 2 (3.2–4.6s): date demotes (slow-fast-slow nudge), line 1 waterfalls in on "Anthropic publishes" (@3.41).
+      tl.fromTo(date, { scale: 1, y: 0 }, { scale: 0.5, y: -24, duration: 0.8, ease: "power3.inOut" }, 3.15);
+      tl.set(l1, { opacity: 1 }, 3.4);
+      waterfall(l1Words, 3.4, 0.16);
+      tl.fromTo(tag, { opacity: 0, x: -16 }, { opacity: 1, x: 0, duration: 0.6, ease: E }, 5.3);
+
+      // Scene 3 (7.3–8.6s): section rule draws on, line 2 waterfalls in on "One day later" (@7.53).
+      drawLine("#f01-rule-line", 1100, 7.3, 0.7);
+      tl.set(l2, { opacity: 1 }, 7.53);
+      waterfall(l2Words, 7.53, 0.16);
+
+      // Scene 4 (8.6–11.6s): lines dim, "This is Shopware's." slams in on "this is Shopware's" (@8.72),
+      // blue underline draws on under "Shopware's" (@8.99), the green RUNNING tag lands on "Running." (@11.05).
+      tl.to([l1, l2, tag], { opacity: 0.38, duration: 0.5, ease: E }, 8.55);
+      tl.to("#f01-rule-line", { opacity: 0.4, duration: 0.5, ease: E }, 8.55);
+      tl.fromTo(l3, { opacity: 0, scale: 1.12, x: -30 }, { opacity: 1, scale: 1, x: 0, duration: 0.55, ease: "expo.out" }, 8.7);
+      tl.fromTo("#f01-underline", { scaleX: 0 }, { scaleX: 1, duration: 0.7, ease: E }, 9.0);
+      tl.fromTo(running, { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.45, ease: "expo.out" }, 11.05);
+
+      // Held read to the cut — nothing moves after ~11.5s.
+      window.__timelines[ID] = tl;
+    })();
+  </script>
+</template>

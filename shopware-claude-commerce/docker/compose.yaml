@@ -1,0 +1,45 @@
+# Shopware local stack for Claude Commerce Agents.
+#
+# Choice: dockware/shopware:6.7.13.0 (not shopware/docker-dev).
+# Reason: a single preinstalled Shopware 6.7 image with MariaDB, demo catalog,
+# and arm64/amd64 tags — the fastest reliable boot on macOS Darwin. Official
+# docker-dev requires generating a project with composer and is slower to first
+# HTTP 200. See docker/README.md and docs/version-matrix.md.
+#
+# Version lane: 6.7.13.x. 6.7.13.1 is a drop-in patch (change the tag, `up -d`,
+# re-run docker/bootstrap.sh). MCP_SERVER=1 is the feature flag of 6.7.11–6.7.13;
+# 6.7.14+ removes it (MCP always on, progressive tool discovery).
+#
+# Ports: storefront + admin http://localhost:8080  (admin /admin, user admin / shopware)
+#        MySQL 3306 (root / root, database shopware)
+
+name: commerce-agents
+
+services:
+  shopware:
+    image: dockware/shopware:6.7.13.0
+    container_name: commerce-agents-shopware
+    ports:
+      - "8080:80"
+      - "3306:3306"
+    environment:
+      PHP_VERSION: "8.4"
+      NODE_VERSION: "22"
+      MCP_SERVER: "1"
+      # UCP SDK blocks http://localhost agent-profile fetches unless this is on.
+      SWAG_AGENTIC_COMMERCE_UCP_PROFILE_FETCHING_DEVELOPMENT_MODE: "1"
+    volumes:
+      - shopware-mysql:/var/lib/mysql
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # Storefront `/` is 400 until sales_channel_domain matches APP_URL (bootstrap
+      # rewrites it to http://localhost:8080). Admin API answering 401 means PHP is up.
+      test: ["CMD-SHELL", "code=$$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1/api/_info/version || true); echo $$code | grep -qE '^(200|401)$'"]
+      interval: 10s
+      timeout: 8s
+      retries: 36
+      start_period: 50s
+
+volumes:
+  shopware-mysql:

@@ -1,0 +1,129 @@
+<?xml version="1.0" ?>
+<container xmlns="http://symfony.com/schema/dic/services"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:schemaLocation="http://symfony.com/schema/dic/services http://symfony.com/schema/dic/services/services-1.0.xsd">
+
+    <services>
+
+        <!-- Entity -->
+        <service id="Swag\CommerceAgentTools\StagedChange\Entity\AgentStagedChangeDefinition">
+            <tag name="shopware.entity.definition"/>
+        </service>
+
+        <!-- Shopping: pure services -->
+        <service id="Swag\CommerceAgentTools\Shopping\Policy\PolicyTextExtractor"/>
+        <service id="Swag\CommerceAgentTools\Shopping\Policy\PolicyScorer"/>
+        <service id="Swag\CommerceAgentTools\Shopping\Disclosure\MoneyFormatter"/>
+        <service id="Swag\CommerceAgentTools\Shopping\Disclosure\DisclosureFormatter">
+            <argument type="service" id="translator"/>
+            <argument type="service" id="Swag\CommerceAgentTools\Shopping\Disclosure\MoneyFormatter"/>
+        </service>
+        <service id="Swag\CommerceAgentTools\Shopping\Fulfillment\ShippingFeeResolver"/>
+        <service id="Swag\CommerceAgentTools\Shopping\Fulfillment\DeliveryTimeFormatter"/>
+
+        <!-- Store API MCP tools (group agent-shopping, endpoint /store-api/_mcp) -->
+        <service id="Swag\CommerceAgentTools\Mcp\StoreApi\PolicySearchTool">
+            <argument type="service" id="Shopware\Core\Framework\Mcp\Context\StoreApiMcpContextProvider"/>
+            <argument type="service" id="Shopware\Core\Content\Category\SalesChannel\NavigationRoute"/>
+            <argument type="service" id="Shopware\Core\Content\Category\SalesChannel\CategoryRoute"/>
+            <argument type="service" id="sales_channel.landing_page.repository"/>
+            <argument type="service" id="Shopware\Core\Content\LandingPage\SalesChannel\LandingPageRoute"/>
+            <argument type="service" id="Swag\CommerceAgentTools\Shopping\Policy\PolicyTextExtractor"/>
+            <argument type="service" id="Swag\CommerceAgentTools\Shopping\Policy\PolicyScorer"/>
+            <argument type="service" id="Shopware\Core\System\SystemConfig\SystemConfigService"/>
+            <tag name="shopware.store_api_mcp.tool"/>
+        </service>
+
+        <service id="Swag\CommerceAgentTools\Mcp\StoreApi\DisclosureTool">
+            <argument type="service" id="Shopware\Core\Framework\Mcp\Context\StoreApiMcpContextProvider"/>
+            <argument type="service" id="Shopware\Core\Content\Product\SalesChannel\Detail\ProductDetailRoute"/>
+            <argument type="service" id="Swag\CommerceAgentTools\Shopping\Disclosure\DisclosureFormatter"/>
+            <argument type="service" id="Shopware\Core\System\Locale\LanguageLocaleCodeProvider"/>
+            <argument type="service" id="Shopware\Core\System\SystemConfig\SystemConfigService"/>
+            <tag name="shopware.store_api_mcp.tool"/>
+        </service>
+
+        <service id="Swag\CommerceAgentTools\Mcp\StoreApi\FulfillmentOptionsTool">
+            <argument type="service" id="Shopware\Core\Framework\Mcp\Context\StoreApiMcpContextProvider"/>
+            <argument type="service" id="Shopware\Core\Checkout\Shipping\SalesChannel\ShippingMethodRoute"/>
+            <argument type="service" id="Shopware\Core\Content\Product\SalesChannel\ProductListRoute"/>
+            <argument type="service" id="Shopware\Core\Checkout\Cart\SalesChannel\CartService"/>
+            <argument type="service" id="Swag\CommerceAgentTools\Shopping\Fulfillment\ShippingFeeResolver"/>
+            <argument type="service" id="Swag\CommerceAgentTools\Shopping\Fulfillment\DeliveryTimeFormatter"/>
+            <tag name="shopware.store_api_mcp.tool"/>
+        </service>
+
+        <!-- Staged changes: domain services -->
+        <service id="Swag\CommerceAgentTools\StagedChange\StagedChangeStateMachine"/>
+        <service id="Swag\CommerceAgentTools\StagedChange\ActorResolver"/>
+        <service id="Swag\CommerceAgentTools\StagedChange\ChangePlanner"/>
+        <service id="Swag\CommerceAgentTools\StagedChange\ProductSnapshotLoader">
+            <argument type="service" id="product.repository"/>
+        </service>
+        <service id="Swag\CommerceAgentTools\StagedChange\StagedChangeService">
+            <argument type="service" id="swag_agent_staged_change.repository"/>
+            <argument type="service" id="Shopware\Core\Framework\DataAbstractionLayer\DefinitionInstanceRegistry"/>
+            <argument type="service" id="Swag\CommerceAgentTools\StagedChange\StagedChangeStateMachine"/>
+            <argument type="service" id="Swag\CommerceAgentTools\StagedChange\ActorResolver"/>
+            <argument type="service" id="event_dispatcher"/>
+            <argument type="service" id="Shopware\Core\System\SystemConfig\SystemConfigService"/>
+        </service>
+
+        <!-- Flow Builder triggers -->
+        <service id="Swag\CommerceAgentTools\Event\BusinessEventCollectorSubscriber">
+            <argument type="service" id="Shopware\Core\Framework\Event\BusinessEventCollector"/>
+            <tag name="kernel.event_subscriber"/>
+        </service>
+
+        <!-- Analytics -->
+        <service id="Swag\CommerceAgentTools\Analytics\OrderMetricsRepository">
+            <argument type="service" id="Shopware\Core\Framework\DataAbstractionLayer\DefinitionInstanceRegistry"/>
+        </service>
+
+        <!-- Admin API MCP tools (group agent-merchant, endpoint /api/_mcp) -->
+        <service id="Swag\CommerceAgentTools\Mcp\Admin\ChangeStageTool">
+            <argument type="service" id="Shopware\Core\Framework\Mcp\Context\McpContextProvider"/>
+            <argument type="service" id="Swag\CommerceAgentTools\StagedChange\ChangePlanner"/>
+            <argument type="service" id="Swag\CommerceAgentTools\StagedChange\ProductSnapshotLoader"/>
+            <argument type="service" id="Swag\CommerceAgentTools\StagedChange\StagedChangeService"/>
+            <argument type="service" id="Doctrine\DBAL\Connection"/>
+            <tag name="shopware.mcp.tool"/>
+        </service>
+
+        <service id="Swag\CommerceAgentTools\Mcp\Admin\ChangeListTool">
+            <argument type="service" id="Shopware\Core\Framework\Mcp\Context\McpContextProvider"/>
+            <argument type="service" id="Swag\CommerceAgentTools\StagedChange\StagedChangeService"/>
+            <tag name="shopware.mcp.tool"/>
+        </service>
+
+        <service id="Swag\CommerceAgentTools\Mcp\Admin\ChangeApplyTool">
+            <argument type="service" id="Shopware\Core\Framework\Mcp\Context\McpContextProvider"/>
+            <argument type="service" id="Swag\CommerceAgentTools\StagedChange\StagedChangeService"/>
+            <argument type="service" id="Swag\CommerceAgentTools\StagedChange\StagedChangeStateMachine"/>
+            <argument type="service" id="Doctrine\DBAL\Connection"/>
+            <tag name="shopware.mcp.tool"/>
+        </service>
+
+        <service id="Swag\CommerceAgentTools\Mcp\Admin\ChangeDiscardTool">
+            <argument type="service" id="Shopware\Core\Framework\Mcp\Context\McpContextProvider"/>
+            <argument type="service" id="Swag\CommerceAgentTools\StagedChange\StagedChangeService"/>
+            <argument type="service" id="Swag\CommerceAgentTools\StagedChange\StagedChangeStateMachine"/>
+            <tag name="shopware.mcp.tool"/>
+        </service>
+
+        <service id="Swag\CommerceAgentTools\Mcp\Admin\BusinessSnapshotTool">
+            <argument type="service" id="Shopware\Core\Framework\Mcp\Context\McpContextProvider"/>
+            <argument type="service" id="Swag\CommerceAgentTools\Analytics\OrderMetricsRepository"/>
+            <argument type="service" id="Psr\Clock\ClockInterface"/>
+            <tag name="shopware.mcp.tool"/>
+        </service>
+
+        <service id="Swag\CommerceAgentTools\Mcp\Admin\MetricsSeriesTool">
+            <argument type="service" id="Shopware\Core\Framework\Mcp\Context\McpContextProvider"/>
+            <argument type="service" id="Swag\CommerceAgentTools\Analytics\OrderMetricsRepository"/>
+            <argument type="service" id="Psr\Clock\ClockInterface"/>
+            <tag name="shopware.mcp.tool"/>
+        </service>
+
+    </services>
+</container>

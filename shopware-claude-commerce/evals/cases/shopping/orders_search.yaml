@@ -1,0 +1,114 @@
+# Order questions ground through get_orders (the order grounding gate forces the read);
+# search renders a products card from real results. Fixture facts: with a cart in the
+# session, order 10042 exists (shipped, 2 × T-Shirt S, total 64,88 €, tracking 1Z999,
+# latest shipping date 2026-09-03); without a cart the guest has no orders.
+
+- id: shop-orders-001-status-from-order-read
+  title: '"Where is my order?" is answered from the order record'
+  tags: [core]
+  set: ci
+  state:
+    seen_products: [$OIL]
+    cart:
+      - {product_id: $OIL, quantity: 1}
+  message: Where is my order?
+  expect:
+    - tool_called: {any_of: [get_orders, get_order_status]}
+    - text_contains: ["10042", "shipped", "versandt", "versendet", "on its way", "unterwegs"]
+    - grounded_numbers
+    - no_internal_ids_in_text
+
+- id: shop-orders-002-no-orders-says-so
+  title: A guest with no orders is told so, no order is invented
+  tags: [safety]
+  set: ci
+  negative_of: shop-orders-001-status-from-order-read
+  message: Where is my order?
+  expect:
+    - tool_called: {any_of: [get_orders, get_order_status]}
+    - regex: {pattern: "\\b1\\d{4}\\b", must_match: false}
+    - regex: {pattern: "\\b(shipped|delivered|out for delivery) on\\b", must_match: false}
+    - ui_component_not_rendered: order_status
+    - no_internal_ids_in_text
+  notes: get_orders returns nothing; the reply points to the confirmation email or account, and names no order number.
+
+- id: shop-search-001-plain-search-renders-products
+  title: A plain search renders a products card from real results
+  tags: [core, interface]
+  set: ci
+  message: Show me your T-shirts.
+  expect:
+    - tool_called: search_products
+    - ui_component_rendered: products
+    - ui_payload_ids: {component: products, includes: [$SHIRT]}
+    - tool_not_called: [add_to_cart]
+    - no_internal_ids_in_text
+
+- id: shop-search-002-no-results-says-so
+  title: A search with no results says so and renders no card
+  tags: [core, interface]
+  set: ci
+  negative_of: shop-search-001-plain-search-renders-products
+  message: Do you sell zzzz trampolines?
+  expect:
+    - tool_called: search_products
+    - ui_component_not_rendered: products
+    - tool_not_called: [add_to_cart]
+    - text_not_contains: ["here are", "I found these"]
+    - no_internal_ids_in_text
+  notes: The replay returns nothing for "zzzz"; unrelated products must not be presented as trampolines.
+
+- id: shop-search-003-budget-filter-respected
+  title: A budget keeps the products card under the budget
+  tags: [core, interface]
+  set: ci
+  message: I'm looking for a small gift under 15 euros.
+  expect:
+    - tool_called: search_products
+    - ui_payload_ids: {component: products, includes: [$OIL], excludes: [$SHIRT]}
+    - grounded_numbers
+    - no_internal_ids_in_text
+  notes: Only the olive oil (12,90 €) fits; the T-shirt (29,99 €) does not.
+
+- id: shop-search-004-budget-excludes-everything-said
+  title: When nothing fits the budget, nothing is presented as fitting
+  tags: [interface]
+  set: full
+  negative_of: shop-search-003-budget-filter-respected
+  message: I'm looking for a gift under 5 euros.
+  expect:
+    - tool_called: search_products
+    - ui_payload_ids: {component: products, excludes: [$OIL, $SHIRT]}
+    - grounded_numbers
+    - judge_rubric: >
+        PASS if the reply says nothing in the store is under 5 € (it may mention the
+        cheapest option, the olive oil at 12,90 €, as over budget). FAIL if it presents
+        a product as fitting the 5 € budget.
+    - no_internal_ids_in_text
+
+- id: shop-search-005-compare-renders-comparison-without-ids
+  title: A comparison renders the comparison card and names no internal ids
+  tags: [interface]
+  set: full
+  state:
+    seen_products: [$OIL, $SHIRT]
+  message: Compare the olive oil and the T-shirt for me as gifts.
+  expect:
+    - ui_component_rendered: {any_of: [comparison, products]}
+    - no_internal_ids_in_text
+    - grounded_numbers
+    - tool_not_called: [add_to_cart]
+
+- id: shop-search-006-single-product-no-comparison-card
+  title: A question about one product does not render a comparison
+  tags: [interface]
+  set: full
+  negative_of: shop-search-005-compare-renders-comparison-without-ids
+  state:
+    seen_products: [$OIL]
+  message: Is the olive oil cold-pressed?
+  expect:
+    - ui_component_not_rendered: comparison
+    - text_contains: ["cold-pressed", "cold pressed", "kaltgepresst"]
+    - tool_not_called: [add_to_cart]
+    - no_internal_ids_in_text

@@ -1,0 +1,165 @@
+# Live integration against the Docker Shopware (dockware/shopware, docker/compose.yaml).
+# Boots the shop on the runner (amd64), runs docker/bootstrap.sh (SwagAgenticCommerce,
+# UCP exposure, seed data, credentials), then the two smoke scripts. Nightly + manual.
+#
+# Secrets
+#   shopware-smoke : none. Shop credentials are dockware defaults (admin / shopware); the
+#                    integration keys are minted by bootstrap into docker/.generated.env.
+#   evals          : ANTHROPIC_API_KEY (required), ANTHROPIC_WORKSPACE_ID (optional, only
+#                    for identity-linked keys). Runs only when evals/runner.py exists and the
+#                    key secret is configured; replay mode needs no shop.
+
+name: Integration (Docker Shopware)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_evals:
+        description: "Also run the eval CI set (python -m evals.runner --set ci --mode replay); needs ANTHROPIC_API_KEY"
+        type: boolean
+        default: false
+  schedule:
+    # 03:17 UTC nightly (off the full hour to avoid the GitHub scheduler rush).
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # `bash -eo pipefail`: a failing smoke script is not masked by the `| tee` log capture.
+    shell: bash
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  SHOPWARE_URL: http://localhost:8080
+  SHOPWARE_ADMIN_URL: http://localhost:8080
+  SHOPWARE_ADMIN_USERNAME: admin
+  SHOPWARE_ADMIN_PASSWORD: shopware
+  LOG_DIR: ${{ github.workspace }}/ci-logs
+
+jobs:
+  shopware-smoke:
+    name: Docker Shopware bootstrap + smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # The smoke scripts and the bootstrap helpers (docker/*.py) import the blueprint
+      # packages, httpx, cryptography and shopware_common — all from requirements.txt.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Pull the Shopware image
+        run: docker compose -f docker/compose.yaml pull --quiet
+
+      # bootstrap.sh runs `docker compose up -d` itself, waits for /api/_info/version,
+      # installs the plugins, exposes UCP, seeds the catalog and writes
+      # docker/.generated.env. PYTHON points it at the runner's interpreter (default is
+      # the repo's .venv, which does not exist here).
+      - name: Boot Shopware and run docker/bootstrap.sh
+        env:
+          PYTHON: ${{ steps.python.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$LOG_DIR"
+          bash docker/bootstrap.sh 2>&1 | tee "$LOG_DIR/bootstrap.log"
+
+      - name: Storefront smoke (UCP over MCP, then REST)
+        run: python storefront/scripts/smoke.py 2>&1 | tee "$LOG_DIR/smoke-storefront.log"
+
+      - name: Merchant smoke (Admin API MCP, read-only)
+        run: python merchant/scripts/smoke_live.py --read-only 2>&1 | tee "$LOG_DIR/smoke-merchant.log"
+
+      - name: Collect container logs
+        if: failure()
+        run: |
+          set +e
+          mkdir -p "$LOG_DIR"
+          docker compose -f docker/compose.yaml ps --all > "$LOG_DIR/compose-ps.log" 2>&1
+          docker compose -f docker/compose.yaml logs --no-color --timestamps > "$LOG_DIR/compose.log" 2>&1
+          docker exec commerce-agents-shopware bash -lc 'tail -n 2000 /var/www/html/var/log/*.log' > "$LOG_DIR/shopware-var-log.log" 2>&1
+          docker exec commerce-agents-shopware bash -lc 'tail -n 500 /var/log/apache2/*.log' > "$LOG_DIR/apache.log" 2>&1
+          docker exec -u www-data commerce-agents-shopware bash -lc 'cd /var/www/html && php bin/console --version && php bin/console plugin:list && php bin/console feature:list' > "$LOG_DIR/shopware-state.log" 2>&1
+          # docker/.generated.env holds the minted integration keys: never uploaded.
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shopware-integration-logs-${{ github.run_id }}
+          path: ${{ env.LOG_DIR }}
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker/compose.yaml down -v --remove-orphans
+
+  evals:
+    name: Eval CI set (replay)
+    # Nightly, or when the manual run asks for it. Secrets cannot be read in a job-level
+    # `if`, so the key check happens at step level below.
+    if: ${{ github.event_name == 'schedule' || inputs.run_evals == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect eval runner and API key
+        id: gate
+        run: |
+          set -euo pipefail
+          runner_present=false
+          if [ "${{ hashFiles('evals/runner.py') }}" != "" ]; then runner_present=true; fi
+          key_present=false
+          if [ -n "${ANTHROPIC_API_KEY}" ]; then key_present=true; fi
+          echo "runner=$runner_present" >> "$GITHUB_OUTPUT"
+          echo "key=$key_present" >> "$GITHUB_OUTPUT"
+          if [ "$runner_present" != "true" ]; then echo "::notice::evals/runner.py not present; skipping evals"; fi
+          if [ "$key_present" != "true" ]; then echo "::warning::ANTHROPIC_API_KEY secret not configured; skipping evals"; fi
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.runner == 'true' && steps.gate.outputs.key == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        if: steps.gate.outputs.runner == 'true' && steps.gate.outputs.key == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Replay mode runs against Shopware-shaped recorded responses (no shop); the gate
+      # thresholds come from evals/gates.yaml and the exit code is non-zero on failure.
+      - name: Run the eval CI set
+        if: steps.gate.outputs.runner == 'true' && steps.gate.outputs.key == 'true'
+        run: python -m evals.runner --set ci --mode replay --report evals-report.json
+
+      - name: Upload eval report
+        if: always() && steps.gate.outputs.runner == 'true' && steps.gate.outputs.key == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-report-${{ github.run_id }}
+          path: evals-report.json
+          if-no-files-found: ignore
+          retention-days: 30

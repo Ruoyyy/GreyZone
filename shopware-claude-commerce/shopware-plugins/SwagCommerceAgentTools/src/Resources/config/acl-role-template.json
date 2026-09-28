@@ -1,0 +1,65 @@
+{
+    "$comment": "ACL role templates for the SwagCommerceAgentTools Admin MCP tools. Create roles with these privilege lists under Settings > Users & permissions > Roles (or via POST /api/acl-role) and assign them to the integration or user that authenticates against /api/_mcp. The privilege names in 'agent_change:*' are checked by the tools; the 'swag_agent_staged_change:*' privileges are enforced by the DAL on the ledger rows; product privileges cover the live write on apply.",
+    "roles": {
+        "agent-change-viewer": {
+            "description": "Read staged changes and analytics; cannot stage, apply or discard.",
+            "privileges": [
+                "agent_change:read",
+                "swag_agent_staged_change:read",
+                "order:read",
+                "order_line_item:read",
+                "product:read",
+                "sales_channel:read",
+                "currency:read"
+            ]
+        },
+        "claude-merchant-agent": {
+            "description": "The merchant agent's integration: reads analytics, stages changes with dry-run preview. It must NOT hold agent_change:update, so it can never apply its own proposals.",
+            "privileges": [
+                "agent_change:read",
+                "agent_change:create",
+                "swag_agent_staged_change:read",
+                "swag_agent_staged_change:create",
+                "order:read",
+                "order_line_item:read",
+                "product:read",
+                "product:update",
+                "tax:read",
+                "sales_channel:read",
+                "currency:read",
+                "category:read"
+            ]
+        },
+        "agent-change-approver": {
+            "description": "Human approver (or approval portal integration): lists, applies and discards staged changes.",
+            "privileges": [
+                "agent_change:read",
+                "agent_change:update",
+                "swag_agent_staged_change:read",
+                "swag_agent_staged_change:update",
+                "product:read",
+                "product:update",
+                "order:read",
+                "order_line_item:read",
+                "sales_channel:read"
+            ]
+        }
+    },
+    "mcpAllowlist": {
+        "claude-merchant-agent": [
+            "agent-change-stage",
+            "agent-change-list",
+            "agent-business-snapshot",
+            "agent-metrics-series",
+            "shopware-entity-schema",
+            "shopware-entity-search",
+            "shopware-entity-read",
+            "shopware-entity-aggregate"
+        ],
+        "agent-change-approver": [
+            "agent-change-list",
+            "agent-change-apply",
+            "agent-change-discard"
+        ]
+    }
+}

@@ -1,0 +1,37 @@
+<?xml version="1.0" ?>
+<container xmlns="http://symfony.com/schema/dic/services"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:schemaLocation="http://symfony.com/schema/dic/services https://symfony.com/schema/dic/services/services-1.0.xsd">
+    <parameters>
+        <!-- Empty default so the container compiles without the variable; the verifier
+             refuses (>= 32 bytes) when the route is hit. bootstrap.sh writes the real
+             value into the container's .env and docker/.generated.env. -->
+        <parameter key="commerce_agents.handoff.secret_default"></parameter>
+        <parameter key="commerce_agents.handoff.secret">%env(default:commerce_agents.handoff.secret_default:COMMERCE_AGENTS_HANDOFF_SECRET)%</parameter>
+    </parameters>
+
+    <services>
+        <service id="CommerceAgents\Handoff\Service\DatabaseConsumedCodeStore">
+            <argument type="service" id="Doctrine\DBAL\Connection"/>
+        </service>
+        <service id="CommerceAgents\Handoff\Service\ConsumedCodeStore"
+                 alias="CommerceAgents\Handoff\Service\DatabaseConsumedCodeStore"/>
+
+        <service id="commerce_agents.handoff.clock" class="Symfony\Component\Clock\NativeClock"/>
+
+        <service id="CommerceAgents\Handoff\Service\HandoffCodeVerifier">
+            <argument>%commerce_agents.handoff.secret%</argument>
+            <argument type="service" id="commerce_agents.handoff.clock"/>
+            <argument type="service" id="CommerceAgents\Handoff\Service\ConsumedCodeStore"/>
+        </service>
+
+        <service id="CommerceAgents\Handoff\Storefront\Controller\ContinueController" public="true">
+            <argument type="service" id="CommerceAgents\Handoff\Service\HandoffCodeVerifier"/>
+            <argument type="service" id="logger"/>
+            <call method="setContainer">
+                <argument type="service" id="service_container"/>
+            </call>
+            <tag name="controller.service_arguments"/>
+        </service>
+    </services>
+</container>

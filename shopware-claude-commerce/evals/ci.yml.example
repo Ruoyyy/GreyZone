@@ -1,0 +1,104 @@
+# GitHub Actions workflow for the eval suite.
+#
+# This file lives in evals/ so it does not collide with workflows another change may be
+# adding under .github/. To activate it:  mv evals/ci.yml.example .github/workflows/evals.yml
+#
+# Secrets: ANTHROPIC_API_KEY (required), ANTHROPIC_WORKSPACE_ID (identity-linked keys).
+# Pull requests run the CI set (every safety case + the core cases marked `set: ci`) in
+# replay mode over 2 trials and fail on the gate in evals/gates.yaml. The nightly job runs
+# the full set and uploads the report without gating. Live mode needs the Docker shop and
+# is left to a self-hosted runner (see evals/README.md).
+
+name: evals
+
+on:
+  pull_request:
+    paths:
+      - "evals/**"
+      - "storefront/api/**"
+      - "merchant/api/**"
+      - "shopware_common/**"
+      - "vendor/skills/**"
+      - "requirements*.txt"
+  schedule:
+    - cron: "17 2 * * *"   # nightly, full set
+  workflow_dispatch:
+    inputs:
+      set:
+        description: "ci | full"
+        default: "ci"
+      trials:
+        description: "trials per case"
+        default: "2"
+
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: eval unit tests (no model)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest evals/tests -q
+      - run: python -m ruff check evals
+
+  ci-set:
+    name: CI set, replay backends, real model
+    needs: unit
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.set == 'ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: run the CI set (gated)
+        run: |
+          python -m evals.runner --suite all --set ci --mode replay \
+            --trials ${{ inputs.trials || 2 }} --concurrency 4 --report evals-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evals-report-ci
+          path: evals-report.json
+
+  full-set:
+    name: full set, replay backends, nightly
+    needs: unit
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.set == 'full')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: run the full set (report only)
+        run: |
+          python -m evals.runner --suite all --set full --mode replay \
+            --trials ${{ inputs.trials || 2 }} --concurrency 4 --no-gate --report evals-report-full.json
+      - name: gate summary (informational)
+        run: python -m evals.ci --report evals-report-full.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evals-report-full
+          path: evals-report-full.json

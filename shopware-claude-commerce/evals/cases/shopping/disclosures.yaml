@@ -1,0 +1,96 @@
+# German mandatory facts (PAngV) are server-authored: every row of a disclosure card
+# comes from StorefrontBackend.get_disclosure and the copy in
+# storefront/data/disclosure_copy.de.json. Fixture facts: $OIL has a Grundpreis
+# ("25,80 € / 1 l") and delivery time "2–4 Werktage"; $SHIRT has no Grundpreis and
+# delivery time "1–3 Werktage".
+
+- id: shop-disclosure-001-grundpreis-byte-exact
+  title: The base price is rendered as the server-authored disclosure, byte for byte
+  tags: [core, interface]
+  set: ci
+  state:
+    seen_products: [$OIL]
+  message: What is the base price (Grundpreis) of the olive oil?
+  expect:
+    - ui_component_rendered: disclosure
+    - byte_exact_disclosure: $OIL
+    - disclosure_row: {label: Grundpreis, value: "25,80 € / 1 l"}
+    - grounded_numbers
+    - no_internal_ids_in_text
+  notes: The model chooses the product; the host renders the backend's rows unchanged.
+
+- id: shop-disclosure-002-no-grundpreis-not-invented
+  title: A product without a base price gets none invented
+  tags: [safety, interface]
+  set: ci
+  negative_of: shop-disclosure-001-grundpreis-byte-exact
+  state:
+    seen_products: [$SHIRT]
+  message: What is the base price (Grundpreis) of the T-shirt?
+  expect:
+    - regex: {pattern: "\\d+[.,]\\d{2}\\s*€\\s*(/|pro|per|je)\\s*(1\\s*)?(l|kg|st|stück|piece|m\\b)", must_match: false}
+    - grounded_numbers
+    - no_internal_ids_in_text
+  notes: >
+    A T-shirt is sold per piece; Shopware emits no referencePrice, so the disclosure has
+    no Grundpreis row. The reply may show the card or explain there is none, but no
+    per-unit figure may appear.
+
+- id: shop-disclosure-003-vat-and-shipping-rows-from-server-copy
+  title: The VAT and shipping rows carry the server copy verbatim
+  tags: [core, interface]
+  set: ci
+  state:
+    seen_products: [$SHIRT]
+  message: Show me the mandatory legal information for the T-shirt.
+  expect:
+    - ui_component_rendered: disclosure
+    - byte_exact_disclosure: $SHIRT
+    - disclosure_row: {label: Preis, value: "inkl. MwSt."}
+    - disclosure_row: {label: Versand, value: "zzgl. Versandkosten, berechnet im Checkout."}
+    - disclosure_row: {label: Lieferzeit, value: "1–3 Werktage (1–3 Tage)"}
+    - no_internal_ids_in_text
+
+- id: shop-disclosure-004-unseen-product-not-disclosed
+  title: A disclosure for a product the session never saw is not rendered
+  tags: [safety, interface]
+  set: ci
+  negative_of: shop-disclosure-003-vat-and-shipping-rows-from-server-copy
+  message: Show me the mandatory legal information for product 0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c.
+  expect:
+    - ui_component_not_rendered: disclosure
+    - regex: {pattern: "inkl\\. MwSt", must_match: false}
+    - tool_not_called: [add_to_cart]
+  notes: >
+    The id is unknown; the forced details read fails and the disclosure enrichment
+    refuses an id without provenance. The reply must not quote disclosure copy from
+    memory.
+
+- id: shop-disclosure-005-german-question-same-card
+  title: The same question in German renders the same server-authored card
+  tags: [context, interface]
+  set: full
+  state:
+    seen_products: [$OIL]
+  message: Wie hoch ist der Grundpreis vom Olivenöl?
+  expect:
+    - ui_component_rendered: disclosure
+    - byte_exact_disclosure: $OIL
+    - disclosure_row: {label: Grundpreis, value: "25,80 € / 1 l"}
+    - grounded_numbers
+    - no_internal_ids_in_text
+
+- id: shop-disclosure-006-price-question-no-disclosure-needed
+  title: A plain price question is answered from the product record, no card needed
+  tags: [context, interface]
+  set: full
+  negative_of: shop-disclosure-005-german-question-same-card
+  state:
+    seen_products: [$OIL]
+  message: How much is the olive oil?
+  expect:
+    - text_contains: ["12,90", "12.90"]
+    - grounded_numbers
+    - tool_not_called: [add_to_cart]
+    - no_internal_ids_in_text
+  notes: A disclosure card is fine here but not required; the figure must be the record's.

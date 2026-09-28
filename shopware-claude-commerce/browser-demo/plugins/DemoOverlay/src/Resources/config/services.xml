@@ -1,0 +1,22 @@
+<?xml version="1.0" ?>
+<container xmlns="http://symfony.com/schema/dic/services"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:schemaLocation="http://symfony.com/schema/dic/services https://symfony.com/schema/dic/services/services-1.0.xsd">
+    <services>
+        <!-- Demo-only: hands the storefront session's context token to the demo shell (same tab). -->
+        <service id="CommerceAgents\DemoOverlay\Storefront\Controller\DemoContextController" public="true">
+            <call method="setContainer">
+                <argument type="service" id="service_container"/>
+            </call>
+            <tag name="controller.service_arguments"/>
+        </service>
+
+        <!-- Demo-only: MariaDB WASM cannot parse >150 KB literals; write oversized MCP tool results in chunks.
+             Overrides the core service id so every consumer (tool responses, resource reads, cleanup) uses it. -->
+        <service id="Shopware\Core\Framework\Mcp\ToolResultCacheStorage"
+                 class="CommerceAgents\DemoOverlay\Mcp\ChunkedToolResultCacheStorage">
+            <argument type="service" id="Doctrine\DBAL\Connection"/>
+            <argument type="service" id="Psr\Clock\ClockInterface"/>
+        </service>
+    </services>
+</container>

@@ -1,0 +1,34 @@
+--- a/vendor/mcp/sdk/src/Server/Protocol.php
++++ b/vendor/mcp/sdk/src/Server/Protocol.php
+@@ -193,28 +193,9 @@
+             $handlerFound = true;
+ 
+             try {
+-                /** @var McpFiber $fiber */
+-                $fiber = new \Fiber(static fn () => $handler->handle($request, $session));
+-
+-                $result = $fiber->start();
+-
+-                if ($fiber->isSuspended()) {
+-                    if (\is_array($result) && isset($result['type'])) {
+-                        if ('notification' === $result['type']) {
+-                            $notification = $result['notification'];
+-                            $this->sendNotification($notification, $session);
+-                        } elseif ('request' === $result['type']) {
+-                            $request = $result['request'];
+-                            $timeout = $result['timeout'] ?? 120;
+-                            $this->sendRequest($request, $timeout, $session);
+-                        }
+-                    }
+-
+-                    $transport->attachFiberToSession($fiber, $session->getId());
+-
+-                    return;
+-                }
+-                $finalResult = $fiber->getReturn();
++                // browser-demo patch: PHP WASM (asyncify) has no Fiber support - zend_fiber_init_context aborts.
++                // Run the handler inline; server-initiated elicitation/sampling round-trips are unsupported.
++                $finalResult = $handler->handle($request, $session);
+ 
+                 if ($finalResult instanceof Response) {
+                     $responseEvent = $this->dispatchEvent(new ResponseEvent($finalResult, $request, $session));

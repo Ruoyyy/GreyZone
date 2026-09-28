@@ -1,0 +1,15 @@
+--- a/vendor/ucp-php-sdk/symfony-bundle/src/Bridge/DoctrineDbal/ConnectionFactory.php
++++ b/vendor/ucp-php-sdk/symfony-bundle/src/Bridge/DoctrineDbal/ConnectionFactory.php
+@@ -13,6 +13,12 @@
+ {
+     public static function create(string $dsn): Connection
+     {
++        // browser-demo patch: route the SDK's private connection through MariaDB WASM
++        // (same bridged DBAL driver Shopware uses) instead of native pdo_mysql TCP.
++        if (str_starts_with($dsn, 'mysql://') && class_exists(\App\Playground\MariadbLiteDriver::class)) {
++            return DriverManager::getConnection(['driverClass' => \App\Playground\MariadbLiteDriver::class, 'dbname' => 'shopware']);
++        }
++
+         // DsnParser has existed since DBAL 3.6 and this package requires ^3.7 || ^4.0, so
+         // the class_exists() guard that used to be here could never take its other branch.
+         // A fallback that cannot run is worse than no fallback: it reads as support for a
