@@ -84,8 +84,8 @@ docker compose -f docker/compose.yaml up -d
    (no console command exists for that cache, but the Admin API does — no SQL needed).
 9. **Seed catalog** (`docker/seed_catalog.py`, lookups by `productNumber`/name):
    `CA-TSHIRT` with S/M/L variants (L out of stock), `CA-OIL` with Grundpreis, delivery time
-   "2-4 Tage" on all seeded products; Standard shipping 4.90 € gross, Express 9.90 € gross with
-   delivery time "1-2 Tage", both assigned to the Storefront channel; CMS pages (type `page`,
+   "2-4 days" on all seeded products; Standard shipping 4.90 € gross, Express 9.90 € gross with
+   delivery time "1-2 days", both assigned to the Storefront channel; CMS pages (type `page`,
    one text block) *Widerrufsbelehrung / Rückgabe*, *Versand & Lieferzeit*, *AGB*,
    *Datenschutz* under footer → "Rechtliches & Service", *Kontakt* under the service
    navigation; `footerCategoryId` / `serviceCategoryId` are created and set on the channel
@@ -132,6 +132,28 @@ docker compose -f docker/compose.yaml up -d
 Running it twice produces identical output (only timings differ) and `verify.sh` counts
 one integration, one role, one of each seeded product/CMS page/category/delivery time, one
 active shop signing key, one agent signing key.
+
+## Starting data (`docker/snapshot/`)
+
+The curated shop — catalog, images, cost prices, policy pages, seeded order history — ships as
+a snapshot. Between the plugin steps and the agent key, bootstrap restores it
+(`docker/restore_snapshot.sh`) when the database has never been seeded (no `CA-OIL`, i.e. a
+fresh volume) or when `RESTORE_SNAPSHOT=1` is set; the seed steps after it then find
+everything in place. The restore drops the `shopware` database, imports `shopware.sql.gz`,
+moves every order timestamp forward by the snapshot's age (so "last 30 days" stays
+populated), and replaces `public/media` from `media.tar.gz`. On a kept database bootstrap only
+puts back image files that are missing (after a container recreate). Either way it then runs
+`theme:compile`: the compiled storefront CSS/JS also lives in the container layer, under a
+path the database decides, so a restored or recreated shop would otherwise render unstyled.
+
+```bash
+docker/snapshot.sh                          # capture the running shop as the new starting data
+RESTORE_SNAPSHOT=1 ./docker/bootstrap.sh    # reset an existing shop to the snapshot
+```
+
+Runtime tables (carts, logs, message queue, UCP sessions/tokens, profile cache) are captured
+without rows. The dump contains the local demo secrets: the admin password hash, integration
+secret hashes and the shop's UCP signing key.
 
 ## verify.sh
 
@@ -190,11 +212,11 @@ answers 400 (the Admin API 401 is the health signal).
 
 ```bash
 docker compose -f docker/compose.yaml down        # keeps the MySQL volume
-docker compose -f docker/compose.yaml down -v     # drops it: full reinstall + reseed on next bootstrap
+docker compose -f docker/compose.yaml down -v     # drops it: full reinstall + snapshot restore on next bootstrap
 ```
 
-A recreate of the container drops the plugin files under `/var/www/html` (they live in the
-container layer); MySQL (catalog, UCP config, integration, orders) survives in the
+A recreate of the container drops the plugin files and media under `/var/www/html` (they live
+in the container layer); MySQL (catalog, UCP config, integration, orders) survives in the
 `shopware-mysql` volume. Re-run `./docker/bootstrap.sh` — it restores the plugins at the
 pinned refs, keeps the existing handoff secret and agent key, and rotates the integration
 secret only if `.generated.env` lost it.

@@ -4,9 +4,9 @@
     python docker/seed_catalog.py --shop-url http://localhost:8080 [--user admin --password shopware]
 
 * Catalog: size variants (one out of stock) and a Grundpreis product, all with a delivery
-  time ("2-4 Tage") so the storefront can show an ETA. Products are looked up by
+  time ("2-4 days") so the storefront can show an ETA. Products are looked up by
   ``productNumber`` (CA-TSHIRT*, CA-OIL).
-* Shipping: the Standard method costs 4.90 € gross, Express 9.90 € gross with a "1-2 Tage"
+* Shipping: the Standard method costs 4.90 € gross, Express 9.90 € gross with a "1-2 days"
   delivery time; both are assigned to the Storefront sales channel. The host reads
   ``POST /store-api/shipping-method`` → ``prices[].currencyPrice[]`` and ``deliveryTime``.
 * Policies (M6): CMS pages (type ``page``, one text block each) for Widerruf/Rückgabe,
@@ -23,8 +23,8 @@ from typing import Any
 
 from _bootstrap_lib import CURRENCY_EUR, AdminApi, AdminApiError, new_id
 
-DELIVERY_TIME_STANDARD = {"name": "2-4 Tage", "min": 2, "max": 4, "unit": "day"}
-DELIVERY_TIME_EXPRESS = {"name": "1-2 Tage", "min": 1, "max": 2, "unit": "day"}
+DELIVERY_TIME_STANDARD = {"name": "2-4 days", "min": 2, "max": 4, "unit": "day"}
+DELIVERY_TIME_EXPRESS = {"name": "1-2 days", "min": 1, "max": 2, "unit": "day"}
 SHIPPING_STANDARD_TECHNICAL_NAME = "shipping_standard"
 SHIPPING_EXPRESS_TECHNICAL_NAME = "shipping_express"
 SHIPPING_STANDARD_GROSS = 4.90
@@ -39,7 +39,8 @@ FOOTER_ROOT_NAME = "Footer"
 FOOTER_COLUMN_NAME = "Rechtliches & Service"
 SERVICE_ROOT_NAME = "Service"
 
-# (category/page name, CMS text). German demo copy; the storefront's policies.py indexes it.
+# (category/page name, CMS text). German demo copy followed by its English translation, so a
+# policy search in either language finds the page; the storefront's policies.py indexes it.
 POLICY_PAGES: tuple[tuple[str, str], ...] = (
     (
         "Widerrufsbelehrung / Rückgabe",
@@ -48,15 +49,26 @@ POLICY_PAGES: tuple[tuple[str, str], ...] = (
         "Sie oder ein von Ihnen benannter Dritter die Waren in Besitz genommen haben.</p>"
         "<h3>Rückgabe</h3><p>Senden Sie die Ware innerhalb von 14 Tagen nach dem Widerruf an uns zurück. "
         "Die Rücksendung ist für Sie kostenlos; ein Retourenlabel erhalten Sie per E-Mail. Die Rückerstattung "
-        "erfolgt innerhalb von 14 Tagen nach Eingang der Ware über das ursprüngliche Zahlungsmittel.</p>",
+        "erfolgt innerhalb von 14 Tagen nach Eingang der Ware über das ursprüngliche Zahlungsmittel.</p>"
+        "<h2>Right of withdrawal</h2><p>You have the right to withdraw from this contract within "
+        "<strong>14 days</strong> without giving any reason. The withdrawal period is fourteen days from the "
+        "day on which you, or a third party named by you, took possession of the goods.</p>"
+        "<h3>Returns and refunds</h3><p>Send the goods back to us within 14 days of your withdrawal. Returns "
+        "are free of charge for you; you will receive a return label by email. We refund you within 14 days "
+        "of receiving the goods, using your original payment method.</p>",
     ),
     (
         "Versand & Lieferzeit",
         "<h2>Versand</h2><p>Standardversand innerhalb Deutschlands kostet <strong>4,90 €</strong>, "
-        "Expressversand <strong>9,90 €</strong>. Ab einem Bestellwert von 50 € versenden wir kostenfrei.</p>"
+        "Expressversand <strong>9,90 €</strong>.</p>"
         "<h3>Lieferzeit</h3><p>Standard: 2–4 Werktage. Express: 1–2 Werktage. Bestellungen, die bis 14 Uhr "
         "eingehen, verlassen unser Lager noch am selben Werktag. Sie erhalten eine Versandbestätigung mit "
-        "Sendungsverfolgung per E-Mail.</p>",
+        "Sendungsverfolgung per E-Mail.</p>"
+        "<h2>Shipping</h2><p>Standard shipping within Germany costs <strong>€4.90</strong>, express shipping "
+        "<strong>€9.90</strong>.</p>"
+        "<h3>Delivery time</h3><p>Standard: 2–4 working days. Express: 1–2 working days. Orders received by "
+        "2 pm leave our warehouse on the same working day. You will receive a shipping confirmation with "
+        "tracking by email.</p>",
     ),
     (
         "AGB",
@@ -66,7 +78,14 @@ POLICY_PAGES: tuple[tuple[str, str], ...] = (
         "<p><strong>§ 2 Preise und Zahlung.</strong> Alle Preise sind Bruttopreise inklusive gesetzlicher "
         "Mehrwertsteuer. Wir akzeptieren Rechnung, Vorkasse und Nachnahme.</p>"
         "<p><strong>§ 3 Lieferung.</strong> Die Lieferung erfolgt an die im Checkout angegebene Adresse. "
-        "Es gelten die auf der Seite Versand &amp; Lieferzeit genannten Fristen.</p>",
+        "Es gelten die auf der Seite Versand &amp; Lieferzeit genannten Fristen.</p>"
+        "<h2>Terms and conditions</h2><p><strong>§ 1 Scope.</strong> These terms and conditions apply to all "
+        "orders placed in our online shop, including orders prepared by an AI assistant. The contract is only "
+        "concluded when you place your order at checkout.</p>"
+        "<p><strong>§ 2 Prices and payment.</strong> All prices are gross prices including statutory VAT. We "
+        "accept invoice, payment in advance and cash on delivery.</p>"
+        "<p><strong>§ 3 Delivery.</strong> Goods are delivered to the address given at checkout. The delivery "
+        "times stated on the Versand &amp; Lieferzeit (shipping and delivery) page apply.</p>",
     ),
     (
         "Datenschutz",
@@ -74,14 +93,22 @@ POLICY_PAGES: tuple[tuple[str, str], ...] = (
         "Bestellung (Art. 6 Abs. 1 lit. b DSGVO). Ein KI-Assistent erhält nur die Daten, die für Suche, "
         "Warenkorb und Bestellstatus notwendig sind; Zahlungsdaten werden nie an den Assistenten übergeben.</p>"
         "<p>Sie haben jederzeit das Recht auf Auskunft, Berichtigung und Löschung Ihrer Daten. Wenden Sie sich "
-        "dazu an datenschutz@example.com.</p>",
+        "dazu an datenschutz@example.com.</p>"
+        "<h2>Privacy policy</h2><p>We process your data solely to handle your order (Art. 6(1)(b) GDPR). An "
+        "AI assistant only receives the data it needs for search, the cart and order status; payment data is "
+        "never passed to the assistant.</p>"
+        "<p>You have the right to access, correct and delete your data at any time. To do so, contact "
+        "datenschutz@example.com.</p>",
     ),
 )
 CONTACT_PAGE: tuple[str, str] = (
     "Kontakt",
     "<h2>Kontakt</h2><p>Sie erreichen unseren Kundenservice Montag bis Freitag von 9 bis 17 Uhr unter "
     "<strong>+49 30 1234567</strong> oder per E-Mail an service@example.com. Für Fragen zu einer Bestellung "
-    "halten Sie bitte Ihre Bestellnummer bereit.</p>",
+    "halten Sie bitte Ihre Bestellnummer bereit.</p>"
+    "<h2>Contact</h2><p>Our customer service is available Monday to Friday from 9 am to 5 pm at "
+    "<strong>+49 30 1234567</strong> or by email at service@example.com. For questions about an order, "
+    "please have your order number ready.</p>",
 )
 
 
@@ -156,13 +183,29 @@ def ensure_unit(api: AdminApi, short_code: str = "l", name: str = "Liter") -> st
 # --------------------------------------------------------------------------- products
 
 
+def _entry_gross(entries: Any) -> float | None:
+    """The EUR entry's gross; the seed writes one entry per price field."""
+    return float(entries[0]["gross"]) if isinstance(entries, list) and entries else None
+
+
+def _seeded_value_unchanged(live: Any, seeded: Any) -> bool:
+    """True when the live value already equals the seeded one. The Admin search answer
+    is JSON:API (fields nest under ``attributes`` — unwrapped by the caller) and its
+    price entries carry extra keys (``extensions``, ``listPrice``, …), so a price field
+    compares by its gross amount, everything else by equality."""
+    if isinstance(live, list) or isinstance(seeded, list):
+        return _entry_gross(live) == _entry_gross(seeded)
+    return live == seeded
+
+
 def upsert_product(api: AdminApi, payload: dict[str, Any]) -> str:
     existing = api.search_one("product", "productNumber", payload["productNumber"])
     if existing:
+        attrs = existing.get("attributes") or existing
         patch = {
             key: payload[key]
-            for key in ("deliveryTimeId",)
-            if key in payload and existing.get(key) != payload[key]
+            for key in ("deliveryTimeId", "purchasePrices")
+            if key in payload and not _seeded_value_unchanged(attrs.get(key), payload[key])
         }
         if patch:
             api.request("PATCH", f"/api/product/{existing['id']}", patch)
@@ -236,6 +279,11 @@ def seed_products(api: AdminApi, channel: dict[str, Any]) -> None:
         "stock": 40,
         "taxId": tax,
         "price": [{"currencyId": CURRENCY_EUR, "gross": 12.90, "net": 10.84, "linked": True}],
+        # The cost price mirrors merchant/data/seed.json (7.50 — pinned by the pricing
+        # tests and eval cases; the merchant agent's floor and margin come from it).
+        "purchasePrices": [
+            {"currencyId": CURRENCY_EUR, "gross": 7.50, "net": 6.30, "linked": True}
+        ],
         "active": True,
         "deliveryTimeId": delivery_time,
         "visibilities": visibilities,
@@ -328,7 +376,7 @@ def seed_shipping(api: AdminApi, channel: dict[str, Any]) -> None:
             f"/api/shipping-method/{express['id']}",
             {"deliveryTimeId": express_delivery, "active": True},
         )
-        print("  shipping Express: delivery time set to 1-2 Tage")
+        print("  shipping Express: delivery time set to 1-2 days")
     if not standard.get("active"):
         api.request("PATCH", f"/api/shipping-method/{standard['id']}", {"active": True})
 

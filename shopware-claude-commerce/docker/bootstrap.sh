@@ -5,6 +5,9 @@
 # yields the same state (one agent signing key, one shop signing key, one integration,
 # one ACL role, no duplicate products/CMS pages/orders). See docker/README.md.
 #
+# Starting data: a fresh volume is filled from docker/snapshot/ (docker/snapshot.sh captures
+# it); the seed steps afterwards find everything in place and change nothing.
+#
 # Plugins: SwagAgenticCommerce + SwagMcpMerchantTools (pinned clones), CommerceAgentsHandoff
 # (docker/plugins) and SwagCommerceAgentTools (shopware-plugins/, this repo's agent tools).
 set -euo pipefail
@@ -255,6 +258,29 @@ if ! migrate_output="$(console "database:migrate --all ${AGENT_TOOLS_NAME}" 2>&1
 fi
 console 'cache:clear' >/dev/null
 echo "debug:mcp: $(exec_shop 'php bin/console debug:mcp' | grep -c -E '^\| agent-' | tr -d '[:space:]') Admin agent tools registered (Store API tools are listed by /store-api/_mcp only)"
+
+step "Starting data: docker/snapshot on a fresh volume (RESTORE_SNAPSHOT=1 forces it)"
+seeded="$(exec_root "mysql -h127.0.0.1 -uroot -proot -N shopware -e \"SELECT COUNT(*) FROM product WHERE product_number = 'CA-OIL'\"" 2>/dev/null | tr -d '\r\n')"
+if [[ ! -f "$ROOT/docker/snapshot/shopware.sql.gz" ]]; then
+  echo "no snapshot; the seed steps below build the catalog"
+elif [[ "${RESTORE_SNAPSHOT:-0}" == "1" || "${seeded}" == "0" ]]; then
+  SHOPWARE_CONTAINER="$CONTAINER" "$ROOT/docker/restore_snapshot.sh"
+  # The snapshot carries the domain it was taken on; point it at this stack's URL again.
+  "$PYTHON" "$ROOT/docker/shop_domain.py" --shop-url "$SHOP_URL" --user "$ADMIN_USER" --password "$ADMIN_PASS"
+  console 'cache:clear --no-warmup' >/dev/null
+else
+  echo "shop already seeded; keeping its data (RESTORE_SNAPSHOT=1 replaces it with the snapshot)"
+  # Media files live in the container layer, not the MySQL volume: after a container recreate
+  # the database still points at images that are gone. Put back only the missing ones.
+  gunzip -c "$ROOT/docker/snapshot/media.tar.gz" \
+    | docker exec -i -u root "$CONTAINER" tar -C "${SHOP_ROOT}/public" --skip-old-files -xf -
+  exec_root "chown -R www-data:www-data ${SHOP_ROOT}/public/media"
+fi
+# Compiled theme assets live in the container layer too, under a path derived from the
+# database (theme seed); after a restore or a container recreate the storefront would link
+# CSS/JS that is not there. Compiling is idempotent and takes seconds.
+console 'theme:compile' >/dev/null
+console 'cache:clear --no-warmup' >/dev/null
 
 step "Agent signing key -> agent-profile.json (exactly one signing_keys entry)"
 mkdir -p "$SECRETS_DIR"

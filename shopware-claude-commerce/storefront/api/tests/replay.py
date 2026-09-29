@@ -1030,7 +1030,7 @@ class ShopwareReplay:
                 ),
                 None,
             )
-            if parent_filter is not None:
+            if parent_filter is not None and parent_filter.get("value") is not None:
                 parent = parent_filter.get("value")
                 children = [c for c in STORE_CHILDREN if c["parentId"] == parent]
                 return httpx.Response(200, json={"elements": deepcopy(children)})

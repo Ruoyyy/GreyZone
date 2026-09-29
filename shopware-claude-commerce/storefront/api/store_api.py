@@ -249,11 +249,16 @@ class StoreApiClient:
 
     async def list_products(self, limit: int = 24) -> list[dict[str, Any]]:
         """Visible catalog rows (``POST /store-api/product``). Children are dropped so the
-        grid and warm-up show families, matching UCP search."""
+        grid and warm-up show families, matching UCP search; the ``parentId`` filter keeps
+        them from using up ``limit``."""
         body = await self._request(
             "POST",
             "/store-api/product",
-            json={"limit": limit, "associations": _product_associations()},
+            json={
+                "limit": limit,
+                "filter": [{"type": "equals", "field": "parentId", "value": None}],
+                "associations": _product_associations(),
+            },
         )
         if not body:
             return []

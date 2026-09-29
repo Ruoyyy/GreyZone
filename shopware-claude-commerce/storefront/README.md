@@ -80,7 +80,7 @@ mall). On this host it also separates checkout preview from explicit order submi
 After warm-up it names live categories and titles from the Shopware catalog.
 `search_products` uses UCP, then Store API search, then the same `POST /store-api/product`
 listing as the grid, then the in-memory cache. `get_product_details` accepts a hex id or
-an exact grid title ("Main product").
+an exact grid title ("Phone").
 
 ### Shopware facts the backend relies on
 

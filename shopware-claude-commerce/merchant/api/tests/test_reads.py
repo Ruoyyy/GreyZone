@@ -144,10 +144,10 @@ async def test_pricing_context_cost_margin_and_floor(warmed, session):
 
 
 async def test_catalog_refresh_pages_until_total(settings, config, now, session):
-    from merchant.api.fake_admin import DEFAULT_SEED, _product
+    from merchant.api.fake_admin import _product, default_products
     from merchant.api.ledger import SqliteChangeLedger
 
-    many = [*DEFAULT_SEED] + [
+    many = default_products() + [
         _product(f"{i:032x}", f"Bulk product {i}", f"BULK-{i:04d}", 5.0, 10)
         for i in range(1000, 1230)
     ]

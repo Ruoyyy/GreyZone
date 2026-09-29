@@ -189,49 +189,19 @@ def _product(
     }
 
 
-DEFAULT_SEED: list[dict[str, Any]] = [
-    _product(
-        SHIRT,
-        "Claude Commerce T-Shirt",
-        "CA-TSHIRT",
-        29.99,
-        0,
-        description="Organic cotton T-shirt in three sizes.",
-        category_id=CATEGORY_APPAREL,
-        child_count=3,
-    ),
-    _product(SHIRT_S, "Claude Commerce T-Shirt — S", "CA-TSHIRT-S", 29.99, 4, parent_id=SHIRT),
-    _product(SHIRT_M, "Claude Commerce T-Shirt — M", "CA-TSHIRT-M", 31.99, 12, parent_id=SHIRT),
-    # L inherits the family price (``price`` is null on the child, as Shopware stores it).
-    _product(SHIRT_L, "Claude Commerce T-Shirt — L", "CA-TSHIRT-L", None, 0, parent_id=SHIRT),
-    _product(
-        OIL,
-        "Extra Virgin Olive Oil 500 ml",
-        "CA-OIL",
-        12.90,
-        40,
-        description="Cold-pressed olive oil with Grundpreis.",
-        category_id=CATEGORY_FOOD,
-        purchase_price=7.50,
-    ),
-    _product(
-        CANDLE,
-        "Soy Wax Candle",
-        "CA-CANDLE",
-        9.90,
-        3,
-        description="Hand-poured soy wax candle, 40 h burn time.",
-    ),
-    _product(
-        POSTER,
-        "Commerce Agents Poster A2",
-        "CA-POSTER",
-        14.00,
-        15,
-        active=False,
-        description="Poster, A2, matte.",
-    ),
-]
+#: The canonical catalog this fake serves: the same ``merchant/data/seed.json`` the
+#: in-process store reads, so the fake layer mirrors the data file (which
+#: ``docker/seed_catalog.py`` seeds the live shop from) instead of inventing facts.
+SEED_FILE = Path(__file__).resolve().parents[1] / "data" / "seed.json"
+
+
+def default_products() -> list[dict[str, Any]]:
+    """The normalised ``data/seed.json`` rows; an empty store when the file is absent."""
+    if not SEED_FILE.exists():
+        return []
+    raw = json.loads(SEED_FILE.read_text(encoding="utf-8"))
+    return [_normalise_seed_product(row) for row in raw.get("products") or []]
+
 
 DEFAULT_TAXES = [{"id": TAX_ID, "name": "Standard rate", "taxRate": TAX_RATE, "position": 1}]
 DEFAULT_CURRENCIES = [
@@ -353,7 +323,7 @@ class FakeAdmin:
         self.mode = mode
         self.sales_channel_id = sales_channel_id
         self.now = now or datetime.now(UTC)
-        seed = deepcopy(products or DEFAULT_SEED)
+        seed = deepcopy(products) if products is not None else default_products()
         self._tables: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in _ENTITIES}
         for row in seed:
             self._tables["product"][row["id"]] = row
@@ -398,16 +368,17 @@ class FakeAdmin:
 
     @classmethod
     def from_seed(cls, path: Path, *, sales_channel_id: str = SALES_CHANNEL_ID) -> FakeAdmin:
-        """The local store: products from ``seed.json`` (defaults when absent) and the
-        generated order history. ``sales_channel_id`` lets the fake answer to the id the
+        """The local store: products from the named seed file (an empty store when it
+        is absent or carries no products) and the generated order history.
+        ``sales_channel_id`` lets the fake answer to the id the
         environment names, so promotions staged locally bind to it."""
         channel = sales_channel_id or SALES_CHANNEL_ID
         if not path.exists():
-            return cls(sales_channel_id=channel)
+            return cls([], sales_channel_id=channel)
         raw = json.loads(path.read_text(encoding="utf-8"))
         products = raw.get("products")
         if not products:
-            return cls(sales_channel_id=channel)
+            return cls([], sales_channel_id=channel)
         return cls([_normalise_seed_product(row) for row in products], sales_channel_id=channel)
 
     async def aclose(self) -> None:
@@ -1074,6 +1045,11 @@ class FakeAdmin:
 def _normalise_seed_product(row: dict[str, Any]) -> dict[str, Any]:
     price = row.get("price")
     gross = float(price[0]["gross"]) if isinstance(price, list) and price else None
+    purchase = row.get("purchasePrices")
+    purchase_gross = (
+        float(purchase[0]["gross"]) if isinstance(purchase, list) and purchase else None
+    )
+    categories = [str(entry) for entry in row.get("categoryIds") or [] if entry]
     return _product(
         row["id"],
         row.get("name") or row["id"],
@@ -1083,6 +1059,8 @@ def _normalise_seed_product(row: dict[str, Any]) -> dict[str, Any]:
         parent_id=row.get("parentId"),
         description=row.get("description") or "",
         active=bool(row.get("active", True)),
+        category_id=categories[0] if categories else None,
+        purchase_price=purchase_gross,
         child_count=int(row.get("childCount") or 0),
     )
 
