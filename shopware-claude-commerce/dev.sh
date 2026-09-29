@@ -10,7 +10,10 @@
 #
 # start waits for every health URL; if any service fails to come up, all four are stopped
 # again (all or nothing). stop also frees the ports when a service was started by hand.
-# Shopware (docker/compose.yaml, :8080) is not managed here. Logs and PID files: .run/
+# Shopware (docker/compose.yaml, :8080) is not started here, but start refuses when it is
+# unreachable (the hosts would come up "healthy" yet fail every catalog/order call). Skip
+# that guard with SHOPWARE_LOCAL_STORE=1 (in-process shop) or SKIP_SHOPWARE_CHECK=1.
+# Logs and PID files: .run/
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -43,6 +46,33 @@ pid_alive() { [[ -n "$1" ]] && kill -0 "$1" 2>/dev/null; }
 read_pid() { [[ -f "$RUN_DIR/$1.pid" ]] && cat "$RUN_DIR/$1.pid"; }
 
 healthy() { [[ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$1")" == "200" ]]; }
+
+# --- Shopware backend (started elsewhere; the hosts talk to it) --------------
+# A config value from the process env, else from .env (unquoted values, as bootstrap writes).
+env_val() {
+  local val
+  val="$(printenv "$1" 2>/dev/null || true)"
+  if [[ -z "$val" && -f "$ROOT/.env" ]]; then
+    val="$(sed -n "s/^[[:space:]]*$1=//p" "$ROOT/.env" | tail -n1)"
+  fi
+  printf '%s' "$val"
+}
+
+# Mirrors the hosts' local_store_requested(): the in-process shop needs no :8080.
+local_store_on() {
+  case "$(env_val SHOPWARE_LOCAL_STORE)" in "" | 0 | false | False) return 1 ;; *) return 0 ;; esac
+}
+
+shopware_url() {
+  local u; u="$(env_val SHOPWARE_ADMIN_URL)"; [[ -z "$u" ]] && u="$(env_val SHOPWARE_URL)"
+  [[ -z "$u" ]] && u="http://127.0.0.1:8080"
+  printf '%s' "${u%/}"
+}
+
+# 000 = nothing answered; any HTTP status (Shopware returns 401 unauthenticated) means it is up.
+shopware_reachable() {
+  [[ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$(shopware_url)/api/_info/version" 2>/dev/null)" != "000" ]]
+}
 
 start_one() {
   local name="$1" cmd="$2"
@@ -95,6 +125,15 @@ cmd_start() {
   done
   if ((busy)); then
     echo "refusing to start; run ./dev.sh restart or ./dev.sh stop first" >&2
+    return 1
+  fi
+
+  if ! local_store_on && [[ "${SKIP_SHOPWARE_CHECK:-0}" != "1" ]] && ! shopware_reachable; then
+    echo "Shopware is not reachable at $(shopware_url) — the hosts would start but every" >&2
+    echo "catalog and order call fails (they show 'up' with 0 products). Start it, then retry:" >&2
+    echo "    docker start commerce-agents-shopware   # or: docker compose -f docker/compose.yaml up -d" >&2
+    echo "(SHOPWARE_LOCAL_STORE=1 uses the in-process shop and needs no container;" >&2
+    echo " SKIP_SHOPWARE_CHECK=1 bypasses this guard.)" >&2
     return 1
   fi
 
