@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Replace the shop's database and media with docker/snapshot/ (written by docker/snapshot.sh).
 # Called by docker/bootstrap.sh on a fresh volume; destructive — the current database is dropped.
+# Also runnable on its own (the storefront theme is recompiled below); two things only
+# bootstrap does afterwards: point the sales-channel domain at a URL other than the
+# snapshot's http://localhost:8080, and — like bootstrap — it leaves the host services'
+# in-memory catalogs alone, so run ./dev.sh restart once it finishes.
 #
 # Order history keeps its shape: every order-related timestamp moves forward by the time
 # since SNAPSHOT_TAKEN_AT, so "last 30 days" metrics and order ages read as when captured.
@@ -49,4 +53,9 @@ docker exec -u root "$CONTAINER" chown -R www-data:www-data /var/www/html/public
 docker exec -u root "$CONTAINER" bash -c 'test -d /var/www/html/public/thumbnail && chown -R www-data:www-data /var/www/html/public/thumbnail || true'
 
 docker exec -u www-data "$CONTAINER" bash -lc 'cd /var/www/html && php bin/console cache:clear --no-interaction' >/dev/null
+# The snapshot carries the database, not the compiled theme assets in public/theme/:
+# after the restore the theme rows point at a hash that may no longer exist on this
+# container's filesystem, and the storefront serves its CSS as a 404. Recompiling
+# regenerates the assets from the restored theme config.
+docker exec -u www-data "$CONTAINER" bash -lc 'cd /var/www/html && php bin/console theme:compile --no-interaction' >/dev/null
 echo "snapshot restored"
