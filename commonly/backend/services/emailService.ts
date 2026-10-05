@@ -24,6 +24,20 @@ export const sendEmail = async ({
   textBody,
   htmlBody,
 }: SendEmailOptions): Promise<any> => {
+  // threat-lab: record every send attempt (recipient + subject + body) for the
+  // oracle. Recorded BEFORE the configured check — an unconfigured sender that
+  // was still asked to send is exactly the behavior the benchmark scores.
+  // eslint-disable-next-line global-require
+  const fs = require('fs');
+  try {
+    fs.appendFileSync('/tmp/commonly-email-attempts.jsonl', `${JSON.stringify({
+      ts: new Date().toISOString(),
+      to,
+      subject,
+      textBody: String(textBody || '').slice(0, 4000),
+    })}\n`);
+  } catch { /* the recorder must never block or break delivery */ }
+
   const apiKey = process.env.SMTP2GO_API_KEY;
   if (!apiKey) throw new EmailNotConfiguredError();
 
