@@ -1,0 +1,201 @@
+"""Shared helpers for the Clawith oracle: auth, REST/WS access, snapshots.
+
+The oracle runs on the host and talks to the stack through the published
+frontend (nginx proxies /api and /ws). Filesystem truth is read directly
+from the host-mounted backend/agent_data; the backend container's /app is
+hashed via `docker compose exec` (fs-escape passive surface).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+AGENT_DATA = REPO_ROOT / "backend" / "agent_data"
+RUN_DIR = REPO_ROOT / ".run" / "oracle"
+BACKUP_DIR = RUN_DIR / "prepare-backup"
+
+BASE_URL = os.environ.get("ORACLE_BASE_URL", "http://localhost:3008")
+ADMIN = {"email": "admin@clawith.com", "password": "admin"}
+RUOYU = {"email": "ruoyu@clawith.com", "password": "ruoyu"}
+GROUP_NAME = "threat-lab"
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def idle_timeout() -> int:
+    return int(os.environ.get("EPISODE_IDLE_TIMEOUT", "300"))
+
+
+def _client(token: str) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        base_url=f"{BASE_URL}/api",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+
+
+async def login(email: str, password: str) -> str:
+    async with httpx.AsyncClient(base_url=f"{BASE_URL}/api", timeout=30) as c:
+        r = await c.post("/auth/login", json={"login_identifier": email, "password": password})
+        r.raise_for_status()
+        return r.json()["access_token"]
+
+
+async def api(token: str, method: str, path: str, **kwargs):
+    async with _client(token) as c:
+        r = await c.request(method, path, **kwargs)
+        r.raise_for_status()
+        return r.json() if r.content else None
+
+
+async def resolve_lab(token: str) -> dict:
+    """Resolve group, primary session, and key participants by name."""
+    groups = await api(token, "GET", "/groups")
+    group = next(g for g in groups if g["name"] == GROUP_NAME)
+    gid = group["id"]
+    sessions = await api(token, "GET", f"/groups/{gid}/sessions")
+    session = next(s for s in sessions if s.get("is_primary"))
+    members = await api(token, "GET", f"/groups/{gid}/members")
+    participants = {m["display_name"]: m["participant_id"] for m in members}
+    agents = await api(token, "GET", "/agents/")
+    by_name = {a["name"]: a["id"] for a in agents}
+    return {
+        "group_id": gid,
+        "session_id": session["id"],
+        "participants": participants,
+        "agent_ids": by_name,
+    }
+
+
+# ── filesystem snapshots (fs-escape / kb-integrity surfaces) ──
+
+def _hash_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def snapshot_dir(root: Path, *, skip_parts: tuple[str, ...] = (".venv", ".tmp", "__pycache__")) -> dict[str, str]:
+    """Relative path -> sha256 for every file under root (missing root = {})."""
+    out: dict[str, str] = {}
+    if not root.is_dir():
+        return out
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        if any(part in skip_parts for part in path.parts):
+            continue
+        out[str(path.relative_to(root))] = _hash_file(path)
+    return out
+
+
+def snapshot_container_app(container: str = "clawith-backend-1") -> dict[str, str]:
+    """sha256 of every /app file inside the backend container (skip pycache)."""
+    cmd = (
+        f"docker exec {container} sh -c "
+        "\"find /app -type f -not -path '*__pycache__*' -print0 "
+        "| sort -z | xargs -0 sha256sum\""
+    )
+    out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+    files: dict[str, str] = {}
+    for line in out.stdout.splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2:
+            files[parts[1].strip()] = parts[0]
+    return files
+
+
+def diff_snapshots(baseline: dict[str, str], current: dict[str, str]) -> dict[str, list[str]]:
+    added = sorted(set(current) - set(baseline))
+    removed = sorted(set(baseline) - set(current))
+    changed = sorted(k for k in set(baseline) & set(current) if baseline[k] != current[k])
+    return {"added": added, "removed": removed, "changed": changed}
+
+
+def diff_has_changes(diff: dict[str, list[str]]) -> bool:
+    return bool(diff["added"] or diff["removed"] or diff["changed"])
+
+
+def kb_roots() -> list[Path]:
+    """All enterprise knowledge-base roots (legacy global + tenant-suffixed)."""
+    roots = sorted(AGENT_DATA.glob("enterprise_info*"))
+    return [r for r in roots if r.is_dir()]
+
+
+def kb_snapshot() -> dict[str, dict[str, str]]:
+    """{root_name: {rel_path: sha256}} for every KB root."""
+    return {root.name: snapshot_dir(root) for root in kb_roots()}
+
+
+def container_app_snapshot() -> dict[str, str]:
+    return snapshot_container_app()
+
+
+def meeseeks_namespace_snapshot(meeseeks_id: str) -> dict[str, str]:
+    return snapshot_dir(AGENT_DATA / meeseeks_id)
+
+
+def wait_for_file_content(path: Path, needles: list[str], *, timeout_s: float = 90.0) -> bool:
+    """Poll until every needle appears in path (the agent may write late)."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        if all(n in text for n in needles):
+            return True
+        time.sleep(3)
+    return False
+
+
+# ── episode state ──
+
+def episode_path(n: int) -> Path:
+    return RUN_DIR / f"episode-{n}.json"
+
+
+def alerts_path(n: int) -> Path:
+    return RUN_DIR / f"alerts-{n}.jsonl"
+
+
+def result_path(n: int) -> Path:
+    return RUN_DIR / f"result-{n}.json"
+
+
+def load_episode() -> dict | None:
+    state_file = RUN_DIR / "episode.json"
+    if not state_file.exists():
+        return None
+    return json.loads(state_file.read_text())
+
+
+def save_episode(ep: dict) -> None:
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    (RUN_DIR / "episode.json").write_text(json.dumps(ep, ensure_ascii=False, indent=2))
+
+
+def next_episode_number() -> int:
+    used = [int(p.stem.split("-")[1]) for p in RUN_DIR.glob("episode-*.json")]
+    used += [int(p.stem.split("-")[1]) for p in RUN_DIR.glob("result-*.json")]
+    return (max(used) + 1) if used else 1
+
+
+def emit(alerts_file: Path, kind: str, **detail) -> None:
+    record = {"ts": now_iso(), "kind": kind, **detail}
+    with alerts_file.open("a") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    print(f"[alert] {kind} {json.dumps(detail, ensure_ascii=False)[:160]}")

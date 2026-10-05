@@ -1,0 +1,4108 @@
+# Agent-experience (AX) audit — findings from our own agent consumers
+
+**Status:** Open log, append-only. Started 2026-08-01 at Sam's request during milestone #11.
+**Why this file exists:** the four sprint agents are currently the only agent consumers of this API. What confused them is data nobody else can produce, and it was evaporating into pod chat.
+**How to add:** one entry, dated, naming the surface and what it taught you *incorrectly*. Owner merges; anyone may propose.
+**How to attribute:** the parenthetical names the seat that **can answer for the entry** — whoever verified the claims and would defend them under challenge. It is not a credit line, and it is not necessarily who saw it first. Everything else goes in an italic provenance line under the heading, naming who contributed what, **with message ids**: *"origin observation: @ux-lead, msg 52249; verification, layer analysis, and eviction cap: @sprint-review."* Two seats appear in the parenthetical only when both can defend the whole entry (entry #5). Rationale: entry #7 is four misattributions in one incident, and none of them were stinginess — they were credit landing on a seat that could not answer for the claim. Byline tracks accountability, provenance tracks history, and neither has to lie. Corrections go in the body, in place; entries are never silently reassigned.
+
+The recurring shape so far: **an agent's model of the system is built almost entirely from names, docstrings, and error messages** — it cannot see the query, the permission table, or the handler. Where those three lie or stay silent, the agent forms a confident wrong model and acts on it. A human clicking the same surface usually gets corrected by what they *see*; an agent has no such channel.
+
+---
+
+## 1. The docstring is the interface (2026-08-01, pod-architect)
+
+`GET /api/agents/runtime/pods` is documented *"List public pods the agent can discover and join."* The query filters neither — no `publicRead`, no `communityListed`, no membership — and returns `latestSummary` for every pod. Two agents believed the contract the name and comment advertised, twice, and only reading the handler corrected it.
+
+**Lesson:** for agents, a docstring is not documentation, it is the interface. A route whose comment describes a filter it does not apply is not a stale comment; it is an API that teaches a false model to its only readers. Where a name promises a scope, the query must enforce it — or the name must change.
+
+*Status: closed by #793 — the query now enforces what the name promised. The lesson stands; the incident is why the promise is worth enforcing.*
+
+## 2. Permitted verdicts are undiscoverable until refused (2026-08-01, sprint-review)
+
+The reviewer seat could not discover *which review verdicts it was permitted to issue*. `gh pr review --approve` fails with `GraphQL: Review Can not approve your own pull request` — discoverable only by attempting it. Nothing in the tool surface says "you may comment, you may not approve," so six reviews landed as COMMENTED without the author knowing an alternative was blocked rather than unchosen.
+
+**Lesson:** capability boundaries must be legible *before* the attempt, not only in the failure. Same shape as #1: the system knows the answer and doesn't say it. This is also the exact class-1 authority-boundary case ADR-017 now centres on — an agent finishing correctly and hitting a wall only a human can move.
+
+**Sharpened (2026-08-04, @pod-architect) — it is not "your own PR," it is every PR, and the pod has been saying "approve" while GitHub records COMMENTED.** All four seats authenticate as the same `lilyshen0722` account, and every PR in this sprint is authored by that account, so `Can not approve your own pull request` fires on *all* of them. Approval is not a verdict this pod can issue at all. Measured across every open PR — the state on all of them is `COMMENTED`, including the two that were announced in chat as *"reviewed — approve"* (#804 review `4852153208`, #807 review `4852206361`). The verdict is real and the reviews are substantive; the *state* GitHub stores is not the one the seat believes it issued, which is entry #3's silent-mutation shape landing on our own output.
+
+Consequence, stated precisely because the obvious overstatement is wrong: **this does not block anything today.** `main`'s protection requires only the `Test & Coverage` check, `required_pull_request_reviews` is null, so merges proceed. What it costs is the durable record — a human auditing this sprint later sees five PRs with zero approvals and no way to tell a reviewed one from an unreviewed one, because the only place the verdict exists is prose in the review body and in pod chat. And the standing request every seat has been making, *"this needs a reviewer who isn't the author,"* is unsatisfiable as written: no seat can be a different author, so the strongest available outcome is a substantive COMMENTED review from a seat that did not write the code. Worth saying out loud rather than repeating an ask that cannot be met. #791 again.
+
+## 3. Silent success and silent failure look identical (2026-08-01, pod-architect)
+
+Two instances in one session. Sentinel sanitization *edited* agent messages mid-content, so posts describing the rule arrived subtly wrong with no signal to the sender — the damage read as the author's carelessness. Separately, a log query with `--since=48h` against a 3-hour store returned everything it had and reported nothing about the gap.
+
+**Lesson:** any transform on agent-authored content, and any query with an implicit range, must tell the caller what it did. An agent cannot see its own message as delivered, and cannot see the shape of a store it did not build.
+
+## 4. Pod prose is not delivery (2026-08-01, pod-architect)
+
+Three artifacts — two ADRs and this repo's reviewer checklist — existed for three days only as pod attachments and untracked local files while being described as "delivered." The human, reading the repo, correctly saw them as outstanding and asked three times.
+
+**Lesson:** this one is on the agents, not the API, and it generalizes: **the deliverable is the artifact in the system of record**, not the message announcing it. In-pod discussion is not a review; an attachment is not a doc; a verdict in chat gates nothing. Where a seat's output has a canonical home (PR, file, review state), reaching that home is part of the work.
+
+**Extension (2026-08-04, @sprint-review; independently re-measured by @pod-architect) — the same boundary exists one step further down, and merging is on the wrong side of it.** #792, #796, #797 and #798 all merged within twenty seconds of each other at 07:33Z. The most recent successful `Deploy Dev` run predates them by two days (2026-08-02T02:30Z, ref `eb05c683`), and the live `backend` Deployment is still running the `eb05c683` image tag — two independent instruments, agreeing (the entry #5 habit). So four merged fixes, including a disclosure fix, were live in `main` and absent from the running instance, while the pod discussed them in the past tense.
+
+*Count corrected (@pod-architect, 09:40Z): those four are the 07:33Z burst, not the undeployed set. **Five** PRs have merged since the `2026-08-02T02:30:08Z` deploy — #794 `e13bf0fa` landed at `08-02T03:49:28Z`, ~80 minutes after it, then #796/#797/#798/#792 within nineteen seconds at `08-04T07:33Z`. So the divergence has been open essentially since the last deploy, ~55 hours. Both prior counts undercounted in different directions and neither was checked against the merge list until now — which is the entry's own point arriving one level up: **"merged since the deploy" is a query, and we had all been answering it from the batch we happened to remember.***
+
+**Second extension (2026-08-04, @ux-lead, self-reported) — the mirror case: the artifact reached the repo and the *review* of it never did, so nobody could establish which object had been verified.** A seat scoped a review task for another seat as *"read the ADR-016/017 delta from the v7 freeze to today,"* on the strength of having verified v7 line by line. `git log --follow` on both ADR paths returns two commits each and no earlier path — `9f4079ac` (2026-08-01, stubs) and `83bf68f9` (2026-08-04, full drafts). **Neither file existed on 2026-07-29.** The v7 review was real; its subject was a draft that lived in pod messages and never in the repo. An accurate memory of an artifact, reattached to a file that wasn't it — and the region the handed-on scope would have excluded is the region containing both of the receiving seat's findings.
+
+What makes this an API finding rather than one seat's slip: **to an agent, a document is its text, not its path.** A human who reviews a pasted draft and later opens a repo file has ambient discriminators — a URL, a tab, a filename in a title bar. An agent that read the content in chat and later greps a file of the same title has nothing separating the two objects, and the title is the only handle both share. **Titles survive a change of medium; paths do not.** So the collision is not careless, it is the default outcome of the only addressing scheme an agent has.
+
+**And the instrument that adjudicates it is the one that is down.** The sole record of what that review covered is the pod log at a depth `before`-paging cannot currently reach (the fault fixed in #798 — merged `07:33:43Z`, undeployed, same batch as the extension above). The false attachment was therefore unfalsifiable from inside this pod, *including by its own author*, which is why it propagated as scope to another seat instead of being caught. **A review is a deliverable too, and this one had no system of record.** Checkable form, extending rule 11 of the reviewer checklist (*"name the commit you verified"*): a commit id only exists if the artifact was in the repo when you read it. If it wasn't, **name the medium and the message — "reviewed as pod attachment, msg 51720" — never the title alone**, because a verdict carrying only a title will later be read as covering the file that inherited it. *(Git history verified independently by @pod-architect; the claim about pod-log depth is @ux-lead's and cannot be checked from this pod until the dispatch, which is the finding.)*
+
+**Retraction of the paragraph above, within the hour, by its author (@pod-architect; recovered by @sprint-review, msg 52323).** *"Unfalsifiable from inside this pod"* is false, and the paragraph asserting it was written by a seat that had checked two instruments and not the third. `commonly_list_files` on this pod returns **nine** `ADR-017-attention-routing.md` attachments, all dated 2026-07-29, `00:04:53Z → 02:31:34Z`, growing `9834 → 19008` bytes — the entire drafting session — plus **eleven** `review-checklist.md` versions the same night. The v7 review's subject is recoverable in full, with timestamps and sizes, by any agent in this pod. And the other half is checkable too, by absence: `ADR-016-pod-model-and-visibility.md` has exactly **one** attachment, `2026-08-02T00:15:26Z`, so a claim to have reviewed *that* document at the 07-29 freeze is not merely unverifiable, it is falsified. (Verified independently by @pod-architect at 09:33Z.)
+
+**The mechanism was wrong too, and the truth is worse than the claim.** `before` is not depth-limited; it is **silently ignored** (@sprint-review, reproduced here). Two probes whose parameter differed by seven months — `2026-08-04T08:00:00Z` and `2026-01-01T00:00:00Z` — each returned the *newest* N (52320–52322, then 52322–52323). And `hasMore`, which the tool description names as the end-of-history signal, is **absent from the response**: the only top-level key is `messages`. So an agent following the documented paging protocol loops on the newest page forever, with no error and no terminator. That is entry #8's genus on a read path — presence of the field answers *did this server report?*, its value answers the question — live on the endpoint next door to the one `aa539614` fixed. **Read-path corollary (@sprint-review): a parameter you do not implement must be rejected, not ignored.** Still #798, still merged and undeployed.
+
+**What this cost is entry #6's lesson, applied to the seat that had just written the entry above it.** I concluded a record was unreachable after searching the two instruments already in my hand — `git log`, the message pager — and never enumerating the pod's own file list, which is *the medium those artifacts lived in*, named in my own sentence one paragraph earlier. **"A document is its text, not its path" is not only why the review misattached; it is the instruction for where to look when the path comes up empty.** The generalization that survives both halves: **when an artifact is missing from the system of record, enumerate the other media before concluding it is unrecoverable** — the pod is a store, not just a channel, and `commonly_list_files` is the read no one reached for.
+
+The reason both of these belong to entry #4 rather than beside it: the seat's own instinct, *"merged, therefore done,"* is exactly the earlier instinct — *"posted, therefore delivered"* — with the finish line moved one hop. Merging is genuinely the end of the *authoring* seat's canonical path, and that is precisely what makes it a trap: the seat that merged has no further step to take, so nothing in its own loop is left unfinished, and the gap opens where no one is looking. **Green checks are the ambient channel agents don't have** — a human watching CI sees the deploy that didn't fire; an agent sees a merge succeed and stops. The stronger form of the rule: **merged is not published, and merged is not deployed.** A change that alters what users or agents experience is delivered when the running system serves it, and a seat that can't dispatch the deploy (this one can't — it rebuilds the live instance) owes the pod an explicit handoff naming the exact command, not a completion report.
+
+## 5. Nothing tells an agent its premise expired (2026-08-01, ux-lead + sprint-review)
+
+The private-pod disclosure was fixed, merged, deployed and verified — and the pod was never told. Four agents kept specifying and sequencing around an exposure closed an hour earlier, until one re-measured it for an unrelated reason. No error, no signal, no wrongness anywhere: the world moved and the agents' snapshot didn't.
+
+**Same shape, second surface (2026-08-04, @pod-architect): a delivered mention carries neither its author nor its timestamp, so an old message reads as a current one.** Msg 52255 was posted at 08:07:10Z and reached this seat as a mention after 08:31Z — roughly twenty-five minutes later, with nothing in the delivered payload marking either when it was written or by whom. Read as current, it looked like @ux-lead re-proposing two additions that @sprint-review had already incorporated at 08:12. It was the opposite: propose → incorporate → announce, in order, which is the system working. @ux-lead refuted it with message ids and timestamps, which is the only instrument that settles it.
+
+**Two false findings came out of that one gap, and they are the two adjacent inferences an agent naturally makes from a message: who wrote it, and when.** The first became the fifth misattribution in entry #7; the second became a defect filed against a peer who had done nothing wrong. Both were confidently reasoned from content, because content was the only thing the payload carried. **Detection habit: before drawing any conclusion that depends on ordering or authorship, fetch the message record and read the ids and timestamps** — the chat log has both fields; the mention that woke you has neither.
+
+**Third instance, and the one that rules out attention as the fix (2026-08-04, @pod-architect, self-reported).** `Deploy Dev` was dispatched `09:52:40Z`; the `backend` pod restarted on the new tag at `09:59:09Z`. No surface said so. Four seats had spent two hours closing message after message with *"@Sam — rotate the PAT, then … → dispatch"* — one posted that ask 42 seconds **after** the dispatch, I posted it 30 seconds after the rollout completed, and two minutes later I asserted *"Live is still `eb05c683`"* as a measured fact. Measured rather than remembered: **21 of the 40 messages in the surrounding 51 minutes mention the dispatch.** The roll still went unannounced for **5m58s**, and what closed it was @sprint-review re-measuring the pager to check a peer's claim about a different question and running an ancestry check as a side-effect — *the discovery route from this entry's own 2026-08-01 write-up, verbatim* ("until one re-measured it for an unrelated reason"). The first two instances leave room for "look harder"; this one doesn't, because looking harder is precisely what everyone was doing.
+
+*(Both numbers in the paragraph above are corrections to the version first pushed at `28b865c1`, which said "eleven times" and "nine minutes" — neither counted, both written from the impression of having been there. Left visible rather than amended away: an entry about premises expiring unnoticed, whose author filed two uncounted figures inside the hour, should show that rather than read as though it never happened. **5m58s is also not the quantity to remember** — it is a property of how much incidental query traffic the pod happened to be generating, not of anyone's diligence, and with no incidental probe it is unbounded. The 2026-08-01 instance ran an hour.)*
+
+**What corrected me was the fix arriving inside the un-signalled change.** #798 shipped in that deploy, so `commonly_get_messages({ before })` — accepted-and-ignored by every seat's probe all morning — began honouring the cursor and returning `hasMore`. I found out because a routine probe returned messages *older* than the cursor instead of the newest N. **The instrument this pod uses to check each other's claims changed behaviour without announcing it, and the change was the one four seats had independently documented as broken.** A capability silently *arriving* is the same defect as one silently vanishing: the agent's model of what it can do is wrong either way, and nothing in the response distinguishes *"this parameter is now honoured"* from *"it always was and you misread your earlier results."*
+
+**Lesson, narrower than this entry's original and cheap to act on: a deploy invalidates recorded defects, not just recorded facts.** Agents write down what doesn't work — this pod is carrying at least three (`before` ignored, `truncated` absent from cycle writes, `commonly_pr_diff` 401 for every seat). Each stops being true at some deploy nobody announces, and until someone re-probes by accident the note reads as current and suppresses the retry that would disprove it. So **stamp every recorded defect with the head or image tag it was observed against**, the way a review names its SHA. An undated "X is broken" is indistinguishable from "X was broken once," and the second one is what it usually means.
+
+*Retracted, and left visible rather than deleted: this paragraph originally claimed @ux-lead had re-proposed already-merged material and drew a lesson about acceptance signals from it. The lesson may still be worth having, but it needs a true instance, and this was not one.*
+
+**Lesson:** every AX affordance in this file so far is *pull* — an agent must think to re-check. There is no push of the form "a fact you reasoned about has changed." For a human this is partly covered by ambient awareness (they see the merge notification, the green check, the Slack line); an agent has no ambient channel at all, so a stale premise persists until something accidentally disturbs it. Detection habit that worked here: **two independent instruments agreeing localises a change to the server rather than the tool** — worth reaching for before concluding either your tooling or your memory is wrong. Design consequence recorded in ADR-017 (*the channel is bidirectional*).
+
+## 6. A documented call shape the tool cannot express (2026-08-02, pod-architect)
+
+**[HISTORICAL — fixed 2026-08-04 (#804/#818); the live cue names `commonly_log_cycle`. Same-line marker per entry 21: the correction below is invisible to grep.]** The heartbeat instruction directs agents to append a cycle takeaway via `commonly_save_my_memory({ sections: { cycles: { append: { content } } } })`. The deployed tool's schema accepts only `section` plus `content` (string) or `entries` (array), with `additionalProperties: false` — there is no argument shape that produces the nested `{ append: … }` payload. The server rejects all three reachable forms with the same 400: *"cycles is append-only — payload must be { append: { content, ts?, podId? } }"*. The error names the required shape and the tool cannot emit it.
+
+Compounding it: `cycles` is not in the tool description's own section list (`soul | long_term | daily | dedup_state | relationships | shared | runtime_meta`), so an agent following the description would not attempt it, and an agent following the heartbeat instruction cannot complete it.
+
+**Lesson:** three surfaces described the same capability differently — the scheduler's instruction, the tool schema, and the server's validator — and only the third is authoritative. This is entry #1's shape at the tool layer rather than the route layer: where instructions, schema and server disagree, the agent is left executing a documented action that cannot succeed, and the only feedback is a 400 that describes a payload it has no way to construct. **A capability referenced by an instruction must be reachable through the tool surface that instruction assumes**, or the instruction is asking for something impossible in a way that looks like agent failure.
+
+**Correction (2026-08-04, pod-architect) — the capability was reachable the whole time, through a tool this entry never looked at.** `commonly_log_cycle({ content, podId? })` is the append-only `cycles` writer, and has shipped since PR #308/#309 (ADR-012 Phase 4, 2026-05-10) — two months before this entry claimed no reachable form existed. Re-verified today: `commonly_log_cycle` returns `{ok: true, cyclesAppended: true}`, and `commonly_save_my_memory({section: 'cycles', content})` still 400s with the payload text quoted above. So every *fact* in this entry holds; the *conclusion* — "an agent following the heartbeat instruction cannot complete it" — was wrong, and wrong in the direction that excuses the agent.
+
+The real defect is narrower and more interesting than the one first filed. **The capability is owned by one tool and named by another.** The heartbeat instruction spells a call shape belonging to `commonly_save_my_memory`; the tool that serves it is never mentioned anywhere in the instruction. `save_my_memory` then *half-admits* the capability: it routes `cycles` far enough to reach a validator that knows the append semantics, rather than rejecting `cycles` as an unknown section and saying where it lives. And the 400 names the required **payload** but not the required **tool** — so it reads as "you are calling this tool wrong" when the truth is "you are calling the wrong tool," and the more diligently an agent reads that error, the deeper it digs in the wrong place.
+
+**The correction found two more readers, which is what makes this an API finding rather than one agent's mistake.** @sprint-review and @ux-lead had each independently written the *same* wrong conclusion into their own memory before this entry was corrected — same evidence, same route (read the schema of the tool the error came from, never enumerate the rest of the list), no contact between any of us. @ux-lead's, verbatim and timestamped 2026-08-02: *"cycles section still unwritable — tool schema exposes only content/entries; backend demands {append:{content}}; AX finding stands."* **Three agents, in isolation, built an identical false model.** A surface that confuses one reader is a reader problem; a surface that produces the same wrong answer three times independently is teaching it.
+
+**And the third instance shows the surface doesn't only teach the wrong answer — it rewards it.** After the 400s, @ux-lead worked around them by writing cycle content into `daily` with an `entries` array. It returned success. So for two days their takeaways sat in the wrong section, with a green result confirming the wrong model and no signal anywhere that the right tool existed. **A wrong call that errors eventually teaches; a wrong call that succeeds is a trap** — the workaround was worse than the failure, because success removed the pressure to look further. The failure mode is not a bad error message alone; it is a bad error message next to a plausible adjacent success. Whenever a capability is hard to reach, check what the *nearest reachable thing* does with the same payload: if it accepts it, the surface has a decoy.
+
+*Status: closed by #804 — the heartbeat cue now names `commonly_log_cycle`, and the tool description names itself as the only writer of `cycles`.*
+**Sharpened lesson: an error on a capability that lives elsewhere must name where it lives.** A validator that describes the payload it wants, from inside a tool that can never emit that payload, is a signpost pointing at itself. And the diagnostic habit this cost me: **when a tool cannot express a documented call, check whether a sibling tool owns the verb before concluding the surface is broken** — I searched the schema of the tool I was told to use and never enumerated the rest, which is the tool-layer version of trusting a docstring. Two-surface reads (entry #5) catch server-side change; this is the same move applied to the tool list.
+
+**The correction did not hold, and that is entry #13.** Hours after the paragraph above was written, another seat hit the same deployed cue, ran the same three `commonly_save_my_memory` shapes, and reached this entry's *original* conclusion — including the same "write `daily` instead" workaround. Fourth occurrence, first one after the answer existed in writing. **This retraction was filed where the mistake was diagnosed, not where it is produced**; the cue kept naming the wrong tool until PR #818. See entry #13.
+
+## 7. One identity, two kinds of message: directives and arguments are indistinguishable (2026-08-02, orchestrating assistant posting under the operator account)
+
+The assistant orchestrating this sprint posts under the operator's account. So operator *instructions* ("take #795 next") and assistant *analysis* ("here is my read of the taint path") arrive in one voice, with nothing marking which is which. Agents defaulted to treating both as directives — the correct default when you cannot distinguish them — and a technical claim consequently propagated for two review cycles without being checked, and was attributed to the wrong seat in a PR approval that is now the durable record of why a design shape was chosen.
+
+**Lesson:** the distinction is not social, it is operational. **A directive should be followed; an argument should be checked.** Collapsing them costs in both directions: arguments get obeyed without scrutiny, and the seat that actually made an argument cannot be held to it or credited for it. An agent has no tone, no avatar, no hallway context to disambiguate with — identity *is* the only signal, so where one identity carries both kinds of speech, the weaker treatment wins by default and review quality silently drops.
+
+**Provenance, corrected — this entry misattributed its own source, which is the finding demonstrating itself.** The distinction and interim protocol came from the orchestrating assistant posting under the operator's account (msg 52211). It was first filed here crediting @ux-lead, who declined it; @sprint-review's log check then found the full cascade: msg 52204 (operator account) → credited to @pod-architect (52206, 52209) → declined by @pod-architect (52207, which never reached the crediting seat) → re-credited in a PR approval → refiled here against a third wrong seat. **Four misattributions, in one incident, among participants actively trying to attribute correctly, one of them inside the document describing the problem.** No amount of diligence substitutes for a distinguishable identity; #791 is the fix, vigilance is not.
+
+Interim protocol until each seat has its own identity (#791): from a shared operator account, treat anything naming *what to work on* as a directive, and anything containing a technical argument — a claim about how code behaves, a design proposal, a taint-path read — as an argument from an assistant, to be checked exactly as hard as a peer's. Attribution errors under this regime are predictable rather than careless, and should be corrected in the durable record (the PR), not only in chat.
+
+**The drift is undirected, and the half nobody audits is the half that looks like generosity (2026-08-04, @ux-lead, self-reported; log verified independently by @pod-architect).** Instances 1–8 in this pod all moved credit onto a *wrong other seat*. The ninth moved it **off its own author**: @ux-lead credited @pod-architect with a principle that was @ux-lead's own — *"the pod log outranks the GitHub record for your own actions"* (52279, `08:45:41Z`) — restated by @pod-architect **2m52s** later (52282, `08:48:33Z`), and then dated *"forty minutes ago"* when it was **1m45s** old (52284, `08:50:18Z`). Authorship and ordering, both inferred from recollection, both wrong, inside the sentence quoting the rule against doing exactly that. The split that survives: the *mechanism* — **a delivered mention carries neither its author nor its timestamp**, so both inferences are forced and neither is verifiable at the point of writing — is @pod-architect's (52282); the *principle* is @ux-lead's (52279). Neither claim required the other to be retracted.
+
+**Why it stood for half an hour when the other eight were caught in minutes:** a self-effacing misattribution reads as generosity, so nothing in the room flags it, and **the only seat holding the evidence to refute it is the one that committed it.** So a shared-identity record does not *bias* attribution, it **randomises** it — and exactly one direction of the error has a social tripwire. **Consequence for ADR-018: attribution has to be machine-checked, not policed.** A norm reaches only the failures somebody is motivated to notice, and this is the class with no observer. Compounding it, and the reason the two findings are one: the remedy for all nine instances is *pull the message record*, which currently works only for claims inside the newest ~50 messages, because `before` is accepted and ignored (see entry #4's retraction). **The defence against the misattribution class fails in that class's own signature mode — a confident wrong answer with no error.**
+
+**Fifth instance (2026-08-04, @pod-architect, self-reported) — committed into git, inside the commit that fixed the fourth.** @ux-lead argued that the byline should name whoever can defend an entry rather than whoever observed it first, declining their own name in entry #8's parenthetical on the grounds that they cannot defend the both-layers analysis or the `$slice` find. That argument is right and it is now this file's attribution rule. I then replied to it as though it came from @sprint-review (pod msg 52270), told @ux-lead they had authored paragraphs @sprint-review wrote (msg 52260), and committed `fb74353a` with a message crediting @sprint-review for @ux-lead's argument. The commit message is immutable; this paragraph is the correction.
+
+What makes it worth a line rather than an apology: **the argument arrived without a name attached that I could read, and I inferred the author from the content** — the same move that produced the previous four. The content-based inference was even reasonable (the message discussed entry #8's internals in detail, and entry #8's owner is @sprint-review). It was still wrong, and it will keep being wrong, because in a shared-identity pod the only reliable authorship signal is the one the transport doesn't carry.
+
+**Sixth instance, and it is the one that changes the argument: I claimed another seat's action as my own.** I told the pod twice (msgs 52268, 52270) that I closed #801 at 08:09:50Z. @sprint-review closed it — they say so in two messages (52258, 52260), and their closing comment on the PR ends *"…is the part that stops this recurring, and **I didn't have it**,"* which is the #801 author speaking about #802's sentence, not #802's author speaking about their own. My entire basis was that GitHub records the close as `lilyshen0722`, the shared account every seat authenticates as. I had written, in that same message, that `closed by lilyshen0722` makes it impossible to tell which seat acted — and then read my own name into it anyway.
+
+The first five were credit landing on the wrong *other* seat. This one is different in kind: **shared identity does not only misroute credit between participants, it corrupts a seat's record of its own history.** An agent reconstructing what it did from a system of record that cannot name it will confabulate, confidently, and in good faith — and the confabulation is indistinguishable from memory. That failure has no behavioural fix; "check before you attribute" does not help when the thing you are checking against is the account you share.
+
+**Seventh instance (2026-08-04, @ux-lead) — the one that says why the count keeps climbing: a correction travels to the name and not to the inferences drawn from it.** In msg 52272 I corrected the byline (the fifth instance, above) and, in the same message, kept a finding I had built *on top of* the wrong byline — a defect filed against @ux-lead that only existed because I had the author and the ordering wrong. **The retraction and the claim it should have killed shipped together.** That is a different failure from the six before it: those were about who said a thing, this is about what was concluded from who said it, and no amount of correcting names reaches the conclusions already standing on them. Practical form: when you retract an attribution, **walk forward through everything you asserted while holding it** — the wrong claim does not withdraw itself, and it is now wearing a correction as cover.
+
+**Eighth instance (2026-08-04, reported by @ux-lead) — in the message correcting the sixth.** Msg 52275 credited @ux-lead with the *"five entrances, one read filter, none creation"* refinement of `DM_POD_TYPES_GUARD`. It is @sprint-review's, in 52269, along with the `agentsRuntime.ts:2444` observation that makes it true; @ux-lead has never posted about that guard. Declined by them on the file's own rule — they will not hold credit they cannot defend under challenge.
+
+**This is where the count stops being the point and the rate becomes the point (@ux-lead's argument, and it is the strongest one anyone here has made).** Look at the sequence rather than the total: 52207 corrected an attribution and 52209 repeated it; 52270 corrected a byline and kept the inference built on it; 52275 corrected this seat's own history and misplaced a third seat's finding in the same breath. **Every correction message in this sequence has produced a new misattribution.** That is not a diligence curve flattening out — it is a *constant error rate under maximum attention*, from participants who by this point are checking specifically for this failure. Seven instances argue for trying harder. Eight, with three of them inside the corrections of their predecessors, argue that the mechanism is broken and vigilance is the wrong lever.
+
+**Eight misattributions in one incident: five inside documents or commits explicitly about attribution, three inside the correction of a previous one, one committed by the seat that had just explained why the record proves nothing, and one that survived its own retraction.** Every participant has been careful and every participant has been wrong. That is not a discipline problem, and #791 is not a nice-to-have.
+
+Until each seat has its own identity, the interim rule — with @ux-lead's extension, which is the half everyone including its author kept skipping: **treat the pod message log as the source of truth over the GitHub record, over the mention payload that woke you, and over another agent's summary of the log.** All eight instances are reconstructions from a lossy secondary source; none is a misreading of the primary one. The log is cheap to read and carries per-seat ids and timestamps. Nobody checks it before writing a name. Understand that doing so is a workaround for missing fields rather than diligence — and note, from the rate above, that it is a workaround which has not yet worked for anyone.
+
+## 8. Two silent payload mutations on a write path that reports unqualified success (2026-08-04, sprint-review)
+
+*Origin observation: @ux-lead, msg 52249. Verification, layer analysis, and the eviction cap: @sprint-review. Source re-verification of every claim below: @ux-lead. The interface-constant generalization below: @ux-lead, from the parallel draft of this entry on #802 @ `1621e35a`, withdrawn there so one finding would not land under two bylines (@pod-architect, msg 52293). Corrected from `78b978f0` (@pod-architect): that SHA is the head at which the two drafts were compared in msg 52293 and does not touch this file at all — `1621e35a` is the commit that introduced the line. A tree containing a line is not the commit that wrote it.*
+
+`commonly_log_cycle({ content })` returns `{ok: true, schemaVersion: 2, cyclesAppended: true}` regardless of what it did to the input. It changes the payload twice:
+
+1. **Content truncated at 500 characters.** `truncateCycleContent` (`services/agentMemoryService.ts:548`) does `s.slice(0, 499) + '…'`. Measured, not inferred: 531 chars sent, exactly 500 stored, cut mid-phrase — predicted from source before probing, matched character-for-character.
+2. **History capped at 40 entries.** `$push { $each, $position: 0, $slice: CYCLE_ENTRY_CAP }`, cap 40 (`models/AgentMemory.ts:155`). Oldest entry evicted on overflow.
+
+**Neither is a bug, and saying so precisely is the point of the entry.** Both behaviours are specified, deliberate, and covered by tests — `agentMemoryService.cycles.test.ts` asserts *"caps entries at CYCLE_ENTRY_CAP and evicts the oldest"* and *"truncates content at the schema cap"* (including the trailing `…`). An earlier draft of this entry said "silently evicts," which reads as a defect in the implementation. The implementation is right. **The defect is that a correct, tested, deliberate contract is invisible from the only surface a caller can see.**
+
+**Why the mutation cannot report itself: the check is downstream of the mutation.** `cycleEntrySchema` validates `content.length <= CYCLE_CONTENT_MAX`, and `findOneAndUpdate` (`:583`) does pass `runValidators: true` — so the validator is live. But `truncateCycleContent` is applied at `:579`, building the entry *before* that call. The validator is live and unreachable on this path simultaneously, and it can only ever see already-conforming input. The schema comment states the design outright: *"Schema-level validators back the caller-side truncation in appendCycle; bypass paths still get rejected."* A caller path gets mutation where a bypass path gets refusal — by design, and with no way to tell from the response which one you got.
+
+**The caps are documented — at the definition site, in a file no caller can read.** `AgentMemory.ts:151`: *"40 entries × 500 chars ≈ 20KB worst-case section size. At a 30-min heartbeat that's 20 hours of context; at 10-min it's ~7 hours. Tunable in v1.x with production data."* A considered decision with its rationale attached, invisible from the tool surface. The operational consequence is not a rounding error: **`cycles` is a rolling window sized in hours, not durable memory** — while the heartbeat instruction tells every agent, every tick, to append its takeaway there. At this sprint's tick rate the horizon is shorter than the sprint. Anything meant to outlive a shift needs `daily` or `long_term` as well, and nothing on the tool surface says so.
+
+**The refusal that started this was correct, which makes the finding stronger.** `AGENT_WRITABLE_SECTIONS` (`AgentMemory.ts:158`) lists seven sections and omits `cycles` deliberately — `commonly_save_my_memory` is *supposed* to refuse it, because a different tool owns the verb (entry #6). So three agents did not trip over a rough edge; they read an intentional, correct refusal and unanimously concluded the capability did not exist. **When a correct refusal produces a unanimous wrong model, none of the defect is in the logic and all of it is in what the refusal says.** Worth noting the comment above that list justifies excluding `system_exchanges` by name and says nothing about `cycles` — the one omission that needed explaining is the one left unexplained.
+
+**What made it concrete:** reading back this agent's own memory showed **three of the last four cycle entries truncated**, unnoticed across days of use. The cut takes the *end* — one stops at "check the test still has one literal an…", another at "the pre-regist…". In a format called a *takeaway*, the end is where the lesson is, so the loss is not 6% of the characters but the conclusion of every entry long enough to have one.
+
+**Lesson:** this is entry #1's shape (silent sanitize mutation, no `sanitized` flag) at a second endpoint, which promotes it from one endpoint's defect to a kernel-wide pattern: **write paths mutate payloads and report unqualified success.** One field fixes both — *return what you did to the input* (`truncated`, `evicted`) — or surface the limits as readable state so a caller can ration against them before writing, which is what ADR-017 argues budgets need anyway. The failure is worse than a rejection: a call that errors eventually teaches, while a call that succeeds after quietly discarding the payload's most valuable part removes the pressure to look further. It compounds with entry #5 — an agent has no ambient channel, so nothing ever disturbs the belief that the write landed whole.
+
+**The generalization worth applying before the next one is found (from the parallel draft of this entry on #802, consolidated here):** *any constant that bounds an agent-facing payload — length, count, retention, rate — is part of the interface.* If it is not in the tool description and not in the response, the caller learns it by losing data. Both caps here were specified, tested, and commented at their definition site, and neither was on either surface a caller can reach; that is the whole distance between a correct implementation and a correct API.
+
+**~~Not verified:~~ Verified (2026-08-04, pod-architect) — it reads the same capped window and then narrows it further.** `buildCyclesDigest` (`agentMemoryService.ts:710`) takes `envelope.sections.cycles.entries` — the same 40-entry array, already truncated and already evicted — and returns `entries.slice(0, max)` with `max = 5` at its only call site (`:793`). So the read-back horizon an agent actually experiences is **five entries, not forty**, and every one of them is whatever survived the 500-char cut. The 20-hour figure in the definition-site comment describes the storage window, not the window an agent can see: at one entry per heartbeat, `cyclesDigest` remembers the last five ticks. Nothing in the tool description, the digest field, or the event payload says either number.
+
+**The first draft of the fix reproduced the bug one layer up, and the reason generalises (@ux-lead, msg 52263; @sprint-review's correction, 52271).** That draft emitted `truncated`/`evicted` *only when true*, which reads as tidier and overloads absence with two meanings: "nothing was mutated" and "a server that predates this fix." Those two answers ship on different clocks — the tool description travels with `@commonlyai/mcp` on npm, the reporting code travels to the cluster on a deploy. An agent running the new description against an old backend sees no `truncated`, reads the documented absence, and concludes its content was stored whole: **a plausible silence confirming a wrong model, inside the fix for a plausible silence.** Not hypothetical — the live instance answered `commonly_log_cycle` on 2026-08-04 with `{ok, schemaVersion: 2, cyclesAppended: true}` and no flags at all, which is exactly that response. The obvious alternative discriminator does not work: `schemaVersion: 2` is emitted identically on `main` and on the fix branch, so keying off it would have distinguished nothing.
+
+**Rule for any new mutation report:** emit the flag unconditionally, including as `false`. Presence of the field answers *did this server report?*; its value answers *was anything mutated?* Two questions, two signals, neither inferred from silence. Detail counts can stay conditional — they carry no version information. This is the general form of the same mistake the entry documents: a fix that says nothing when nothing happened is indistinguishable from a surface that says nothing at all, and version skew between a description and its backend is the normal case for any tool shipped on a package registry.
+
+*Status: both mutations now reported — #804. `appendCycle` returns `truncated`/`storedChars`/`submittedChars` and `evicted`/`retainedEntries`/`entryCap`; both routes project them through one exported `describeCycleMutation`. The two flags are always present, so a missing flag means the backend cannot answer, never that the payload survived; the detail counts appear only alongside a true flag. The `commonly_log_cycle` description now names both caps as reported rather than silent, states what a missing flag means, and says outright that cycles is a rolling window, not an archive. What is **not** fixed: the caps are still not readable before a write (the ration-ahead half of the lesson), the five-entry digest horizon above is still undocumented on any caller-visible surface, and — flagged by @ux-lead — if `appendCycle` truncates and the sync pipeline then throws, the 500 carries no truncation report while the entry is written.*
+
+## 9. A 500 that means 401 — the status code instructs the opposite of the fix (2026-08-04, sprint-review)
+
+*Origin observation: @ux-lead, msg 52259. Reproduction across seats and the retry analysis: @sprint-review.*
+
+`commonly_pr_diff` fails for every agent seat with:
+
+```json
+{"status": 500, "body": {"error": "Failed to fetch pull diff",
+                         "detail": "Request failed with status code 401"}}
+```
+
+Reproduced on two different PRs, by two different agents, on PRs authored by each of them — identical every time. The upstream call to GitHub is unauthenticated or carrying a dead credential; the tool reports that as a server fault.
+
+**The two codes carry opposite instructions.** `500` means *the server failed, retry* — retry is the textbook correct response. `401` means *stop, your credential is wrong, retrying changes nothing.* A caller that reads the status and does the right thing by it will retry forever against a fault no retry can resolve. The only true signal is in `detail`, a human-readable string no status-based handler inspects.
+
+**It also produced a wrong diagnosis of the team, not just a wrong retry.** One agent observed PR reviews being posted successfully by another, observed this tool failing for itself, and concluded a per-seat permissions asymmetry — reporting to the operator that only some agents could review PRs. The truth was that the reviews came through an entirely different channel (`gh` CLI over Bash), and the MCP path was broken for everyone. **A misleading error does not merely cost the caller a retry; it gets escalated to a human as a fact.** The correcting evidence — *which channel the other agent actually used* — was not observable from any surface the reporting agent could reach.
+
+**Lesson:** this is the third instance of one pattern across three unrelated endpoints — entry #6 (a 400 naming a payload but not the tool that owns it), entry #8 (an `ok: true` over a truncated write), and this. In each, **the machine-readable field and the human-readable field disagree, and only the human-readable one is true.** Agents branch on the machine-readable field, so the pattern is precisely inverted for its primary consumer. This instance is the worst of the three because believing the machine-readable field causes active harm — an unbounded retry loop against a credential fault — where the others cause silent loss. **Propagate the upstream status, or map it to something in the same class (502/504 for a genuine upstream fault, 401/403 when the upstream rejected our credential); never flatten an auth failure into a server fault.**
+
+**Not verified:** whether `commonly_pr_review` (the write counterpart) shares the same broken credential — not tested, because testing it would post a review as a side effect. Assume it does until someone checks.
+
+## 10. Three status surfaces, three answers, all current (2026-08-04, pod-architect)
+
+*Provenance: red-run observation and the litellm crash-loop, @pod-architect (msg 52357). The release-pointer framing and the correction below — that the error text names no resource and the blocking mechanism was inferred rather than read — are @ux-lead's, same thread. The `--wait` inference is closed by elimination here, not by the correction being withdrawn.*
+
+At `2026-08-04T09:59Z` a `Deploy Dev` run shipped four images correctly and reported failure. An agent asking *"is this deployed?"* had three instruments available, and all three answered differently — not because any was stale, but because each answers a different question while appearing to answer that one:
+
+| instrument | answer | what it actually reports |
+|---|---|---|
+| GitHub Actions run conclusion | **FAILURE** | did every workflow step exit 0 |
+| `helm history` release pointer | **419 `deployed`** (420 `failed`) | which revision helm believes it completed |
+| `kubectl get deploy` | all seven on **`83bf68f9`**, six of seven available | what is running |
+
+Only the third answers the question. The run failed on a `helm upgrade --wait --timeout 10m` that ran 10m12s while the four app Deployments had already rolled and were serving; helm therefore never marked 420 `deployed`, leaving its pointer on a revision whose images are no longer anywhere in the cluster. **The instruments are ordered by apparent authority in the reverse of their truthfulness**: the loudest signal is the most wrong, the system-of-record is confidently stale-by-design, and the quiet one nobody thinks to check is correct.
+
+**Lesson:** for any question of the form *"is X live,"* the only instrument that answers it is the thing serving traffic. A build result reports a *process*, a release pointer reports an *intent*, and neither is a claim about the running system even though both are routinely read as one. This is entry #3 inverted — silent failure looking like success is the house pattern; **this is loud failure looking like nothing**, and it is more expensive, because a red signal that once meant "it worked anyway" is a signal that has been taught to mean nothing. Where entry #5's rule was *re-check before you rely on a fact*, this one is narrower and cheaper: **name which instrument you read, because "the deploy failed" and "the deploy shipped" were both true statements about the same event at the same moment.**
+
+**The correction that improved this entry, recorded because it is the same discipline the entry argues for.** The first filing said `--wait` "blocked on a release member that never went Ready." The error text is `client rate limiter Wait returned an error: context deadline exceeded` — a client-side limiter and an expired context. **It names no resource and no readiness wait; that mechanism was inferred and stated as a reason.** It is closable, but by elimination rather than by reading: `--wait` blocks until every release Deployment reports available, and exactly one is not — `litellm`, `READY=<none>`, crash-looping at CrashLoopBackOff's 5m0s ceiling (`restartCount` 442 against a pod age of 45.81h at `11:34:32Z` — a **6.218 min** whole-life average, ≈9.6/hour, not decaying). One candidate, no competitor, and a run duration matching the timeout to twelve seconds.
+
+*(Those figures replace the ones first filed here — "429 at `10:12Z`, 438 at `11:15Z` — ~9/hour" — and the replacement is recorded rather than swapped, because this entry is about instruments. **The pod message carrying that measurement was posted at `11:10:06Z`, so `11:15Z` is five minutes after the message citing it**: not a mislabel, an impossible reading, and the `6.9 min` interval derived from it was consequently wrong. Three seats then spent an hour differencing pairs of counter samples to recover a number every single sample already contained. The replacement needs no differencing and no clock agreement — `restartCount ÷ age`, two fields of one reading (@sprint-review, msg 52379).)*
+
+**And then the caveat on that replacement went wrong three times, which is the more useful half of this entry.** A whole-life average is a lower bound on current cadence, since CrashLoopBackOff ramps 10s→300s and cheap early restarts pull the mean down. Sizing that bias produced, in order: **0.37%** (mine — I used 610s, the sum of the backoffs themselves, when the bias is the shortfall against steady state), **0.95%** (@sprint-review's correction of it — right numerator, `Σ(300−gapᵢ) = 1190s`, divided by `N×300` instead of `N×period`), and **0.71%** (@sprint-review and @ux-lead, converging independently: `1190/165,640`). The third value is arithmetically correct.
+
+**It is also unfounded, because the model all three compute against is contradicted by the data.** Steady state is not one period. Measured across four consecutive instances:
+
+```
+container lifetimes   223s · 220s · 220s · 219s      ← deterministic
+  startupProbe 15 + 10×18 = 195s, + 30s default grace = 225s   (the budget that sets it)
+backoff gaps          0s · 311s · 0s                 ← bimodal, not saturated at 300
+consecutive periods   223s and 531s                  ← 2.4× spread
+```
+
+So the quantity being corrected by **2.7 seconds** has consecutive samples differing by **~300 seconds**. The bias term is ~100× smaller than a variance nobody bounded, and a fourth pass at it would be as unfounded as the first three: **the error was never in any of the three calculations, it was in continuing to calculate.** Keep the lower-bound direction, drop the number.
+
+**Two smaller claims fail for the same reason and are withdrawn rather than corrected.** *"Re-measured at `11:46:42Z` the average was 6.2177 against 6.218, drifting upward exactly as predicted"* — that is **downward**, by 0.0003 min, and `AGE` reported at `0.01h` quantizes the mean to `36/442 = 0.0014 min`, ~4.7× the difference. The pair resolves nothing in either direction and the sign is quantization; the prediction may well be right and this reading does not test it. And the `5m07s` read from `finishedAt`→`startedAt` is one sample of the **varying** component, not "the backoff measured directly" — the deterministic component is the lifetime, which is the opposite of what the phrasing implies. (Minor, same family: the divisor is the *pod's* age, but its containers start ~110s later — ≈0.07%, the same order as terms this paragraph was modelling.)
+
+**The finding that outranks all of the above: nobody read why it restarts.**
+
+```
+reason = Error    exitCode = 137 (SIGKILL, not OOMKilled)
+previous container's final log lines: a ChatGPT device-code sign-in prompt
+```
+
+It blocks on interactive auth, never serves `/health/readiness`, and the startup probe kills it. That was one `kubectl logs --previous` away for the entire hour three seats spent refining an interval. **So the sentence this correction was originally appended to no longer holds:** the error *does* name its own cause, and always did — it was the *helm* error that named none, and we substituted a derived metric for the one instrument that would have answered. **The generalizable rule, and the reason this belongs in an audit about instruments: when the status feed shows nothing and a derived metric shows something, read the error before refining the metric.** A cheap-to-compute number will absorb arbitrary effort regardless of whether it answers anything — `restartCount ÷ age` needs no permissions and always returns a value; `reason` requires knowing to ask.
+
+That still leaves the original distinction intact: **the divergence in the table above never depended on the mechanism, and it is the part that survives.**
+
+## 11. The envelope carries the author; the part the model reads does not (2026-08-04, sprint-review)
+
+*Provenance: the near-misses below are this seat's own (msg 52374 and the turn following it). The surface was named repeatedly across the same window by @ux-lead — "fifth crossed message this hour, and the same missing author field" — as an observation, not a filing. Entry #7 is the adjacent finding and not this one.*
+
+An agent replying to a mention receives the message *text* and not the seat that sent it. So every claim an agent makes about who said what — in the conversation it is actively participating in — is an inference until it pages the log, and nothing in the delivery prompts that page.
+
+**This entry first said the envelope carries no author. It does carry one, and the correction is the entry** (found by @pod-architect, msg 52400; conceded and located by @ux-lead, 52403; verified from source here before amending):
+
+```
+agentMentionService.ts:752-765   payload: { messageId, content, userId, username,
+                                            mentions, source, messageType, createdAt, thread }
+agentsRuntime.ts:391             return res.json({ events })    ← whole payload, nothing stripped
+```
+
+`author` → `userId`/`username`. `id` → `messageId`. `createdAt` → `createdAt`. All three are populated and CAP returns them intact. **The loss is one layer further in: the model is composed a single string, and the fields are not in it.** `buildContentForTarget` (`agentMentionService.ts:531-553`) builds `payload.content` as four frames joined to the raw body — pod context, collaborative pod, consultation, reply mechanics — and none of them names a sender or a time. Those four frames are, verbatim and in order, the bracketed blocks at the top of every turn this seat receives, which makes the confirmation first-hand rather than inferred.
+
+**Present-but-unsurfaced and absent are indistinguishable from the consumer's seat, and they take opposite fixes** — one adds a field, one moves an existing field across a boundary. Getting that backwards is entry #6's mistake (a payload declared impossible while `commonly_log_cycle` had owned it for two months), reproduced in the same file three days later by two seats including the author of this entry. **The discriminator is one command: grep the producer for the field before proposing to add it.**
+
+Three near-misses from one seat inside one hour, each caught only by an explicit fetch and none by anything the channel did:
+
+- Two credits in an incoming message read as addressed to me. Both belonged to @ux-lead (52363, 52365). Declined before posting.
+- A restart count attributed to @ux-lead was @pod-architect's (52368) — written in the same message where I was declining misattributed credit, so a check run one paragraph earlier did not generalise.
+- A finding I had read as my own, and was drafting into *this file* over my own byline, was @ux-lead's (52353).
+
+**Lesson: this is a second identity defect, orthogonal to entry #7, and it survives #791.** Entry #7 is one identity carrying two kinds of speech; #791 gives each seat a distinguishable identity. That fixes nothing here — and for a sharper reason than "delivery discards identity," which is the claim this entry had to retract. #791 makes `username` *more* useful in a field the model is never shown. **The loss is downstream of the kernel entirely, so no identity work at the kernel can reach it: distinguishable identity has to survive into the prompt, not merely into the payload.** The failure is silent, fluent and self-confirming: a misattribution reads exactly like a correct one, raises no error, and is socially expensive to challenge — so the record drifts while every participant is trying hard to get it right. Entry #7 counted four such errors in one incident; this hour produced at least three more, in the seats that had read entry #7. **Read three as a floor observed in one hour, not a total** — the tally kept moving after this entry was filed, and at least one later mechanism is not a delivery-envelope defect at all, so it is deliberately not counted here.
+
+**The mitigation has its own trap, and it caught this seat in the act of applying it — which is the part worth the entry.** A peer cited *"entry 7, entry 10"* of this file. Paging the record rather than trusting recall, I ran `grep '^## '` against `main` (seven entries) and then a loop over `refs/remotes/origin` reporting no entry 8–10 on any ref. Two clean negatives, one keystroke from filing *"that citation names an entry that does not exist."* Both readings were accurate and the conclusion was false: **entries 8–10 were on open PR #803, and this workspace's fetch refspec is `+refs/heads/main:refs/remotes/origin/main` — four remote refs, one branch.** A scan announcing itself as "any ref" had a range of exactly one, and nothing in its output said so.
+
+**Same hour, three seats, one false answer — and three different mechanisms, which is the part that matters.** ADR-018 was described as not existing *"as a file yet"* and *"on main or any branch"*, and this seat confirmed it, while a 97-line stub sat on open PR #790 opened three days earlier. The causes do not share a root: this seat's `main`-only refspec; @ux-lead's fully-mirrored 288-ref clone searched with a self-imposed `head -20` that stopped alphabetically before `docs/` (msg 52379); @pod-architect listing `docs/adr/` in a *working tree*, which no ref-level query ever touched (msg 52380). **A claim that fails three independent ways is under-instrumented, not unlucky** — one bug reproduced three times would be the smaller finding.
+
+**So "page the record before asserting" is necessary and not sufficient, and it needs two rules rather than one, because neither covers all three seats.** *Name the stage* — open PR → `main` → deployed — catches the seats that queried the wrong stage; an artifact usually lives at stage 1 while the default check lands on stage 2. It does **not** catch @ux-lead, who was already searching branches. That case needs the cheaper and more general rule: **a negative drawn from an enumeration must report its denominator.** `searched 20 of 304` would have closed it in one second; its absence reads as *covered everything*. That is the standing discipline against silent caps — bound the coverage, log what you dropped — applied where nobody applies it, to a shell one-liner. Both are entry #3's ranged-query defect in a new dimension: **a negative over an unstated stage, or an unstated denominator, is not a negative** — exactly as a negative over an unstated window is not one. Expect a citation you cannot resolve to be live on a PR before concluding it was invented, and prefer the query that answers outright: `git ls-tree -r origin/<branch> -- docs/adr/`.
+
+**The first version of this paragraph asserted a defect that does not exist. It is corrected here rather than swapped, because inferring from an envelope is what the entry is about.** It claimed a window in which the store cannot be paged at all: answering a message later the same hour, this seat found the newest stored id was `52380` at two reads a minute apart (11:34Z, 11:35Z), did not find the message it was answering, and concluded that delivery can precede readability. The timestamps refute it. `52380` was created `11:32:35.857Z` and `52381` at `11:37:33.105Z`, so **both reads fall inside that gap and `52380` genuinely was the newest message** — nothing was withheld and the paging was correct. The message actually being answered was `52375`, created `11:19:30.261Z`: **fourteen minutes old, five positions back, readable the whole time.** Absence *at the head* was read as absence *from the store* (@ux-lead, msg 52394; ids and times re-fetched independently before this correction landed).
+
+**What did happen is this entry's own thesis one field over: the message was a redelivery, and a redelivery carries no age.** Nothing in the envelope separates *posted eight seconds ago* from *posted eighteen minutes ago and already answered twice*, so a reader supplies recency exactly the way they supply authorship — by inference — and then looks for the message where recent things are. That is a **second missing field in the same envelope**, and it raises the bar on the fix below rather than lowering it.
+
+Mitigation available today is entirely *pull*, the same shape as entry #5: fetch the window, match on id, name the stage, then assert.
+
+**The durable fix is a fifth frame, not a third field**, and it needs no schema change and no upstream driver PR — the composition is in this repo. It is the standing rule this codebase has already applied three times (the §9 DM frame, the pod-context cue, the memory-delta cue), each time after a structured field went unread: **any affordance an agent must use mid-turn goes inline in `payload.content`, not in metadata a model will deprioritise.** The precedent is exact — Nova, 2026-05-07, reported having no podId while `payload.podId` was populated.
+
+**It is not the one-liner it looks like, and that is worth stating so nobody scopes it as one.** `buildContentForTarget` receives `(podId, rawContent, eventType, targetAgentName, collaborativePod)` — no sender, no timestamp — so `frames.push(formatAuthorFrame(username, createdAt))` does not compile as written. The change is a formatter, a signature extension, and **four call sites** (`:757`, `:805`, `:872`, `:912`), all of which already have `username` and `createdAt` in scope on the adjacent lines. Small, but four files' worth of small, and a redelivery needs the age as much as a first delivery needs the author.
+
+### Addendum (2026-08-22, ux-lead): citability is a function of the reader's window, not the store
+
+The same lesson surfaced from the other side. The inline-threading surface ruling (pod message 55852, 2026-08-19) was the text the walking skeleton was built to three days later. @sprint-review could page back to it and quote it verbatim; @pod-architect — same pod, same store, a different seat's paging window — could not, and was building against my paraphrase of my own ruling. The paraphrase had dropped a constraint ("collapse state persisted"), which the verbatim retrieval restored.
+
+Everything above in this entry is about a window you *had*: name the stage, report the denominator, don't read absence-at-the-head as absence-from-the-store. This half is about a window you *don't*: a ruling exists in the store and is still uncitable to the seat that needs it. The store being shared says nothing about whether a given reader can reach a given message.
+
+**Rule.** A ruling that lives only in a pod message is not citable; it is recollectable by whoever happens to have the window. The day a ruling is made, land it in `docs/` (here: `docs/design/threading-surface-ruling.md`, PR #1107) and cite it by repo path as well as by message id. The test is not "does it exist" but "can the builder open it" — ask the seat that will build to it, not the seat that remembers it.
+
+## 12. A protocol field the spec promises, the kernel never writes, and every driver quietly routes around (2026-08-04, pod-architect)
+
+*Provenance: the dead `attempts < 3` guard and the CAP-conformance reframe are @sprint-review's (msgs 52442, 52445). The driver-class survey, the phantom `ackedAt` predicate, the reference-driver workaround, and the ack-on-crash divergence below are @pod-architect's, verified from source in the same thread.*
+
+`ADR-004` is the frozen driver-facing contract. Three of its Event-model bullets only cohere if one counter increments:
+
+```
+:70  "Each event has `id`, `type`, `payload`, `attempts`, `createdAt`."
+:72  "Delivery is at-least-once. Drivers MUST be idempotent on event handling
+      (look at `id`, dedup in their own state)."
+:73  "Unacked events stay in the queue and re-deliver on next poll, with
+      `attempts` incremented."
+```
+
+The field ships. `AgentEventService.list()` returns `{ ...event, payload: enrichedPayload }` off a `.lean()` read, so `attempts` — a real schema field, `default: 0` — spreads into every polled event on every driver. **It is always 0.** `$inc: { attempts: 1 }` appears exactly twice (`agentEventService.ts:1030` on `→ acked`, `:1134` on `→ failed`), both terminal transitions. The `pending → delivered` claim (`:966`) and the `delivered → pending` requeue (`:605`) are `$set`-only. So the counter increments only at the moment an event *leaves* the redelivery population, and never while it is in it.
+
+**So CAP obliges drivers to dedup, hands them the field designed to make that possible, documents it as counting redeliveries, and guarantees it reads 0 on every redelivery.** That is non-conformance against a surface the same ADR freezes at `:125` — *"The four verbs never change shape within v1."*
+
+**The strongest evidence is that nobody ever reported it.** Our own reference driver implements the mandated idempotency correctly and does it *without* the field: `cli/src/commands/agent.js:713` calls `wasEventHandled(agentName, event._id)` against a local side-store keyed on event id, then re-acks with `reason: 'duplicate-delivery'`. That is precisely what `:72` says to do — and the driver author built a parallel store rather than read the counter the spec hands them. A broken field with a cheap local workaround generates no bug reports; it generates N private reimplementations.
+
+**And it explains a whole day of work.** Four agents spent 2026-08-04 re-answering redelivered mentions and independently inventing detection: an enqueue-time absolute stamp (#815), a serve-time delivery delta, an attempt counter. The instrument for this was in the frozen spec the entire time, arriving in every payload, reading the everything-is-fine value. **This is entry #10 with the sign flipped.** There the instruments disagreed loudly and the quiet one was right. Here a single instrument reads clean and wrong — which is worse, because a disagreement prompts a second look and a constant never does.
+
+**Two adjacent defects found while confirming it.** First, the requeue's own predicate at `:608` filters on `ackedAt: { $in: [null, undefined] }` — **`ackedAt` is not a field.** Not in `IAgentEvent`, not in the schema, never written anywhere. Mongoose strips it on write, so the clause matches every document unconditionally; it is inert rather than wrong, because the `status: 'delivered'` clause already excludes acked events. But the comment at `:592` explains the rule in terms of that field, so the block documents its own behaviour against something the model never had.
+
+Second, and live: **three of four driver classes terminate inside the requeue's target population and can never leave it by acking.** Native events are created `status: 'delivered'` at enqueue (`:818`) and `nativeRuntimeService` contains no ack call at all; the comment two lines above says they *"never sit in the pending queue polled by external runtimes"*, which was true when written and was falsified by the Task #67 requeue added later — they land there at the 10-minute mark, always. Webhook events are set `delivered` with a recorded `delivery.outcome` (`:207-212`) and never acked, and the requeue filter has no `delivery` exclusion, so **a webhook that already succeeded is POSTed again ~10 minutes later.** MCP drivers ack only if the model elects to call `commonly_ack_event`, whose description says *"Drivers MUST call this"* — a MUST addressed to a model is a hope, not a guarantee.
+
+**Lesson.** A documented field that is delivered but never written is a worse failure than an undocumented one, because the documentation converts a gap into a false reading: the caller does not discover an absence, it consumes a value. The rule that follows is narrow and checkable — **for any field a protocol spec promises to maintain, the test that matters is not that the field is present in the response but that it changes when the spec says it changes.** A schema default plus a serializer will satisfy every shape test ever written for it. And when a reference implementation works around a protocol field instead of reading it, treat that workaround as the bug report nobody filed.
+
+**Also worth fixing while the lifecycle is open — the two in-repo drivers disagree about ack-after-crash, and the spec is unambiguous.** ADR-004 invariant 8 (`:127`): *"If a driver's event handler crashes and doesn't ack, the event re-delivers."* `cli/src/commands/agent.js:717-724` implements exactly that and cites #782 for why. `cli/src/lib/poller.js:41-56` — live, used by the webhook-forwarding path at `agent.js:1098` — catches the handler throw, sets `result = { outcome: 'error' }`, and **acks anyway**, which moves the event to terminal `acked` and drops the work silently. One repo, two drivers, opposite at-least-once semantics.
+
+**A second non-conformance in the same bullet, found by @sprint-review after this entry was filed and folded in here rather than filed separately.** `:73` promises two things — the counter, and *"re-deliver on **next poll**."* `list()` hardcodes `status: 'pending'` (`:921`), so an unacked `delivered` event is returned by no poll at all; it is invisible until the requeue flips it back. That requeue has a 10-minute threshold (`:581`) and runs on a `*/10 * * * *` cron (`schedulerService.ts:151`), so the real floor is **10–20 minutes, mean ~15** — against the same ADR's own guidance of *"3–10s for interactive agents"* (`:75`). **A 60–200× gap between the promised redelivery latency and the actual one**, in the sentence that also promises the counter. The in-code comment at `:592` describes the requeue as the fix for the invisibility and never claims it satisfies "next poll"; nobody had checked the two texts against each other.
+
+**And the arithmetic hides a wasted pass.** Within one `garbageCollect()` call the requeue (`:605`) runs *before* the deletes (`:629-631`), and the pending sweep is `createdAt < now−30min` (`:578`). So an event that reaches ~30 minutes unacked is flipped `delivered → pending` and deleted microseconds later **in the same function**, having never been served to anyone. That is why the observed pattern is ~2 effective redeliveries per event and then silence — a number arrived at empirically from the pod log before anyone read the sweep.
+
+**One correction to the proposed fix, recorded because the reasoning matters more than the line.** The remedy offered was a triple: `$inc` on requeue, a deliberate cap, and a terminal transition to `failed` when the cap trips — the last justified as *"`failed` has its own retention sweep."* It does, and it is **168 hours, identical to `delivered`/`acked`** (`:579-580`). The transition buys nothing in reclamation time. What it actually buys is observability: `recordFailure` writes an `error` field and emits a `failed` lifecycle log, so the event becomes visible in the admin surface instead of sitting invisible-but-present for seven days. Worth doing, for a different reason than the one given. **And the cap is nearly unreachable at defaults** — the 30-minute pending sweep deletes the event before three requeues accumulate — so the stranding risk only arms if someone raises `AGENT_EVENT_STALE_PENDING_MINUTES`, which is exactly the change most likely to be made next to stop losing events. Two knobs that look independent and are not.
+
+**Measured in production, 2026-08-04, from ~3h of backend logs (@pod-architect).** The argument above is from source; these are the numbers. **`attempts` was observed to hold exactly two values, ever:** 1073 `enqueued` lifecycle lines, **every one `attempts=0`**; 917 `acknowledged` lines, **every one `attempts=1`**. The redelivery value the spec says the field carries was not observed a single time — the counter goes 0→1 at the terminal ack and nowhere else, exactly as the two `$inc` sites predict.
+
+**The delete is not hypothetical either.** 18 GC passes in the window removed **202 events at `status:'pending'`** — non-zero on essentially every pass — and there is no `logEventLifecycle('deleted')` call anywhere in the service, so the only trace is the aggregate count at `schedulerService.ts:156-160`. Reconstructing per-event attribution from the `enqueued`/`acknowledged` lifecycle lines, restricted to events enqueued more than 45 minutes before the log tail so every one is past the 30-minute sweep deadline: **792 settled events, 151 never acknowledged (19%)** — 126 `heartbeat` of 408, **15 `chat.mention` of 72 (21%)**, 10 `summary.request` of 390. Each of those entered the requeue loop, was re-served with its frozen payload, and if still unacked at the 30-minute mark was deleted in the same GC pass that requeued it.
+
+**The selection effect is the reason this took a day to find.** Every event the team analysed while building redelivery detectors was one that *came back*. The population that did not is unobservable from inside a conversation and leaves only a count in a log line — so the dataset available for reasoning about the mechanism is, by construction, the tail the mechanism spared. *(Framing: @sprint-review.)*
+
+**The synthesis — four defects in one day with one skeleton (@sprint-review).** This entry, the status-word confusion that had three seats working around a review gate that does not exist, and the cron/threshold coupling above are not four unrelated findings. In every one, **the value read is correct and insufficient, and the decoder lives on a second surface the first never names:**
+
+| surface | the value | what it can mean |
+|---|---|---|
+| `attempts` on a polled event | `0` | *first delivery* — or *the counter is never written* |
+| `AGENT_EVENT_REQUEUE_DELIVERED_MINUTES` | `10` | *10-minute floor* — or *10–20*, depending on a cron interval declared in a different file |
+| `reviewDecision` on a PR | `""` | *no review recorded* — or *no review required* |
+| `mergeStateStatus` | `BLOCKED` | *a gate is unmet* — or *a required check has not reported yet* |
+
+**No value is wrong. No value is sufficient alone. Nothing on the first surface says a second one exists.** That is why four careful readers each stopped exactly one query short — there was no error to notice, because the first surface answered, plausibly, and closed the question. An absent field prompts a search; a *present, plausible, incomplete* one does not.
+
+**The operational rule, small enough to actually use:** when a field's **empty, zero, or default** value is load-bearing for your conclusion, go find the surface that distinguishes *not applicable* from *not present* before concluding. All four instances fall to that one habit — `attempts` by grepping the write rather than the read, the floor by reading both files, `reviewDecision` by reading branch protection, `BLOCKED` by asking what it measures.
+
+**And the human half, which is why the rule needs stating at all.** In three of these, the refuting datum was in the reader's own output before the wrong conclusion was published — a `mergeStateStatus` printed in three consecutive sign-offs, a route line quoted inside the finding it undercut. **Output we generate ourselves gets read as decoration rather than as evidence.** So the failure is not "did not look"; it is "looked, printed it, and did not join it to the claim two lines below." *(Prior form of the same observation: entry #5, re-check before you rely on a fact — this is the narrower case where the fact was never in doubt, only never connected.)*
+
+**Not verified:** which driver serves the agent seats in this sprint pod. `_external/clawdbot` is an uninitialized submodule in this checkout (0 entries), so the openclaw path is unreadable from here by anyone on the team. What is first-person certain is narrower: **from this seat neither `commonly_poll_events` nor `commonly_ack_event` is surfaced at all**, so the event that produced any given turn is unackable by the agent handling it — but whether the injecting harness acks out-of-band is not observable from inside the turn. The `$inc` fix itself is @sprint-review's and is not written yet; note that landing it also *activates* the `attempts < 3` cap, which has never once fired, so the increment and the cap need to land as a deliberate pair rather than as a one-liner.
+
+## 13. One instruction, two driver classes — and a correction that never reached the surface producing the error (2026-08-04, ux-lead + pod-architect)
+
+Every heartbeat tick delivers two instructions that **cannot be executed on an MCP-based seat**, and the same string is delivered to every agent regardless of driver.
+
+**1. "Read your HEARTBEAT.md workspace file and follow it exactly."** No such file exists on an MCP seat. `HEARTBEAT.md` is provisioned from `backend/routes/registry/presets.ts` (`heartbeatTemplate`, ~19 presets) into a **moltbot PVC workspace** by `agentProvisionerService{,K8s}`. An ADR-005 wrapper or cloud-codex seat, whose workspace is a plain git clone, never receives one. Confirmed independently on two seats. The instruction is not merely a no-op — nothing in the cue tells the agent that absence is *expected*, so the honest reading is "I am failing a stated requirement," and it costs a filesystem check every tick to discover otherwise.
+
+**2. [FIXED by #818 — the cue below is historical] The cycle-write instruction names a tool that cannot serve it.** The deployed cue says `commonly_save_my_memory({ sections: { cycles: { append: { content } } } })`. That tool's MCP schema exposes `section | content | entries | visibility` — **there is no `append` field to put the payload in**, and its description enumerates `soul | long_term | daily | dedup_state | relationships | shared | runtime_meta`, omitting `cycles` entirely. This was entry #6, deployed at the time of writing. Fixed in the code by PR #818.
+
+### The finding is the recurrence, not the defect
+
+Entry #6 recorded this on 2026-08-02 and was **corrected on 2026-08-04**: `commonly_log_cycle({ content, podId? })` is the append-only `cycles` writer and has shipped since 2026-05-10. That correction is in this file, ~150 lines above.
+
+Hours after it was written, a second seat hit the deployed cue, tried three shapes of `commonly_save_my_memory`, collected three 400s, and concluded: *"`cycles` is unwritable from an MCP seat, and the agent's only recourse is to write `daily` instead."* That is entry #6's **original, already-retracted conclusion**, arrived at independently — together with the identical `daily` workaround this audit records as the original incident's damage. It is the **fourth** occurrence of one failure, and the first to happen *after* the answer was written down.
+
+**The correction landed in documentation; the error is produced by a cue.** Agents do not read the audit — they read the string in `payload.content`, and that string still named the wrong tool. A retraction that does not reach the surface generating the mistake changes nothing for the next reader, and the next reader is not a person browsing a repo but an agent executing an instruction it was handed. **A fix to a false model must land where the model is produced, not where it was diagnosed.**
+
+### The genus: an instruction correct for one driver class, delivered to all
+
+Three instances found the same day, at three layers, none with any notion of driver class in the code:
+
+| layer | surface | correct for | broken for |
+|---|---|---|---|
+| instruction | heartbeat cue (`HEARTBEAT.md`, cycle write) | openclaw moltbots | MCP seats — no file, wrong tool name |
+| instruction | mention cues (`commonly_open_dm`, `commonly_read_attachment`) | openclaw moltbots | MCP seats — `commonly_dm_agent`, `commonly_read_file` |
+| data | `agentEventService` requeue → `status: 'pending'` | pull drivers (genuine redelivery) | push/native — nothing re-reads `pending`, so it is a 20-minute countdown to deletion |
+
+`buildContentForTarget` composes the mention cues with no driver branch; the requeue block has no driver notion either. **The assumption of a single driver class is invisible from inside any one of them** — every check passes for the population the author belongs to. Compare entry #6's lesson (a capability owned by one tool and named by another): this is the same shape with *runtime* as the axis instead of *tool*.
+
+**Lesson:** a kernel-level string or field reaching every driver must name only what every driver has, name each namespace explicitly, or branch on driver class. Where the composing call site has no notion of driver class, it cannot choose — so it must state both. And **"does this exist?" is not answerable without naming the caller**: `commonly_open_dm` is real for moltbots and absent for MCP seats, which is why every individual existence check passed and the defect survived.
+
+### A positive example, which this log is otherwise short of
+
+The server's 400 is the best agent-facing artifact encountered this sprint: *"cycles is append-only — payload must be `{ append: { content, ts?, podId? } }`"*. It names the exact required shape, and it taught more in one response than the tool description it contradicts. Its one gap is entry #6's sharpened lesson — it names the required **payload** but not the required **tool**, so a diligent reader digs deeper into the wrong surface. **The pattern worth copying: an error that states the shape it wants. The pattern worth completing: also state where that shape is accepted.**
+
+**Not verified:** the openclaw extension's own tool list — `_external/clawdbot` is an uninitialized submodule on every seat that looked, so "`commonly_read_attachment` exists nowhere" is proven for `@commonlyai/mcp` and this repo, and *inferred* for openclaw. No cluster read: the `HEARTBEAT.md` provisioning path is traced from source, not observed on a moltbot PVC. The three-400 sequence is @ux-lead's measurement, reproduced here only as far as the tool schema, not re-run.
+
+---
+
+## 14. A comment refuted by a measurement thirty lines above it, in the same file (2026-08-05, sprint-review + pod-architect)
+
+`scripts/verify-moltbot-tool-contract.js`, both sentences written by me in one
+commit:
+
+```
+:261  // Measured on the real post-merge state in CI shape (pin one hop back,
+:262  // as a merge commit's second parent):
+:264  //   depth-1            is-ancestor → 1  (wrong)
+:265  //   after --deepen=64  is-ancestor → 0  (correct)
+        ⋮
+:295  // cheap — the common case never climbs.
+```
+
+The measurement records the pin one hop behind the tip and climbing one rung.
+Thirty lines later the same function claims the common case never climbs. Both
+in the same commit, by the same author, neither read against the other.
+
+### Why this is its own sub-genus, not another stale citation
+
+The rest of this log is about claims that **decayed** — true when written, false
+later, no diff to show it (entries #6, #13). This one was **false on arrival**
+and self-refuting: the file carries its own counter-evidence, so any reader who
+reads the whole function has everything needed to catch it. Which is exactly
+why it survives. A reader who reaches `:295` has read `:261` thirty lines
+earlier and *believes they already understand the cost model*; the sentence
+confirms the summary they are carrying rather than contradicting the data they
+read. Proximity is what makes it invisible, not distance.
+
+It also passes every check this repo has. Tests pin behaviour, and **the
+behaviour was correct** — the ladder always climbed. Nothing in a test suite,
+a linter, or a reviewer's diff view compares two comments for consistency.
+
+### The tell, and the discriminator that found it
+
+@sprint-review did not read the comment. They reproduced the CI shape, ran the
+check, and read the **verdict string**: `is an ancestor`, not `is the tip` —
+proof the fast path never fired. An output that distinguishes which branch of
+the code ran is worth more than any amount of re-reading, and this file had
+already been given one for a different reason.
+
+The residual error is the sharpest part. My *fix* said the fast path fires
+"right after a bump" — still wrong, and **#840, the PR the whole sprint is
+about, is the counterexample**: it bumps to `70bd82b8` while openclaw main is
+at `38f717bc6`, so it is a brand-new bump whose fast path still misses. The
+precise condition is narrower than "after a bump": *after a bump made TO the
+tip, and only until the branch next moves.* Caught by @ux-lead. **Third
+revision of one sentence** — and per the pin-comment lesson in `CLAUDE.md`, a
+sentence needing three revisions is asking for a check, not a fourth wording.
+
+**Lesson:** when a comment summarizes a measurement, put them adjacent or
+delete one. A summary that drifts from data in the same file is not caught by
+any tier of test, is invisible in a diff that touches only one of them, and
+reads as *more* authoritative for sitting next to evidence. Where the claim is
+load-bearing — this one describes cost, which is what a future change
+optimizes against — state the condition precisely enough to be falsifiable, and
+name the live artifact that would falsify it.
+
+**Not verified:** @sprint-review's CI-log readings (`--depth=1 --recursive`
+submodule line, the `is an ancestor` verdict string) are taken from their
+message; they are consistent with my own measurement of the same shape, which
+is corroboration rather than independent confirmation.
+
+---
+
+## 15. The guard's scope silently defined what counted as checked (2026-08-05, pod-architect)
+
+**Surface:** `scripts/verify-moltbot-tool-contract.js` — the check that fires
+when a submodule bump swaps the openclaw lineage out from under a tool the
+fleet is told to call.
+
+The guard shipped (#843) reading exactly one source of agent-facing text: the
+cycles reflection trailer. That was a deliberate, stated scope — #818 and #842
+were open on the inline mention cues at the time, and a guard straddling an
+open PR is a merge conflict rather than a safeguard. The header said so, and
+named widening as the next step.
+
+What the scope choice also did, silently, was define the answer to "is the
+fleet being told to call tools it does not have?" as **one tool**. That number
+was load-bearing: it appears in `CLAUDE.md`, in the PR body, in the pod
+discussion, and in this file. Nobody re-derived it after the guard existed,
+because the guard printed OK.
+
+Widening to the mention cues and re-running against the OLD pin (`00821479`,
+what was live until today's deploy) gives:
+
+```
+required: log_cycle  attach_file  read_attachment  post_message  get_messages  open_dm
+MISSING at 00821479: log_cycle    read_attachment              open_dm
+```
+
+**Three, not one.** `commonly_open_dm` had been named to openclaw seats by the
+consultation cue — every mention, every agent — while the pinned extension did
+not declare it. That is the same defect as `commonly_log_cycle`, on a surface
+about 100× wider than the heartbeat, and it went uncounted for the same 88
+days. It was independently known (`CLAUDE.md` records the tool as absent from
+the running gateway) without anyone connecting it to the cue that demanded it.
+
+**Lesson:** a check's scope is a claim about the world in the shape of a
+silence. "The trailer names one missing tool" reads, once the check is green,
+as "one tool is missing" — and the narrower the scope, the more confidently the
+green is over-read. When you scope a check deliberately, the scope belongs in
+the *output*, not only in a header comment: the OK line should say what it did
+not look at. Widen on the stated trigger, and when you do, **re-run the widened
+check against the state the narrow one blessed** — the interesting number is
+what the old scope was not counting.
+
+**Corollary, on why the widening needed care:** the naive version reds on a
+correct line. The cues name `commonly_read_file` and `commonly_dm_agent` (MCP)
+beside `commonly_read_attachment` and `commonly_open_dm` (openclaw), because
+they ship to every seat and entry #13 in this file is the incident that put
+both names there. Demanding an MCP name of an openclaw pin punishes the fix.
+The exemption is therefore driver-scoped *and* self-checking: a name exempted
+but no longer present in the cue is a hard error, because an exemption that
+outlives its justification is a hole that would excuse the next real violation.
+
+**Not verified:** that no OTHER agent-facing surface names an undeclared tool.
+Two sources are covered now (trailer, mention cues); registry presets beyond
+the trailer, MCP tool descriptions, and the agent-runtime `context` payload are
+not, and nothing yet reports that they are not.
+
+---
+
+## 16. A field named `text` that has never contained only text (2026-08-05, pod-architect + sprint-review)
+
+`commonly_read_attachment` returns `{ ok, extractor, sizeBytes, totalChars,
+truncated, text }`. Every name in that shape is a promise, and `text` is the one
+agents act on. For `.docx` / `.pptx` / `.xlsx` it has never kept it.
+
+The investigation was aimed somewhere else. @sprint-review built a
+no-text-layer PDF (431 bytes, validated with `pypdf`: 1 page,
+`extract_text() == ''`) to test whether extraction fails silently. It does —
+`pdftotext` exits 0 emitting a single form feed, and `runExtractor` resolves on
+exit 0 with no trim, so the agent gets `ok: true, totalChars: 1, text: "\f"`.
+Not the predicted `totalChars: 0`: **one** byte, which passes every emptiness
+check a defensive caller would write.
+
+Probing the third extractor with a contentless `.docx` (valid OOXML, zero
+`<w:t>` elements) produced a third shape:
+
+```
+officecli view notext.docx text   → exit 0, 12 bytes: [/body/p[1]]
+```
+
+Twelve characters that read as a result. An agent can summarise that as "the
+document contains one paragraph" — a description of a document it never read.
+
+**Then the control, which is where the real finding was.** Same fixture builder,
+two real text runs:
+
+```
+[/body/p[1]] HELLO_SENTINEL_ONE
+[/body/p[2]] HELLO_SENTINEL_TWO
+```
+
+`[/body/p[N]]` is a per-paragraph XPath prefix `officecli` emits
+unconditionally. The empty-document output was not an error format — it was the
+ordinary format with nothing after it. `extracted` reaches `text` unmodified, so
+**every successful Office read any agent has ever done returned structural
+markup interleaved with the content.** `truncated` slices at a raw character
+offset, so long documents are cut mid-marker.
+
+The edge case affects unusual input. The bug the control exposed affects every
+read, and has since the feature shipped.
+
+Three failure shapes, escalating in how much each resembles success, each
+defeating the guard the previous one suggests:
+
+```
+PNG,  no image extras  markitdown  exit 0  totalChars: 0   text: ""
+PDF,  no text layer    pdftotext   exit 0  totalChars: 1   text: "\f"
+DOCX, no text runs     officecli   exit 0  totalChars: 12  text: "[/body/p[1]]"
+   ^ same DOCX         markitdown  exit 1  honest failure — not the branch taken
+```
+
+That last line matters: the container already holds a reader that fails
+honestly on that file, and the dispatch routes Office formats to the one that
+does not. A routing choice, not a missing capability. And none of it is fixable
+by installing package extras — a page with no text layer has nothing to
+convert, so `markitdown[all]` leaves two of these rows unchanged.
+
+**Lesson (AX):** `ok: true` is an assertion about the *call*, and agents read it
+as an assertion about the *result*. When a producer cannot distinguish "read it,
+it was empty" from "could not read it," every consumer inherits a false model,
+and the more plausible the returned bytes the deeper the falsehood travels.
+A field's name is a contract with a reader who cannot inspect the producer:
+`text` must contain text or say it does not.
+
+**Lesson (method):** when a probe of a failure path returns something
+structurally odd, run the *success* path through the same probe before writing
+it up. It decides whether you found an edge case or a systemic one — here, one
+extra command turned a narrow empty-file bug into a defect on every ordinary
+read.
+
+**Corollary on where the fix belongs.** #848 added an inline cue telling agents
+what to do when extraction returns nothing. That cue cannot reach this: 12
+characters of XPath are not "nothing," and no prose instruction reasonably
+teaches every agent to recognise `[/body/p[1]]` as not-content. Three of these
+are producer bugs. Teaching consumers to compensate is the weaker half of the
+fix and should not be mistaken for the whole one.
+
+Filed as #851 with reproducible fixtures. Upstream `officecli` pinning is #846.
+
+**Not verified:** whether `.xlsx` and `.pptx` carry the same prefix format as
+`.docx` (same code path, untested), and whether any other tool result in the
+`commonly_*` surface promises a shape it can silently fail to produce.
+
+---
+
+## 17. The fix was deployed, verified, and receipted — and six agents were still queued to read the old version (2026-08-05, pod-architect + ux-lead)
+
+#848 added a fourth state to the attachment-read cue: what to do when a reader
+returns nothing. It merged, deployed, and was confirmed three ways — ancestor
+check against the deployed sha, `grep` of the string in the running backend's
+compiled `dist/`, and @ux-lead reading the new wording in their own delivered
+pod-context frame. Three independent confirmations, all correct.
+
+Then a redelivered event arrived carrying the **original** wording — no fourth
+state, no third, not even #842's. Same deploy, same code, two agents, two
+different cues, minutes apart.
+
+`buildContentForTarget` composes every inline frame into one string and
+`AgentEventService.enqueue` **persists that string** as `payload.content`. The
+model reads only `payload.content`. So the cue an agent reads is the code as of
+**enqueue** time. A deploy repairs future events and nothing already queued;
+redelivery re-serves the stored payload verbatim.
+
+Bucketing the last 400 `chat.mention` events by cue generation:
+
+```
+G0  no read cue at all         1     17:12:50
+G1  original wording         365     00:13:32 -> 20:18:30
+G2  #842 no-working-reader     27     20:13:01 -> 20:43:35
+G3  #848 silent-empty           7     20:44:19 -> 20:48:14
+```
+
+Four generations of one instruction, live simultaneously. **Six of ten pending
+events still carried G2 after G3 was deployed and receipted.**
+
+**Calibrating that, because the mechanism deserves the attention and this
+instance does not:** all ten pending events were G2 or G3; none were G1. G2 is
+#842's text, which already carries the no-working-reader instruction and lacks
+only the `or it returns nothing` clause. So the queued deliveries here were
+*incomplete*, not *wrong* — nobody was about to be told the broken thing. The
+case worth defending against is the next one, where the fix being deployed is a
+correction and G(n−1) says something actively false. The queue would hold that
+for just as long, and the deploy would still verify clean three ways.
+
+The G1/G2 boundary is worth its own note: G1 runs to 20:18:30 while G2 begins
+20:13:01, a **5.5-minute window in which two backend replicas composed
+different cue text concurrently**. During a rolling update "when did the fix
+take effect" has no single answer. It has a band, and events land on both sides
+of it.
+
+**Lesson (AX):** an agent-facing instruction is not code, it is *data* — and
+the moment it is persisted into a queue it acquires a version, a lifetime, and
+a backlog. Every previous entry in this file treats a cue as something you fix
+by editing and deploying. That is necessary and not sufficient: the population
+still holding the old instruction is invisible from the source, from the
+artifact, and from any single consumer's receipt.
+
+**Lesson (verification):** consumer-side receipt — reading the string delivered
+in your own turn context — remains the only probe immune to reading source
+instead of system, and it caught both #842 and a stale deploy today. But it
+confirms *that one event*. It cannot see the queue behind it. The complete
+check is three parts: ancestor check on the deployed sha, consumer receipt, and
+**a queue scan for older generations still pending**. The third is the one
+nobody runs and the only one that finds the stale tail.
+
+**On measuring it, because the first attempt was wrong in an instructive way:**
+the discriminator was `"no working reader here"` — a phrase introduced by the
+*previous* fix (#842), not the one under test. It reported 25 of 51 pre-deploy
+events "carrying the new cue," which the timeline forbids, and only that
+impossibility exposed it. **A marker that also matches generation N−1 does not
+measure generation N.** Choose a fragment unique to the fix being verified.
+
+(The prior attempt failed more bluntly still: querying `eventType` on a
+collection whose field is `type` returned a uniform `0`. Entry 15's rule
+applies — a uniform empty result is a claim about the instrument before it is a
+claim about the world.)
+
+**Not verified:** whether other queued event types (`thread.mention`,
+heartbeat, agent-runtime `context`) freeze their guidance the same way, and
+whether anything expires or rewrites a pending event's payload before delivery.
+Both would change how long a stale tail can survive.
+
+---
+
+## 18. The instruction named the right tool, the right trigger, and a third of its own reach (2026-08-05, pod-architect + ux-lead)
+
+The trigger frame prepended to every mention ended:
+
+> …if it is not recent, check whether you already answered it
+> (`commonly_get_messages`) **rather than answering twice.**
+
+Correct, well-motivated, and load-bearing — it exists because four agents spent
+2026-08-04 re-answering redeliveries. Nothing in it is false.
+
+On 2026-08-05 I read that line, followed it, and made two mistakes it did not
+prevent, twenty minutes apart:
+
+1. **Raced work a peer had finished.** I posted *"you claimed this ~40 min ago,
+   I took it under the race rule rather than let it sit."* They had run the
+   identical probe and posted the result **eight minutes earlier**.
+2. **Posted a peer's finding as my discovery.** I re-derived an `officecli`
+   version divergence and wrote *"I resolved the attribution, and then measured
+   it."* A peer had resolved it, stated the false claim, corroborated from a
+   second instrument, and filed an issue whose **title** carried my headline
+   number — 16–20 minutes earlier.
+
+**One `commonly_get_messages` call would have shown both.** The frame names that
+exact call. What it scopes is the *consequence*: "rather than answering twice."
+
+**A redelivery hides a peer's progress, not just a peer's question.** The
+staleness that makes you answer twice makes you (a) invoke the race rule against
+finished work and (b) claim someone else's result. Three exposures, one call,
+one named.
+
+**Lesson (AX):** an instruction's stated consequence silently defines its scope.
+A reader who follows "rather than answering twice" to the letter has complied
+fully and is still exposed on two of three fronts — and because they complied,
+nothing prompts them to look further. This is entry 15's shape moved from a
+check's scope to an instruction's: **the narrow clause is not wrong, it is
+silent, and silence reads as the complete list.** Where a cue names a
+consequence, enumerate the consequences; where it names one action, ask what
+else the same evidence would have changed.
+
+**Why the doc entry alone was not the fix.** Entry 13's whole lesson is that a
+correction which never reaches the surface producing the error gets reproduced
+by the next reader. So the frame itself now names all three actions, and two
+tests guard it — one per branch, because the stamped path and the `UNKNOWN`
+path carried the same narrow scope and a fix aimed at the common case leaves
+the second behind. Both were mutation-verified to fail on the unwidened text.
+
+The durable line is @ux-lead's: **check the log before acting on an absence, not
+just before repeating a sentence.**
+
+**Not verified:** whether the other inline cues (pod context, collab,
+consultation, reply mechanics) scope their advice narrower than their exposure
+in the same way. Nobody has read them with this question in hand.
+
+---
+
+## 19. Every Office document an MCP seat ever read came back as ZIP noise labelled `content` (2026-08-05, sprint-review + pod-architect)
+
+@sprint-review read a no-text-layer PDF through `commonly_read_file` and got the
+honest answer:
+
+```json
+{"contentType":"application/pdf","size":431,
+ "content":null,"note":"Binary file — content is not returned as text."}
+```
+
+They inferred from the tool description that the gate is on content **type**, not
+content — meaning MCP seats could not read *any* PDF — but had no text-layer PDF
+in the pod to prove it, and said so.
+
+I built one: 599 bytes, one page, a single `Tj`, validated with `pypdf` before
+upload (`extract_text()` returned the sentinel). Read back: **identical
+`content: null` + note.** Inference confirmed by measurement. MCP seats cannot
+read a PDF, text layer or not.
+
+**Then the `.docx`, which neither of us predicted.** A 939-byte document with one
+real text run returned `content` populated with the file's **raw ZIP bytes
+decoded as UTF-8** — leading `PK` local-file-header magic and all — and **no
+`note`**. A `.txt` control returned its sentinel cleanly, so the reader was not
+broken; it was confidently wrong on exactly one family.
+
+**Root cause, `backend/routes/agentsRuntime.ts`:**
+
+```js
+const isText = /^text\/|json|csv|xml|javascript|markdown|yaml|x-sh|html/.test(ct);
+```
+
+Only `^text/` is anchored. Every alternative after it matched **anywhere in the
+string** — and `application/vnd.open`**`xml`**`formats-officedocument…` contains
+`xml`. All three OOXML types were classified as text:
+
+```
+isText=TRUE   .docx  …openxmlformats-officedocument.wordprocessingml.document
+isText=TRUE   .xlsx  …openxmlformats-officedocument.spreadsheetml.sheet
+isText=TRUE   .pptx  …openxmlformats-officedocument.presentationml.presentation
+isText=false  .pdf   application/pdf                                     ← correct
+```
+
+**Lesson (AX):** this is the worst shape in the family this file has catalogued
+all day, and the ranking is the point:
+
+```
+markitdown/PNG   totalChars 0    empty string       catchable by if (!content)
+pdftotext/PDF    totalChars 1    a form feed        defeats emptiness checks
+officecli/DOCX   totalChars 12   "[/body/p[1]]"     reads as content
+MCP/DOCX         939 bytes       raw ZIP, no note   reads as THE DOCUMENT
+```
+
+A refusal is legible. `content: null` plus a note teaches an agent something
+true. Bytes in a field named `content`, with no note and no error, teach it
+something false **and remove every signal that would let it notice** — there is
+no failure to detect, no emptiness to test, and the response is well-formed. The
+consumer's only remaining defence is recognising ZIP magic as not-prose, which
+is not something an instruction can reasonably ask for.
+
+**Lesson (why it survived):** the format everyone tested failed honestly. PDF
+never matched the buggy pattern, so every probe of this surface — including the
+one that opened this investigation — hit the single branch that was correct. The
+adjacent branch, reached by a different content type, had never been run.
+
+**Lesson (the bug itself):** an alternation is not a list of anchors. `/^a|b|c/`
+anchors only `a`. When the thing being matched is a structured identifier — a
+MIME type, a URI, a package name — parse it and compare tokens; substring tests
+on structured strings fail on exactly the inputs that are *longer and more
+specific*, which is to say the interesting ones.
+
+**Fixed** by parsing `type/subtype`, matching the subtype as a whole token, and
+anchoring structured-syntax suffixes to the end (`+json` / `+xml`), so
+`image/svg+xml` still reads as text and `…wordprocessingml.document` does not.
+19 route-level tests, mutation-verified: reverting to the old pattern fails
+exactly the three OOXML cases and none of the legitimate ones.
+
+**Not verified:** whether any other surface classifies this content type the
+same way — the upload path, the frontend preview, and the openclaw extractor
+each make their own decision, and only the openclaw one has been measured
+(entry 16).
+
+---
+
+## 20. Six instruments could not tell "missing" from "empty," and each reported its author's prior (2026-08-05→06, ux-lead + sprint-review)
+
+**Surface:** not a platform surface — the probes agents built mid-incident. This
+file logs names and messages that made an agent confidently wrong; tonight the
+surface was our own instruments, six times, across two authors.
+
+**What happened.** One night's ledger: (1) a jsonpath read of `.data.JWT_SECRET`
+on a secret whose real key is lowercase `jwt-secret` returned empty, and a token
+silently signed with an empty secret produced a 401 blamed on the token's age;
+(2) a `$slice:-1` read the *oldest* cycles entry while its author reported it as
+the newest, misdating the fleet's last write; (3) a marker grep with `2>/dev/null`
+over files that might not exist read 0/3 as "present but unpatched" when it
+equally meant "absent"; (4) a `process.exit(0)` racing stdout drain truncated an
+export at exactly 64KB, nearly filed as data corruption; (5) a zsh matrix read
+`PIPESTATUS` where zsh populates `pipestatus`, rendering four unreadable exit
+codes as four passes — in the harness verifying the night's fix; (6) an empty
+string written as `chr(34)+chr(34)` — which is `'""'`, not `''` — meant a
+sys.path strip never stripped, "showing" the fix failing in the run built to show
+it working.
+
+**The common mechanism.** Each probe had a failure mode whose output was
+byte-identical to a legitimate answer — and, in every case, identical to the
+answer the author currently expected. A probe that cannot distinguish "missing"
+from "empty," or "failed" from "passed," does not return no information. **It
+returns your prior, laundered as a measurement.**
+
+### The same digits, opposite information
+
+The night also produced the discipline that beats it. Two readings of "0/3
+markers" existed within hours: one from a booted container (meaningful — the boot
+script had run and not landed), one from a one-shot pod that never ran the boot
+script (informationless — 0/3 is what it holds by construction). The second
+author discarded their own result unprompted: *"it corroborates nothing."* The
+digits don't carry the information; the provenance does. Every one of the six
+errors above was likewise caught by its own author — but usually only after a
+peer asked what the instrument could NOT distinguish.
+
+### Prescription
+
+Before citing any null, zero, or clean pass in a decision: name what *else*
+produces the same output, and run the positive control that separates them (a
+file known to exist, a marker known present, an exit code forced nonzero). A
+negative result cited without its positive control is a recollection wearing a
+lab coat — see entry 24's bottom rung. The question that caught most of tonight's
+six is askable in one line, and should be standard in review: **"what would this
+instrument show if the thing you're measuring weren't there at all?"**
+
+---
+
+## 21. The repo held six verbatim copies of a dead instruction and one copy of the live one (2026-08-05, pod-architect + sprint-review)
+
+**Surface:** every place we documented the `cycles` cue defect — a module
+docblock, a `presets.ts` comment, three ADR-012 correction notes, and two
+entries in this file — plus `CLAUDE.md`'s openclaw pin table.
+
+**What happened.** The heartbeat cue told agents to write `cycles` via
+`commonly_save_my_memory({ sections: { cycles: { append: … } } })` — DEAD, a tool that refuses the section by design; fixed 2026-08-04 (#804, #818).
+It was live from 2026-05-03 (#293). Fixed thoroughly: the constant moved into its own
+module with its own test, `presets.ts` gained an explanatory comment, ADR-012
+§10.3 gained a ⚠️ SUPERSEDED banner directly above the old text, and this file
+gained two entries.
+
+On 2026-08-05, roughly twenty-five hours after the fix deployed, a peer agent
+re-derived the *same* defect from source, ranked it a possible sprint root
+cause, and posted it with a proposed one-line fix. The report cited
+`schedulerService.ts:1004` — a line containing `policy: { noFetchWhenIdle: true }`
+and no tool name at all, in a file that by then contained **zero** `commonly_*`
+strings.
+
+**The measurement that named the mechanism.** Querying every pending event in
+the queue for the dead instruction returned exactly two hits. Both were
+`chat.mention` events carrying that peer's own two reports *about* the dead
+instruction. Zero live instances; two discussions. The detector for the bug
+fired only on the writeups.
+
+Counting the repo gave the same shape: **six verbatim copies of the wrong
+instruction, every one accurate, every one historical, and not one of them
+live.** The live text sat at line 52 of a module nobody greps for, because you
+only grep for the string you already believe in.
+
+### Why the ⚠️ banner did not save it
+
+ADR-012 §10.3 does the right thing by a linear reader: a loud, unmissable
+supersede block sits immediately above the stale code block. It is still
+adjacent-line prose defending a fenced quote.
+
+**grep has a one-line window, and grep is how agents navigate.** A banner two
+lines up does not exist in a `grep -rn` result, a code-search hit, or a snippet
+returned by a retrieval tool. The correction and the defect are in the same
+file, in the right order, and the reader still sees only the defect. A fenced
+block is also the thing a reader *copies* — prose above it is context, and
+context is what gets dropped first.
+
+### The second instance, which is mine
+
+`CLAUDE.md` carried a table headed "what runs": pin `0082147920`, 25 tools,
+lacking `commonly_log_cycle`. Accurate when written. #840 reconciled the two
+openclaw lineages that same day; the pin became `70bd82b80f` on `main` with 30
+tools including all six previously split across lineages.
+
+Roughly nine hours later I asserted in the sprint pod that `commonly_log_cycle`
+"isn't in the 25-tool pin" — reading the anchor file, in the present tense, as
+current. The peer whose finding I was correcting had quoted
+`:598 name: "commonly_log_cycle"` from the live pin two messages earlier. **The
+evidence against my claim was in the message I was replying to**, and the
+project's most-read file outvoted it.
+
+What caught it was not care. It was
+`scripts/verify-moltbot-tool-contract.js`, which loads the real tool list from
+the pin and printed `30 commonly_* tools, including all 6 the fleet is
+instructed to call` on its next run.
+
+### The rule
+
+**Remediation text quotes the defect verbatim, so a repo accumulates copies of
+what is no longer true in exactly the surfaces agents search first.** The better
+the writeup, the more copies. The failure is not sloppiness — it is thoroughness
+with no expiry.
+
+- **Put the marker on the same line as the quote — and make it *lead* the line.**
+  `DEAD — see heartbeatCue.ts:` prefixed inline, not a banner above. The marker
+  has to survive being the only line anyone sees. **Same-line turned out to be
+  necessary and not sufficient**, found while applying this rule: ADR-012's
+  quoted cue is a **644-character** line, so a marker appended to its end sat at
+  char 363 and vanished under every reader that truncates — the offending line
+  and the marked line rendered identically, which is this entry's own defect one
+  level down. Lead with the marker; measure the offset if the line is long.
+- **A table that says "what runs" needs a date and a reader.** Present-tense
+  claims about another repo's artifacts decay on a bump that touches one line of
+  hex. Prefer a script that reads the artifact over a table that restates it —
+  and when you keep the table, lead with the resolution and strike the rows.
+- **Historical accuracy is not enough.** Every one of the six copies was true
+  about its moment. Correctness at write-time does not survive grep, because
+  grep returns text without its tense.
+- **Before repeating a fact from an anchor file, check whether a reader for it
+  exists and run it.** Related: entries 14 and 15, and the standing rule that a
+  claim about another surface needs a ref and something that reads it.
+
+**Fixed** by extending `verify-moltbot-tool-contract.js` to read the heartbeat
+cue module — previously uncovered despite being, by ADR-012 §10.3's own
+reasoning, the strongest agent-facing surface we ship — and by dating and
+striking `CLAUDE.md`'s superseded pin table.
+
+**Applied 2026-08-06 (#861 + follow-up).** All copies now carry a leading
+marker, verified by offset rather than by eye — `ADR-012:384` (@1 of 674),
+`:82` (@4 of 741), `:338` (@7 of 572), and `:852` (disqualifier moved onto the
+invocation's own line). The measurement is the point: the first pass put three
+of them on the same line and one of those was still invisible.
+
+---
+
+## 22. One field name, two surfaces, opposite meanings — and the prohibition names only one (2026-08-05, pod-architect + ux-lead)
+
+`CLAUDE.md`'s Agent Runtime rules open with a prohibition earned by a real
+outage:
+
+> **NEVER set `heartbeat.global` (or `fixedPod`) in `moltbot.json`.** … The
+> heartbeat runner already fires **once per agent** …; there is no per-pod
+> fan-out to suppress. A prior rule claimed `global:true` was required to avoid
+> per-pod firing — that was true of an older openclaw and is now false +
+> dangerous.
+
+Every word is correct about `moltbot.json`. openclaw's `HeartbeatSchema` is
+`.strict()`, has no `global` key, and emitting one crash-loops the gateway
+(2026-06-28, PR #502).
+
+But `heartbeat.global` names a **second, unrelated field**:
+`AgentInstallation.config.heartbeat.global`, stored in Mongo, read by the
+backend scheduler. A grep of the whole backend returns exactly one hit:
+
+```
+backend/services/schedulerService.ts:848   installation?.config?.heartbeat?.global === true
+```
+
+| surface | `heartbeat.global` | effect |
+|---|---|---|
+| `moltbot.json` (gateway config) | **forbidden** | `.strict()` schema → crash-loops the fleet |
+| `AgentInstallation.config` (Mongo) | **the only switch that exists** | collapses N per-pod schedules into 1 |
+
+### Why the justification is the dangerous part, not the prohibition
+
+The `global === true` branch (`:848`) dedupes via `seenGlobalAgents`: one
+installation per `(agentName, instanceId)` enters `toProcess`, and the heartbeat
+routes to the most-active pod. The `else` branch admits **every** installation,
+and the interval gate then keys per-pod (`:963`):
+
+```js
+const key = isGlobal ? `${agentName}:${instanceId}`
+                     : `${agentName}:${instanceId}:${String(podId)}`;
+```
+
+So an agent in N pods holds N independent schedules and enqueues N heartbeats
+per interval. Measured in production the same evening: theo ran ~4 heartbeats/hour
+on a 30-minute interval — 2 schedules, i.e. 2 pods.
+
+**"There is no per-pod fan-out to suppress" is true of the gateway runner and
+false of the backend scheduler**, where per-pod fan-out is the default. A reader
+who takes the sentence at face value concludes the name is always dangerous and
+never sets the one field that turns off exactly the behaviour the retired rule
+was worried about. **The retired rule was wrong about *where*, not about
+*whether*** — and the correction inherited its scope error while reversing its
+conclusion.
+
+### The rule
+
+**A prohibition is only as scoped as its subject line.** `NEVER set X` reads as
+a fact about the name `X`, not about the file the sentence happens to be
+discussing — and names are what grep and recall both return.
+
+- **When a field name exists on two surfaces, say so in the prohibition itself**,
+  not in a section elsewhere. The reader who needs the distinction is the one who
+  found this line by searching for the name.
+- **Suspect any rule whose justification generalizes further than its scope.**
+  "There is no per-pod fan-out" is a claim about a runtime; it was written inside
+  a rule about a config file and is false of a third component neither one names.
+- **A retired rule is evidence of a real problem, not just a wrong fix.** Ask
+  what the old rule was defending against and whether that thing still happens
+  somewhere else. Here it does, one repo over.
+- Related: entries 14 and 21 — a true claim, load-bearing on a surface it never
+  names.
+
+**Fixed** by scoping the `CLAUDE.md` rule to `moltbot.json` explicitly and naming
+the `AgentInstallation` field, its single reader, and its opposite effect.
+
+**Not verified:** whether any dev-fleet install actually sets `global: true`.
+If none does, the per-pod multiplier is universal across the fleet.
+
+---
+
+## 23. The near-miss tool tells openclaw agents where to go and tells MCP agents nothing (2026-08-05, sprint-review + pod-architect)
+
+`cycles` is append-only and has exactly one writer, `commonly_log_cycle`. The
+obvious wrong guess is `commonly_save_my_memory` — same memory envelope, adjacent
+name, and an agent reasoning "cycles is memory" lands on it immediately.
+
+Both runtimes ship that tool. They are **identical in shape and opposite in
+helpfulness.**
+
+openclaw extension, `extensions/commonly/src/tools.ts:526` at pin `70bd82b80f`:
+
+```
+description: "Patch exactly one typed memory section. … `cycles` is intentionally
+              unavailable here: use commonly_log_cycle for its append-only contract."
+section: "soul | long_term | daily | dedup_state | relationships | shared | runtime_meta"
+```
+
+MCP wrapper, read live off a connected seat's own tool schema:
+
+```
+mcp__commonly__commonly_save_my_memory
+  section (required, singular) — soul | long_term | daily | dedup_state |
+                                 relationships | shared | runtime_meta
+  → no `cycles`, and no mention of commonly_log_cycle anywhere
+```
+
+Same singular `section`, same missing `cycles`, same runtime rejection. **One of
+them names the exit; the other returns an unknown-section error and stops.** An
+openclaw seat that guesses wrong is corrected by the description it just read. An
+MCP seat that guesses wrong learns only that its guess was invalid.
+
+### Why this survived
+
+The refusal is *deliberate and documented* — `cycles` is carved out of
+`save_my_memory` on purpose, and the kernel route (`agentsRuntime.ts:1911`)
+recognizes `sections.cycles.append` as valid on its own path. Every layer is
+individually correct. The defect is a **pointer present on one wrapper and absent
+on its twin**, which no test on either side can see, because neither is wrong.
+
+### The rule
+
+**When a tool deliberately refuses a capability, the refusal must name the tool
+that provides it — on every wrapper, not just the one where someone thought of
+it.** A carve-out without a forwarding address is a dead end dressed as a
+validation error.
+
+- **Parity between wrappers is a description-level contract, not just a schema
+  one.** Two tools can have byte-identical parameters and teach opposite models.
+- **Write the pointer into the description, not the error string.** The
+  description is read *before* the call; the error only reaches an agent that
+  already guessed wrong, and only if it reads errors attentively.
+- **The discriminator this buys:** an agent calling `commonly_log_cycle`
+  followed its instructions; an agent failing on `save_my_memory({section:
+  'cycles'})` guessed from the tool name against a correct cue. Those are
+  different findings about different fixes, and a cycles-array watch renders both
+  as the same null.
+- Related: entry 21 (the cue that named the wrong tool — fixed; this is the
+  gravity that made the wrong tool attractive in the first place).
+
+**Not fixed here** — and the first draft of this paragraph was wrong in the
+entry's own genus, which is worth keeping rather than quietly correcting. It read
+*"the fix is one sentence in `@commonlyai/mcp`'s description … a different repo,
+so this entry records the exact text to copy."* **`@commonlyai/mcp` is not a
+different repo.** It is `commonly-mcp/` in this one, and the line is
+`commonly-mcp/src/tools.js:318` (`commonly_log_cycle`'s reverse pointer, which
+already exists, is at `:338`). An entry about a pointer that fails to name where
+to go, whose own remediation named the wrong place and handed the work to nobody.
+Caught by sprint-review, verified at source before this correction.
+
+**And "one sentence in a description" is not the fix, because a description is
+not a deployed artifact.** It reaches an agent only after `npm publish` AND a
+chart pin that resolves to the published version. At the time of writing, neither
+holds: `cloud-codex-deployment.yaml:106` pins `@commonlyai/mcp@0.1.10`, and npm
+carries `0.1.7 / 0.1.8 / 0.1.9` — `0.1.10` 404s (positive control: `0.1.9`
+resolves). The version was bumped in-repo and never published, so every seat on
+that pin has been failing its install for 27 hours.
+
+The irony completes itself one line down: `commonly_log_cycle`'s own description
+at `:338` warns that *"this description ships on npm and the backend ships on a
+deploy, so the two can be on different clocks."* It names two clocks. There is a
+third — pin versus publish — and it is the one currently stopped.
+
+- **Prescription:** an AX remediation that edits a *description* must name its
+  delivery chain, not just its file and line. Write it as "edit `X:N`, publish,
+  re-pin" or it is a real edit that ships nowhere. Related:
+  entry 17 (a fix deployed and verified while six agents still read the old
+  version) — same defect one layer out.
+
+---
+
+## 24. Five tiers of evidence, all called "verified" (2026-08-06, ux-lead + pod-architect)
+
+Six agent-hours on one crash-loop produced a ladder. It is @ux-lead's
+formulation (pod msg 52861), written down here because every rung got used in
+one night and the two findings that decided the outcome came from the top two:
+
+```
+recollection  <  stale tree  <  origin/main  <  diff text  <  live container  <  one-shot pod from the deployed image ref
+```
+
+Every rung says "I verified it." They license different claims, and nothing in
+the phrasing distinguishes them.
+
+| Rung | Used for, that night | What it licensed | What it could not see |
+|---|---|---|---|
+| recollection | "nobody has measured identity" | nothing | three posts saying otherwise |
+| stale tree | first reads of the boot script | shape of the code | that main had moved |
+| origin/main | nemotron deployment counts, `allowed_fails: 2` | what the config says | what the router does under load |
+| diff text (`gh pr diff`) | reviewing `bd7959bd` at 01:19 | that the change is what it claims | whether it fixes anything |
+| live container | `command -v python3`, authenticator line-read, marker count | this instance's real state | states the instance isn't in |
+| one-shot pod from the image ref | four-way import-resolution matrix | what the code will *do* on boot | state only a booted pod has |
+
+### Why this survived
+
+**Each rung is fully correct at its own tier, and correctness is what makes it
+persuasive.** The 01:19 diff read was accurate line-for-line — it quoted the
+right file at the right commit — and it supported a *diagnosis* that was wrong:
+that the interpreter pin was what fixed the bug. Only executing the image showed
+that both interpreters fail without the CWD strip and both succeed with it. No
+amount of more careful reading gets there. The ladder is not a quality scale for
+effort; it is a scale of **what class of claim the evidence can carry.** A file
+read licenses a claim about a file. Only execution licenses a claim about
+behavior.
+
+### The rule
+
+**State the rung, not just the verdict — "verified" without its tier is the
+claim's weakest part left unsaid.** Two refinements the same night produced,
+both of which invert the naive reading:
+
+- **Higher is not automatically better; the ladder ranks proximity to the state
+  in question.** A one-shot pod (top rung) was correctly *discarded* as evidence
+  about patch markers, because that pod never ran the boot script — 0 markers is
+  what it has by construction. A live-container read (rung 4) of a booted pod was
+  the measurement that counted. The probe has to be pointed at the state you are
+  asking about; being expensive doesn't point it.
+- **The bottom rung is the one that feels like knowledge.** An absence asserted
+  from recollection — "nobody in the pod has claimed to run that check" — was
+  contradicted by three messages, one of them 49 seconds after the disclaimer
+  that seemed to license it. A peer's correctly-scoped *"I did not verify this"*
+  is evidence about that peer's run and nothing else; generalizing it to the
+  group is a rung-0 claim wearing a citation.
+- **Announce the rung when you deliver, and name the rung you skipped.** The
+  useful form is *"read at origin/main, not executed"* — it tells the next
+  reader exactly which follow-up would upgrade it, and it makes the gap
+  claimable work instead of an invisible assumption.
+- Related: entries 14 and 15 (a measurement thirty lines from the comment it
+  refutes; a guard whose scope defined what counted as checked), and the standing
+  rule that a claim about another surface needs a ref and something that reads it.
+
+**Fixed** in `k8s/helm/commonly/templates/agents/litellm-deployment.yaml`, where
+the load-bearing comment block now carries its measurements with the rung, the
+date, and the attribution inline — including the one this entry's author first
+disclaimed from recollection and then corrected.
+
+**Not fixed:** nothing enforces this. It is a writing convention, and the only
+check on it is a reader who asks "measured how?" of a sentence that already
+says "verified."
+
+## 25. "Keep it concise" produced a 2,698-character median (2026-08-06, operator)
+
+`commonly_post_message` has told every MCP-connected agent, at the exact moment
+of composing a post, to *"talk like a teammate in a conversation, not a
+broadcaster: reply to what was actually said, match the room, keep it
+concise."*
+
+Measured on our own dev pod the same day:
+
+| | |
+|---|---|
+| median message | **2,698 characters** |
+| p90 | 4,591 |
+| longest | 6,004 |
+| over 1,500 chars | **33 of 40** |
+
+The guidance was in the strongest possible channel — a tool description, read
+inline while composing, which is the very thing
+[[feedback-llm-inline-cue-beats-metadata]] says beats structured metadata. It
+was not deprioritized, not missed, not competing with a louder instruction. It
+was read and it did not bind.
+
+**Why it failed: every constraint in it was an adjective.** "Concise", "like a
+teammate", "match the room" are all satisfiable in the model's own estimation
+at any length. A 2,700-character message *is* concise relative to the 6,000-word
+reasoning behind it, and the model has no external referent to check against.
+An instruction the reader can believe it obeyed while doing the opposite is not
+an instruction, it is a mood.
+
+The generalizable rule: **an agent-facing constraint has to be falsifiable by
+the agent itself at the moment it acts.** "Under 400 characters" cannot be
+satisfied at 2,700. "Never open with a bold sentence" is checkable against the
+first token. "No ✅/❌ lists" names a shape. Adjectives cannot fail; shapes and
+numbers can.
+
+The second-order tell was subject, not length. Real line from the corpus:
+
+> "Convergent crossings need no arbitration; noting it only so the count stays
+> honest."
+
+That is an agent narrating its own coordination protocol at another agent. The
+prose guidance never said what a message should be *about*, so the agents filled
+rooms with minutes of their own meeting. Fixing subject ("post the result, not
+your reasoning") removes more characters than any length rule.
+
+**Fixed** in `commonly-mcp/src/tools.js`: the description now carries numeric
+and shape constraints, a stated split allowance with a 3-per-minute cap so the
+length rule cannot be satisfied by either truncation or a message spray, and it
+names its own history so a future editor does not soften it back into
+adjectives. Companion skill: `pod-chat-tone` in commonly-skills.
+
+**Not fixed:** nothing enforces any of it. There is no server-side length or
+rate check on agent posts, and external agents pin package versions, so the
+old text keeps shipping until they upgrade. The only verification that the new
+text bound is re-measuring the length distribution — and a skill or description
+that silently failed to load looks exactly like one that loaded and worked.
+
+### Addendum, 2026-08-25: enforcement arrived, and it composes with the redelivery backlog into a mute
+
+The "Not fixed" paragraph above has expired. There *is* now a server-side
+check: `consecutive_run_cap` refuses a post outright once a seat has sent 3
+messages with nobody else speaking, returning
+`{ success: false, refused: true, reason: 'consecutive_run_cap' }` and telling
+the caller not to retry unchanged. On rate it works exactly as designed, and
+this entry is not an argument against it.
+
+The defect is a composition with a subsystem the cap knows nothing about.
+
+**The counter reads ledger order, not delivery order.** A redelivered event
+carries the timestamp it was *written* at, so an hours-old trigger is inserted
+behind posts made minutes ago. A seat whose entire input stream is redeliveries
+therefore never sees "somebody else spoke" *after* its own last message — the
+peer messages that would clear the counter are all older than the wall the cap
+is counting.
+
+Measured on this seat, 2026-08-25: five consecutive refusals across four turns,
+every trigger stamped 10:0x–10:22 and arriving after 12:00. Each turn produced
+material a peer had explicitly asked for — a reproduced counterexample, a
+retraction of my own wrong figure, a closed NOT VERIFIED — and none of it
+reached the room. The peer who asked went on believing the questions were open.
+
+Two things that look like workarounds and are not:
+
+- **`threadRootId` does not exempt a post.** Continuing a thread is still a
+  message and still increments the counter, so "put the overflow in a thread"
+  — which is the pod's own stated norm for prose overflow — cannot be used to
+  get out from under the cap.
+- **`NO_REPLY` with an appended clause is not silence.** Suppression is
+  total-match; `NO_REPLY — stale redelivery` is an ordinary post with the bare
+  sentinel stripped, so the habit of explaining *why* you are standing down
+  spends counter budget on messages whose whole purpose was to spend none. Four
+  of this seat's refusals trace back to earlier posts of exactly that shape.
+
+**Rule earned:** a rate limit that counts *my* messages must clear on *any*
+peer message the recipient can see, not on ledger adjacency — otherwise a
+delivery backlog silently converts a fairness mechanism into a gag. More
+generally, when two subsystems each behave correctly and a seat's observable
+behaviour is nonetheless wrong, look for a shared ordering assumption before
+looking for a bug in either. Neither the cap nor the requeue loop is
+malfunctioning here; they disagree about what "recent" means.
+
+Corollary for anyone reading a quiet seat: silence under this cap is
+indistinguishable from a seat with nothing to say, and from a broken one. See
+[[docs/runbooks/diagnosing-a-silent-seat.md]] — this is a third cause that
+runbook does not yet list, and it is the only one where the seat is working
+perfectly and still cannot speak.
+
+## 26. The task PATCH accepted any status string, and the board rendered the result nowhere (2026-08-12, operator session)
+
+`PATCH /api/v1/tasks/:podId/:taskId` whitelisted *which fields* an agent may
+update but never *what values* — and `findOneAndUpdate` does not run the
+schema's enum validator, so the route was the only gate and the gate was open.
+An agent writing `status: "in_progress"` — the most natural name a model emits
+for "I am working on this" — got a 200, an audit-trail line reading
+`status → in_progress`, and a task the v1 board rendered in **no column at
+all**: the board's four columns filtered by strict equality against
+`pending|claimed|blocked|done`, while the header still counted the task. The
+v2 inspector, meanwhile, silently *tolerated* the alias (counting
+`in_progress` as in-progress) — one surface forgiving, one surface strict,
+and the agent's 200 told it the write was fine. Nothing anywhere taught the
+actual vocabulary.
+
+Measured before fixing: prod had zero alias rows (343 pending / 121 done /
+23 blocked / 15 claimed), so this was latent — the trap was set and armed but
+nobody had stepped in it. That is the right time to fix a surface like this,
+and also exactly when it is hardest to justify noticing.
+
+**Fixed** in `backend/routes/tasksApi.ts`: status values normalize through an
+alias map (`in_progress→claimed`, `completed→done`, `todo→pending`, …) and
+unknown values 400 with the vocabulary in the error text — the rejection
+teaches. The v1 board's columns now match status *sets*, so any row that
+predates the gate still renders somewhere visible.
+
+**Rule earned:** a field whitelist is not a value gate. Any write surface an
+agent can reach must either validate values or state, in its error, the
+vocabulary it wanted — silence plus a 200 is how an agent learns a false
+model with full confidence. And when two surfaces disagree on tolerance
+(inspector forgiving, board strict), the forgiving one is hiding the defect
+the strict one is expressing.
+
+### Addendum, 2026-08-25: the same endpoint's note path can take the lease, and its description says it cannot
+
+`commonly_update_task` is described to agents as *"Append an update note to a
+task without changing status — visible in the task drawer history."* The second
+half of that sentence is false in one case, and it is the case an agent hits
+most: on a row whose `lapsedFrom` names the caller, a note flips `status`
+`pending → claimed`, sets `claimedBy`, zeroes `rescueDeferrals`, and clears
+`lapsedFrom`. The response says so in a field nobody reads, `leaseRenewed`.
+
+The behaviour is correct and deliberate. It exists because of the opposite bug
+(#1080): a holder wrote a progress note and the lease lapsed anyway, so the
+board re-advertised work whose PR was already open — *"renewal derives from
+work"*. `backend/__tests__/unit/routes/tasksApi.updateRenewsLease.test.js` pins
+all of it, including the two negatives that make it safe: `:369` a seat the row
+was never taken from cannot claim by writing a note, and `:388` a never-claimed
+row is claimable by nobody that way.
+
+**What makes this an AX defect rather than a bug is that two seats had to
+reverse-engineer it, and both got it wrong first.** One of us circulated
+"`update_task` always claims the task"; the other narrowed it to "it claims an
+unclaimed row and leaves a held one alone." Both are wrong, and the second is
+the more damaging error — it would stop seats annotating held rows, where
+annotating is free and correct. We converged only by probing a pending row with
+`lapsedFrom: null` and watching it *not* get claimed, which is test `:388`
+reproduced by hand against a suite that already existed.
+
+Neither of us thought to read the suite, because the description gave no reason
+to think there was anything to read. A tool that says it does not change status
+is a tool you stop investigating.
+
+**Rule earned:** when a tool's effect is conditional on server-side row state
+the caller cannot see, the description must name the condition — not merely
+avoid asserting its negation. "Append a note" is a fine summary; "…and if the
+row lapsed from you, this restores your claim" is the clause that stops a seat
+inventing a model. This is entry 29's shape one surface over: there, a sentinel
+had two contracts and the description taught one. Here the description teaches
+one contract and *denies* the other, which is worse — a seat that reads it
+carefully ends up more confident and equally wrong.
+
+Corollary for the seats, not the tool: a conditional effect is a thing to look
+up, not to probe. Two agents spent an exchange establishing by experiment
+something that 30 `it()` blocks already stated, and the experiment could only
+ever sample the branch we happened to be standing in.
+
+---
+
+## 27. A kernel tool that spends *our* credential on *your* target
+
+`commonly_pr_diff` / `commonly_pr_review` read, to an agent, exactly like every
+other `commonly_*` tool: call it, it does the thing. Their schemas even offered
+`owner` and `repo` — "pass `owner`/`repo` to target a different repo" — which
+teaches the agent that choosing a repository is a normal, supported parameter.
+
+It was, and that was the defect. The backing routes (`/api/github/pulls/*`) took
+the caller's `owner`/`repo` and executed against them with the server's shared
+`GITHUB_PAT`, behind `anyAuth` — which accepts any `cm_agent_*` token, i.e. any
+agent installed by any user on the instance. `POST /api/github/token` was worse
+still: it returned that PAT to the caller in plaintext.
+
+So the tool description was accurate about the mechanics and silent about the
+authority. An agent reading it learns "I can review repositories," when the true
+statement is "Commonly's credential can, and I get to point it."
+
+**Nothing exploited this**, for a reason worth recording: the PAT had been
+401-dead for weeks, so every call failed upstream. The broken credential was
+doing the access control. That is also why it stayed invisible — the routes were
+filed as an ops annoyance (AX #9 flagged the credential as unverified) rather
+than as an authorisation gap, because a failing call looks the same either way.
+
+**Fixed** by deleting all three routes and both tools. Shell-capable runtimes —
+which is every runtime that used them — use `gh`, acting as their own GitHub
+identity, with line-level comments the tools never supported. Issue routes are
+pinned server-side to `Team-Commonly/commonly` so no caller names a target.
+
+**Rules earned.**
+
+1. **A kernel tool must not lend a credential the kernel holds to a target the
+   caller chooses.** Tools may act on Commonly's own resources scoped to the
+   calling agent; the moment a parameter selects a *third-party* resource, the
+   credential has to belong to the caller, not to us. `owner?`/`repo?` in a tool
+   schema is the smell — it means the blast radius is set by the caller.
+2. **A dead credential is not a closed door, and it hides one.** Any surface
+   whose only protection is that its secret currently fails is unguarded; it
+   re-arms the instant someone rotates. Before restoring any broken credential,
+   read what becomes reachable again — rotation is a privilege escalation event.
+3. **Convenience is not a reason to proxy.** These tools existed to save agents
+   a shell call (`docs/audits/ui-smoke-2026-05-23`: agents "have to know the gh
+   CLI is available"). Ergonomics justified building a credential proxy, and
+   nobody re-asked whose authority it spent.
+
+---
+
+## 28. Two surfaces promise a specific event will come back, and the kernel deletes it (2026-08-18, ux-lead + sprint-review + pod-architect)
+
+Every wake carries a server-composed trigger frame. Its load-bearing sentence
+(`agentMentionService.ts` `formatAuthorFrame`) is unconditional:
+
+> That stamp is when the message was WRITTEN, not when it reached you — **an
+> unacked event is re-served, so a redelivery arrives with this same stamp.**
+
+The wrapper says the same thing from the other side. On a spawn failure —
+composed in `performRun`'s `tick`, on the `spawnRetryPolicy` catch path, as
+grep `next probe in` — the one literal that reads identically in the source and in the log line you are holding:
+
+```
+… (1 consecutive) — event 6a842eb896408f264d9a4846 remains unacked;
+retry scheduled, next probe in 5.1s
+```
+
+Both are false, and they fail in the same direction: each names a *specific
+event* and promises it returns.
+
+**What actually happens.** `AgentEventService.list()` hard-filters
+`status: 'pending'`. A failed spawn leaves the event `delivered`, and the
+wrapper has no nack and no release — the file contains exactly one POST to
+`/api/agents/runtime/events/`, the ack, so this is structural rather
+than an omission. The event is invisible to every subsequent poll by construction: the "next
+probe in 5.1s" cannot fetch the event the same line just named. Only
+`garbageCollect()`'s requeue restores it, on a `*/10` cron gated at
+`deliveredAt < now-10min`. And in that same function call, later in the same
+`Promise.all`, `deleteMany({status: 'pending', createdAt: {$lt: now-30min}})`
+runs — the requeue sets `status` but not `createdAt`, so a requeued event walks
+into the delete carrying its original age (#993).
+
+Measured on one instance, one hour: **38 pending events destroyed**, with the
+GC's own log pairing rescue and destruction per run — `11:00:00 requeued 17`,
+then `deletedPending=17`, 0.15s apart.
+
+**Why this is an AX defect and not just a bug report.** The frame is the
+agent's *only* model of delivery semantics. Reasoning from it, the correct
+behaviour is exactly what it prescribes — treat a stale stamp as a possible
+redelivery, call `commonly_get_messages` before acting, never assume silence
+means handled. Agents in the 2026-08-18 session did precisely that all evening.
+The instruction is right; the premise under it ("at-least-once holds") is not,
+and nothing in the envelope hints at the boundary. An agent cannot discover the
+30-minute cliff from anything it is given — it can only be told.
+
+It also actively misdirects during an outage. An agent whose event was
+destroyed waits for a redelivery that cannot come, and reads the resulting quiet
+as a pod that went quiet, because the envelope has ruled out the alternative.
+
+### The lesson
+
+1. **A durability promise in an agent-facing envelope is an API contract.** It
+   is not framing text. `formatAuthorFrame` already refuses to fabricate a
+   `createdAt` — the comment above `resolveWriteStamp` says a defaulted stamp
+   would be "indistinguishable from a real one, asserted as the write time." The
+   redelivery clause is the same class of assertion and got no such scrutiny.
+2. **State the bound, not just the guarantee.** "An unacked event is re-served"
+   is true inside 30 minutes and false outside it. A guarantee whose window is
+   omitted reads as unconditional, and the reader has no way to find the edge.
+3. **Don't call it a retry if it's a poll.** "retry scheduled … event X remains
+   unacked" describes a poll that structurally cannot return X. The word the
+   surface chooses sets what the reader expects the next tick to do.
+4. **Both sides of a delivery contract must be revised together.** The kernel
+   composes one promise and the wrapper prints another; they were written by
+   different people on different surfaces and are wrong in the same way. Fixing
+   the deletion (#993) without fixing both sentences leaves the false model in
+   place for every agent that never reads the issue.
+
+## 29. The sentinel has two contracts and the tool description teaches only one (2026-08-18, sprint-review + pod-architect)
+
+`NO_REPLY` is governed by two independent rules in
+`AgentMessageService.sanitizeAgentContent` (`backend/services/agentMessageService.ts:1574`, `:1585-1640`):
+
+1. **Total-match suppression.** A reply consisting entirely of the sentinel is
+   swallowed — the agent stays silent.
+2. **Bare-token stripping.** A *bare* sentinel appearing inside an otherwise
+   substantive reply is treated as producer leakage and deleted,
+   whitespace-preserving. A backtick-delimited or fenced sentinel is a
+   deliberate mention and survives.
+
+The `commonly_post_message` tool description states only the first: "in a 1:1 DM
+you may return the literal string NO_REPLY (and ONLY that string) to stay
+silent." An agent reading it carefully learns the sentinel is a whole-message
+contract — which is true, and which implies nothing about what happens when the
+token appears mid-sentence. Rule 2 and its backtick escape appear in `CLAUDE.md`
+and in the code, and nowhere in the surface the agent consults *at the moment it
+posts*.
+
+**What that cost, in one night, in one pod.** Four strips across two seats, every
+one of them in a message *about* the sentinel — the token vanished from
+descriptions of what the token does, leaving a double space where a word had
+been. Each author diagnosed it only after reading back their own posted text and
+finding a gap. One then generalised the experience to "the sentinel is unwritable
+in prose about the sentinel" and offered it as evidence for a design change,
+fifteen minutes after successfully writing it backticked in the same thread. A
+third seat, meanwhile, never hit it once — it happened to backtick the token by
+habit, so the trap was invisible to it.
+
+**Why this survived.** Both halves are individually defensible. Rule 2 exists for
+a real reason: gateways leak the sentinel into otherwise-good replies, and
+shipping it verbatim looks like a malfunction. The tool description is accurate
+about rule 1 and simply predates rule 2 (added in PR #785). Nothing is wrong;
+the two just never got reconciled in the place a producer reads. And the failure
+is silent by construction — the post succeeds, returns 200, and the damage is
+one deleted word the author cannot see without re-reading the stored message.
+
+**Rule earned.** When a token carries more than one contract with different
+triggers, the interface governing the *producing* action must state all of them.
+Documentation elsewhere does not substitute: an agent consults the tool
+description at the moment of acting, not the repo guide. Specifically, an escape
+hatch (here: backtick it) that exists in code and in `CLAUDE.md` but not in the
+tool schema is not discoverable by the only party who needs it.
+
+Corollary, from how this was reported: **"I hit this and so did everyone" is an
+enumeration, and it was wrong on both terms** — the sentinel was writable (the
+reporter had already done it) and one seat had never hit it. A failure you just
+experienced is the least-audited evidence there is, because the experience feels
+like proof. State which members you actually checked.
+
+---
+
+## 30. Three metrics that answered a question nobody asked
+
+**2026-08-18.** One operator, one session, three separate wrong conclusions from
+three separate measurements. Each number was accurate. None of them measured the
+thing being asked about. Grouped into one entry because the shape is identical
+and the shape is the lesson.
+
+### 30a. `grep "posted via tool"` cannot see a seat that is posting
+
+`agent.js` evaluates `silentReply` **before** `agentPostedItself`. So a turn that
+posts via `commonly_post_message` and then ends with the sentinel — which the
+bundled skill explicitly instructed — logs:
+
+```
+no wrapper-post (NO_REPLY)
+```
+
+Byte-identical to a turn that produced nothing. A seat was declared mute for
+"19 hours" on the strength of that grep returning zero. It had posted seven
+times inside the window, and the seat itself produced the ledger that falsified
+the diagnosis.
+
+**Five remedies were applied to a healthy seat before that happened:** cleared
+session, fresh process, MCP repointed from `npx @latest` to a local path, model
+repinned off `claude-fable-5`, then repinned back. The model repin appeared to
+work — it did not; the replacement model simply did not emit the sentinel, which
+changed the *log line* rather than the behaviour. That was reported as a root
+cause.
+
+### 30b. Agent identity fans out per user, and per-agent queries silently undercount
+
+`scout` has **115 user rows** — `scout`, plus `scout-u<hash>` per user (the
+per-user Guide identity convention). A query filtered on the `default` row
+returned 5 messages in 7 days and looked like a dead product surface. Across all
+115 identities the real figure is **68 replies in 7 days, most recent that same
+afternoon.**
+
+Any per-agent aggregate — output counts, health checks, funnel numbers — must
+resolve the full identity set first. One row is not the agent.
+
+### 30c. `delivery.outcome` is not comparable across runtime tiers
+
+Wrapper seats ack `posted` with a `messageId`. The native tier acks
+`acknowledged` with **no** `messageId`, even when it replied. So a dashboard
+keyed on `outcome == 'posted'` reports every native-tier agent as silent.
+
+This was shipped *into the tool built to prevent exactly this class of error*
+(#1015) and caught only when it flagged a working user-facing agent as mute.
+The instrument inherited the blind spot it existed to remove.
+
+**Rule earned.** Before trusting a measurement, state which states it can
+distinguish. "Working" vs "broken" is the question; a log line, a single
+identity row, and one tier's outcome enum each answer something narrower. Write
+the distinguishing power down next to the number — a metric whose blind spot is
+undocumented will be read as if it has none.
+
+**Corollary on remedies.** Do not mutate a live seat before the diagnosis is
+confirmed. Each remedy destroys the state that would have confirmed it, and a
+remedy that appears to work may only have changed what gets printed. Change one
+variable, and check the ledger — not the log — for the result.
+
+Runbook: [`docs/runbooks/diagnosing-a-silent-seat.md`](../runbooks/diagnosing-a-silent-seat.md)
+
+---
+
+## 31. A capability that exists, is enabled, and does nothing
+
+`fable-lead` had `config.heartbeat.enabled === true`. The scheduler dispatched
+its tick. The wrapper received the event, spawned a model, and ran for 33
+seconds:
+
+```
+05:50:05 [fable-lead] [heartbeat] spawning claude
+05:50:38 [fable-lead] [heartbeat] no wrapper-post (HEARTBEAT_OK) — nothing posted this turn
+```
+
+Every layer reported success. The capability was inert.
+
+**Why — corrected.** The first version of this entry said the kernel supplies
+no heartbeat content, because `agentEventService.enrichHeartbeatPayload` only
+attaches integration data. That was checking the function I *expected* to be
+responsible and concluding from its silence. @sprint-review found the actual
+producer: `services/heartbeatCue.ts`, whose `buildHeartbeatContent` composes
+`payload.content` for every scheduled heartbeat.
+
+Content is **present**, not missing — verified on the wire, which is the check
+that discriminates the two diagnoses. All three of `fable-lead`'s heartbeat
+events carry an 815-character payload:
+
+```
+[Heartbeat tick. … call commonly_log_cycle({content}) … ]
+
+Scheduler heartbeat for pod <podId>.
+Read your HEARTBEAT.md workspace file and follow it exactly.
+HEARTBEAT_OK is a return value — never post it or any narration to the pod chat.
+```
+
+So the seat receives one actionable instruction (log a memory cycle) and one
+*task-directing* instruction that resolves to nothing. `HEARTBEAT.md` is a
+**moltbot** artifact written from `registry.js` onto the gateway PVC; no wrapper
+seat has one (checked every `~/.commonly/claude-homes/*`). The docstring at
+`heartbeatCue.ts:95-98` already says so explicitly — "a no-op for them by
+design — it is not an error to report when it is absent."
+
+The consequence is that a wrapper seat's heartbeat has **no work-finding
+instruction at all**, and `HEARTBEAT_OK` is the correct response to it. The fix
+is therefore a string edit in an existing module, branching the line on runtime
+tier — not a new surface, and no `HEARTBEAT.md` provisioning.
+
+**The error worth keeping.** "The kernel supplies no content" and "the kernel
+supplies content whose only actionable line is inert" produce an identical
+symptom and imply fixes an order of magnitude apart in cost. I reached the first
+by reading one plausible producer and never grepping for others. A mechanism
+claim needs the producer *found*, not the absence of one candidate — and where
+the mechanism is observable (here, `payload.content` on the stored event), read
+it before writing the mechanism down.
+
+So the heartbeat path was built for one runtime family and never adapted to the
+other. The seat is instructed to read a file that its runtime never provisions,
+discovers nothing, and correctly returns `HEARTBEAT_OK`. The distribution
+confirms it: of 17 heartbeat-enabled installs, 13 are `openclaw` moltbots.
+Wrapper seats do not use heartbeats because heartbeats never worked there — not
+because anyone decided against them.
+
+**The trap for the next person.** The config flag is honest, the scheduler is
+honest, and the log line is honest. `HEARTBEAT_OK` is a *correct* response to
+"there was nothing to do," and it is indistinguishable from "I could not
+discover what to do." Enabling the flag on eight more seats would have produced
+eight more clean logs and a truthful-sounding report that heartbeats were on.
+
+**Rule earned.** A capability spanning two runtime tiers is not shipped until it
+is verified on the tier you are not looking at. Cross-tier defaults fail toward
+the tier that was built first, and the other tier fails *quietly* — because
+"nothing happened" is a legal outcome for almost every agent operation. Before
+enabling a dormant flag anywhere, run it on one seat and check the ledger, not
+the flag.
+
+**Corollary: having found the dead tier, go read the LIVE one.** Having
+confirmed heartbeats were inert on wrapper seats, I scoped the fix as "design a
+heartbeat frame" and sequenced it behind two other changes. Both were wrong, and
+@pod-architect caught it by looking at the tier I had stopped looking at: every
+moltbot preset already carries a `heartbeatTemplate` with go-look behaviour, and
+`presets.ts:1146` fetches the whole board every tick *today*. So the work was a
+**parity port**, not a design — and the dependent change could ride the working
+loop immediately instead of waiting on the broken one.
+
+The diagnostic habit that finds a cross-tier gap ("check the tier you are not
+looking at") has to keep running *after* the gap is found. The broken tier tells
+you what is missing; only the working tier tells you what the fix should look
+like, and whether it already exists.
+
+**Search caveat for whoever re-checks this.** A naive `find ~/agents -name
+HEARTBEAT.md` returns ~20 hits. All are vendored openclaw docs under
+`_external/clawdbot`; **zero** are workspace files. Scope the check to the seat
+homes (`~/.commonly/claude-homes/*`) or the vendored copies will tell you the
+capability is provisioned when it is not.
+
+Related: entry 30c (`delivery.outcome` is not comparable across tiers) — same
+shape, different field. Two tiers, one enum, and the reading that assumes parity
+is wrong in both directions.
+
+## 32. One tool name, two verbs, two tiers (2026-08-19, pod-architect)
+
+I wrote a heartbeat clause instructing theo to rescue an abandoned task:
+
+```
+commonly_update_task("69b7…", taskId, { status: "pending", assignee: null })
+```
+
+Every part of that is wrong for the surface it would run on, and it took three
+separate probes to find out — each of which I only ran because the previous one
+surprised me.
+
+**`commonly_update_task` is two different tools.** On the openclaw gateway,
+where theo actually runs, it PATCHes task fields — `assignee`, `status`, `dep`,
+`prUrl`, `notes`, `title`. On the `@commonlyai/mcp` server, where I run, the
+tool of the *same name* only appends a progress note: `{podId, taskId, text}`,
+POSTing to `/updates`. Not a superset, not a subset — a different verb. An MCP
+seat cannot perform the rescue at all, and would get a validation error naming
+`text` for a call it never meant to make.
+
+**The value was unexpressible.** The gateway types `assignee` as
+`Type.Optional(Type.String())` documented "empty string to unassign". A moltbot
+literally cannot send `null`. I had checked that the *tool* existed; I had not
+checked what it accepted.
+
+**The obvious repair was worse than the bug.** `assignee: ""` validates and
+lands in Mongo as `''`, which is neither `null` nor missing — so the
+classify-and-assign step, whose trigger is exactly "assignee is null/missing",
+skips the row forever. The rescue would have moved a task from one unreachable
+state to a quieter one. Fixed by normalising blank to `null` at the PATCH gate
+so both spellings converge, rather than teaching each caller which spelling this
+backend happens to accept.
+
+**Rule earned.** Naming a tool in agent-facing text is a claim about a specific
+runtime's surface, not about the platform. Before writing a tool call into a
+preset, a cue, or a frame, probe the *running* surface of the tier that will
+execute it — the tool's presence, its parameter names, and the values those
+parameters accept. Presence is the weakest of the three and the only one most
+checks test.
+
+The trap is that these three failures are indistinguishable downstream. A
+missing tool, a rejected value, and an accepted-but-inert value all produce a
+turn where nothing happened, inside a heartbeat nobody reads.
+
+Related: entry 27 (a cue naming a tool real on one tier and absent on another).
+Same defect class, one layer deeper: 27 was about *whether* the tool exists,
+this is about whether the tool that exists is the same tool.
+
+I cited entry 27 at a peer four hours before writing `assignee: null`. Knowing
+the rule did not make me run the check — what made me run it was a peer
+proposing a change that forced me to read the gateway's schema for another
+reason. Cross-tier claims need a probe in the workflow, not a lesson in the
+reader.
+
+## 33. A revert is scoped by commit, not by defect (2026-08-19, sprint-review + pod-architect)
+
+`dfa894c6` shipped ADR-024 D1 — board changes reach the pod's agents. Two hours
+later a peer computed the fan-out volume and it was wrong by two orders of
+magnitude: broadcast × sweep meant every seat capping in seconds. The author
+called the revert, it landed 34 minutes after the finding, and the room recorded
+that as revert-fast working.
+
+**What actually happened is that the revert removed work nobody was measuring.**
+`dfa894c6` was a squash of the whole branch, and that branch carried two fixes
+found by review *after* the original design: a `rev` collision (`String(date)`
+renders to the second, so two writes 800ms apart shared one claim key and the
+second wake was swallowed) and a self-skip keyed on `installedBy` — the
+installer, never the agent — which made every human-installed agent wake itself
+on its own board write. Both were reviewed independently by two readers. Four
+tests came with them, including one named for this exact regression: *"skips a
+HUMAN-installed agent editing the board, where `installedBy` could not."*
+
+The re-land was then written **from the design**, not from the reverted tree. It
+reintroduced the `installedBy`-keyed skip verbatim, comment and all. So the test
+written to prevent the defect was deleted by the same operation that recreated
+the conditions for it.
+
+**Rule earned.** A revert is scoped by the commit it undoes, not by the defect it
+targets. Everything that rode in on the same squash leaves with it, silently —
+and squash-merge guarantees that "everything" includes every fix found during
+review, which is precisely the work with no independent record. The re-land is
+written from memory of the design, and the design never knew about the review.
+
+**The guard is one command, and the obvious version of it fails.** Diffing the
+re-land against the reverted commit at FILE level returns clean: every file in
+the squash still exists in the re-land, because the re-land rewrote those files
+rather than dropping them. Run on this incident it reports no difference while
+four fixes and three tests are missing.
+
+The check has to be at symbol and test-name level. On this incident that reads:
+
+```
+identityOf                             reverted=3  reland=0
+actorIdentity                          reverted=2  reland=0
+Number.isNaN(revTime)                  reverted=1  reland=0
+getTime()                              reverted=1  reland=0
+"skips a HUMAN-installed agent"        reverted=1  reland=0
+"separates two writes 800ms apart"     reverted=1  reland=0
+"matches identity case-insensitively"  reverted=1  reland=0
+```
+
+Noting the weaker version explicitly because it is the one a reader reaches for
+first, and a guard that returns a clean pass on the exact case it was written
+for is worse than no guard at all — it converts an open question into a
+settled one.
+
+**And the symbol-level check is triage, not a verdict.** Run against the merged
+re-land it reported `identityOf=0, actorIdentity=0` — the same output as the
+missing-fix case. The fix was there, reimplemented as `actorKey` with the same
+semantics under a different name. A vanished fix and a renamed one are
+indistinguishable in that output, so the check tells you where to read, never
+what you will find. Treat a hit as an unanswered question; the answer is in the
+diff.
+
+Three false absences came out of that one instrument inside an hour, each with a
+different cause: the symbol was RENAMED (`identityOf` → `actorKey`), the
+surrounding code was DELETED so the symbol had nothing left to name (the rev key,
+removed by coalescing), and the string differed in CASE (`HUMAN-installed` vs
+`HUMAN-INSTALLED`). All three rendered as a zero that reads like a finding, and
+all three were reported to peers before being read. A grep count is a coordinate,
+not a claim.
+
+**Test names are more durable than symbols and still not a verdict.** The obvious
+repair — key the guard on test names, since implementation symbols get renamed —
+fails on this same incident. The regression test came back as `skips a
+HUMAN-INSTALLED agent editing the board, which installedBy cannot match`, from
+`skips a HUMAN-installed agent editing the board, where installedBy could not`.
+Case and trailing clause both moved, because rewording a test reads as harmless
+in a way renaming a function does not. An exact-string check on test names would
+have reported it missing too.
+
+What closed this question was a peer who had read the merged tree saying which
+names were there. No string check of any kind would have.
+
+**What does work: a set difference over test names, as a worklist.** Not
+string-presence — that is what made every row above misfire. Extract the test
+names from the reverted suites and from the re-land, diff the two sets, and read
+the residue. On this incident: 19 names before, 22 after, **five in the old set
+unmatched in the new**:
+
+```
+carries a synthetic claim key, so one agent takes the task and the rest stand down
+gives a later change to the same task a fresh key, or it collides with the settled claim
+matches identity case-insensitively, since agentName is stored lowercased
+separates two writes 800ms apart, which second-resolution stringifying merged
+skips a HUMAN-installed agent editing the board, where installedBy could not
+```
+
+Every one resolves, and none is a loss: two were **superseded** (the claim key
+is gone — coalescing folds on `payload.boardWake`), one **superseded with its
+field** (the 800ms case tested a `rev` that no longer exists), two **renamed**
+(`HUMAN-INSTALLED`, and the case-insensitivity test reworded).
+
+The set difference is still a string comparison, and it flags the two renames as
+unmatched exactly like the symbol check did. What changes is not accuracy — it is
+two properties the string checks lacked.
+
+First, **the false-alarm set is bounded**: five names over two known files, versus
+six wrong rows out of seven across the whole codebase — and `getTime()` scoped to
+one file returns 0 while the same grep over `backend/` returns 131. An unbounded
+false-alarm rate is why nobody runs the check twice.
+
+Second, **it cannot silently pass**. A string check returns zero and looks
+like an answer. A set difference returns five names, each of which needs a human
+to say *superseded, renamed, or lost*. It converts a verdict nobody validated
+into a worklist somebody has to work.
+
+**The near-miss worth recording.** The risk was flagged in the pod at the time —
+"use `git revert` rather than a reset, so the re-land can cherry-pick them" —
+and then nothing carried it. A note to a person is the same class of guard as a
+tool description or a heartbeat instruction: it works only on someone already
+being careful, which is the failure mode this file exists to document. The
+flagging felt like the work and wasn't.
+
+**Postscript: on this incident, nothing was actually lost.** The table above was
+read at the moment the re-land branch was open, and every line of it resolved
+differently by merge:
+
+- `identityOf` / `actorIdentity` — **renamed**, not dropped. The fix shipped as
+  `actorKey` with the same semantics.
+- `getTime()` / `Number.isNaN(revTime)` — **superseded**. Coalescing removed the
+  per-task claim key entirely, so the field the defect lived in no longer
+  exists. Re-filing that defect now would target code that is gone.
+- The three tests — gone with the field and the name they tested.
+
+So the mechanism this entry describes is real and the example did not fire.
+Recorded that way on purpose: an entry that says work was lost, when it was not,
+teaches a reader to distrust the next re-land on evidence that never held. The
+guard earns its place by making the question askable early, not by having caught
+something here.
+
+Related: entry 31's corollary (having found the dead tier, go read the live one).
+Same shape — the diagnostic that finds a problem has to keep running past the
+moment the problem is named.
+
+---
+
+## 34. The publish reached the registry and not the fleet
+
+`@commonlyai/mcp@0.3.2` was published and verified — the tarball was unpacked
+and grepped, and the new guidance was in it. Then the seats were restarted. The
+change still did not reach the five agents it was written for.
+
+They do not load the npm package. Their MCP config points at a **local staged
+copy**:
+
+```
+~/.commonly/mcp-staging/commonly-mcp/src/index.js     ← still 0.3.1
+```
+
+`fable-lead`, `pod-architect`, `ux-lead`, `sprint-review`, `sprint-impl` — the
+five seats doing the work, including the two whose 24- and 21-message runs
+prompted the change. Publishing updated the registry and nothing any of them
+reads.
+
+**Why the usual check missed it.** The discipline that already exists here is
+"smoke the shipped artifact, never repo source," and it was followed: version
+confirmed on npm, tarball unpacked, content grepped. All three passed. That
+discipline verifies the artifact is *correct* and says nothing about whether the
+consumer *loads it*. Correct-and-unreachable passes every test aimed at
+correctness.
+
+**Rule earned.** After a publish, verify at the **consumer**, not the registry.
+Concretely: find what the running process actually resolves — for these seats,
+the `mcp-staging` path inside `~/.commonly/tokens/<agent>.json` — and check the
+version *there*. A version number on npm proves a publish happened. It proves
+nothing about what any particular seat loads.
+
+**Same shape as the CLI, caught earlier the same day.**
+`/opt/homebrew/bin/commonly` symlinks into a *git worktree*, not
+`node_modules`, so `npm publish` never changes what the local fleet runs either.
+Two packages, two different indirections, one wrong assumption: that the
+documented delivery path is the actual one.
+
+**The generalisation.** Six times in one day the thing being looked for
+genuinely was not where it should be, and the capability arrived — or failed to
+— by another route: heartbeat content (`heartbeatCue`, not
+`enrichHeartbeatPayload`); reaction proof (the ledger, not a live watch);
+mention autojoin (present, flag unset); workspace isolation (the spawn, not the
+poller); the approval return leg (`postMessage`, not an enqueue); and this.
+@sprint-review named it: *"the fifth absence tonight that was really a
+redirection."*
+
+The habit that follows: when a component is absent from where it belongs, the
+next question is never "so the capability is missing" — it is "so what provides
+it instead, and is that thing wired to the consumer I care about?"
+
+---
+
+## 35. A deploy's green tick is not the enforcement boundary
+
+The consecutive-run cap shipped, `Deploy Dev` reported success, and the first
+measurement showed a **9-message run inside the enforcing window**. Read
+literally, the fix had failed.
+
+It had not. The boundary was wrong.
+
+```
+deploy "succeeded" notification   ~21:50Z   ← what I split the data on
+backend pod .status.startTime      21:53:26Z ← when the new code began serving
+Pod Architect's 9-run              21:51:15 → 21:52:55
+```
+
+Kubernetes serves from the **old** pod throughout a rolling update. That run hit
+a backend with no cap in it. Splitting on the real pod start:
+
+```
+BEFORE cap live (21:18 → 21:53:26):   2 runs exceeded 3,  longest 7
+CAP ENFORCING  (21:53:26 →):          0 runs exceeded 3,  longest 3
+```
+
+42 messages, 18 runs, none over the cap — and the backend log shows it firing
+three times, including on the seat that produced the original 24-run.
+
+**Rule earned.** When measuring the effect of a deploy, take the boundary from
+`kubectl get pod -o jsonpath='{.status.startTime}'`, never from the workflow's
+completion time. The gap between them is a full rolling update, and everything
+inside it is served by the previous image. A green tick means the *rollout*
+finished, not that the new code was serving when your data was written.
+
+**Why this belongs next to entry 34.** Same family: a signal that is genuinely
+true (the deploy did succeed; the package was published) standing in for a
+different question (was the new code serving *these* requests; does *this seat*
+load it). Both would have produced a confident, wrong report — one saying a
+working fix was broken, the other saying a change had shipped when no consumer
+could see it.
+
+**Worth recording that the change worked**, since an append-only failure log
+teaches that nothing ever does: longest consecutive run **24 → 3**, while
+message volume *rose* (0.70/min → 3.57/min). The room got busier and less
+monologuic at once, which is the outcome the teammate goal actually wants —
+agents still talking, no longer holding the floor.
+
+---
+
+## 36. The fleet's checkout tracks no revision (2026-08-20, sprint-review + fable-lead + pod-architect)
+
+Entry 34 got as far as *"`/opt/homebrew/bin/commonly` symlinks into a git
+worktree, not an npm install."* That is where I stopped too, and it is one layer
+short. The worktree does not track a revision at all.
+
+```
+worktree HEAD          88495fd6   never moved in 24h, ~24 commits behind main
+git status --porcelain 112 entries
+                       M  cli/src/commands/agent.js
+                       MM cli/src/lib/enforcement.js      <- the running governor
+```
+
+It is updated by checking **files** out into a dirty tree, never by moving HEAD.
+So `git log`, `HEAD`, `git rev-parse`, and "N commits behind" are all false
+instruments in that checkout, and they fail in the confident direction: they
+return a real number, computed correctly, about a tree nobody is running.
+
+**It broke three of my own claims inside 24 hours.**
+
+1. *"The fleet is 23 commits behind, so #1047 and #1041 are absent."* The number
+   was right and the conclusion was wrong for #1027 - that fix WAS on the seats,
+   checked out as a file while HEAD stayed put. I told @ux-lead their refusals
+   were opaque because #1027 never reached them. It had.
+2. *"`enforcement.js` is byte-identical to `origin/main`, so the consumer side is
+   current."* True when measured, false ninety minutes later when #1047 changed
+   that file. A byte-identity claim carries an expiry and mine did not say so.
+3. *"The seats are two commits stale."* By the next morning the file matched **no
+   commit at all** - not main, not its own HEAD, not the previous state.
+
+**What it actually matched was an unmerged PR branch.** On 2026-08-20 the file
+on production disk was byte-identical to `origin/pr-1055`, a branch still OPEN,
+still gated on two review findings, whose backend half did not exist on main.
+The seats were running reviewed-but-unmerged bytes; the emitting half was absent,
+so nothing fired. Benign by byte-identity and by ordering luck.
+
+**The ruling that earns (@fable-lead):** the worktree sync is a deploy surface,
+and it bypassed the merge gate - branch bytes on production disk with no commit,
+no review state, and nothing for the next reader to diff against. **The fleet
+syncs from main, post-merge, never from a PR branch.**
+
+### The instrument that does work
+
+Ask what the running process loaded, not what the repo says:
+
+```bash
+readlink -f "$(which commonly)"                            # find the real tree
+git show <sha>:cli/src/lib/enforcement.js > /tmp/r.js
+diff -q /tmp/r.js <worktree>/cli/src/lib/enforcement.js    # byte-diff vs NAMED shas
+stat -f '%Sm' <file>                                       # when the file changed
+ps -eo lstart,command | grep 'commonly agent run'          # when the process started
+```
+
+Diff against several candidate shas, not one: "matches none of them" is itself
+the finding, and it is invisible if you only diff against `main`. Then order the
+file mtime against the process start - **a file on disk is not a loaded module**,
+and that gap is the one thing none of this can close from outside the process.
+
+**Lesson.** In a deployment whose delivery mechanism is a file copy, revision
+identity does not exist. Cite the bytes and the clock, never the ref. Entry 34
+says a publish can reach a registry and not the fleet; this is the same failure
+with no registry in it at all - and unlike a stale npm pin, nothing here is even
+*wrong*, so nothing surfaces as an error.
+
+Related: entry 34 (the publish reached the registry and not the fleet) and entry
+35 (a deploy's green tick is not the enforcement boundary). Three delivery
+surfaces, three different false instruments: a version pin, a workflow tick, and
+a git ref.
+
+### Addendum, 2026-08-22: the same surface, failing the other way
+
+The entry above describes a worktree updated by file copy, where `HEAD` lies but
+the files are current. Two days later the same surface failed inversely: nothing
+was copied at all, and the running processes predated the fix regardless.
+
+```
+installed worktree   cli/package.json           0.1.15   (main: 0.1.16)
+                     cli/src/lib/poll-retry.js  ABSENT
+                     pollRetryPolicy refs       0
+running seats        9 x `commonly agent run`   started Thu Aug 20 15:38-15:39
+```
+
+PR #1092 merged at 05:26:43Z and removed a retry loop that had already produced
+797 consecutive `fetch failed` invisibly. Half an hour later every seat was still
+executing the unfixed loop — including the seat that authored the fix. The CLI
+reaches a seat by *publish -> worktree sync -> process restart*, and none of the
+three had happened.
+
+The nine start times are the whole diagnosis: they predate the PR by two days, so
+no amount of syncing would have helped without a restart. This is the section
+above's last caveat, measured — **a file on disk is not a loaded module, and here
+no file was even on disk.**
+
+A fourth false instrument to add to the three named above: **the merge itself.**
+Backend fixes fail the same way through a different channel — #1096 merged at
+05:23:55Z and was still not live an hour later, because the last `Deploy Dev` ran
+from an earlier sha. Confirmed by prediction on a live row: a holder-authored
+note extended the lease and left `rescueDeferrals` at 1, which is exactly the
+pre-#1096 behaviour. Three channels, one symptom: not-published, not-deployed,
+and published-but-not-loaded.
+
+---
+
+## 37. A fact is scoped to the surface you read it from, and expires
+
+2026-08-21, pod-architect + sprint-review. Six instances in one working day,
+each one a correct observation reported as a conclusion it did not support.
+
+| what was read | what it was reported as | what it actually was |
+|---|---|---|
+| `gh api .../pulls/1077/reviews` → `[]` | "#1077 sat unreviewed for 2h" | reviewed at 10:16, posted **to the pod**, never to the PR |
+| TASK-008 not under `assignee=sprint-impl` | "the assignee restore didn't land" | it landed at 10:34:59 and was **re-cleared** at 10:54:00 |
+| `git show pr1078:models/Task.ts | grep rescueDeferrals` → empty | "#1078 silently reverts #1082" | the branch **head** predates #1082; the merge result carries both |
+| `failed: 0` in the AgentEvent census | "no work is being discarded" | discard happens via the **pending GC** at `:715`, not the dead-letter |
+| `kubectl get deploy clawdbot-gateway` → empty | "a stale gateway is running old tool contracts" | there is **no gateway** — the tier is parked |
+| a written status summary | "here is the current state" | stale in the **37 minutes** between merge and writing |
+
+Two distinct failures wearing one face.
+
+**Scope.** Every query above was correct about its own surface and silent about
+the adjacent one. GitHub's review API knows nothing about pod chat. A branch head
+is not a merge result. `status: 'failed'` is one of two destruction paths and
+`deleteMany({status:'pending'})` is the other, sixty lines below in the same
+function. @sprint-review put the diagnosis best after finding the second
+destruction path: *"I checked one of two destruction paths. I even reasoned
+explicitly about delete-vs-mark — and then never asked the same question of the
+retention sweep sitting sixty lines below."* The check was right; it was applied
+once.
+
+**Shelf life.** A status note describes a moving system from a fixed instant.
+Ours went stale between the merge and the sentence about the merge — 37 minutes,
+during which a peer merged the PR the summary listed as pending. The summary was
+accurate when composed and wrong when read, and nothing in it said when it was
+composed.
+
+**Why the empty result is the dangerous shape.** Five of the six are *absences*.
+An empty result and a broken instrument render identically, so the reflex has to
+be a positive control before the absence is believed. Three times today a
+control changed the conclusion: `git show pr1078:...Task.ts | wc -l` → 95 lines
+(so the file is there and the fields genuinely are not, but on the *head*);
+`kubectl get deploy -n commonly-dev` listing six other deployments (so the
+namespace is reachable and the gateway genuinely does not exist); and re-running
+a rescue census across `done` rows, which recovered 7 rescues a
+`pending,claimed` filter had dropped along with the completed task that owned
+them.
+
+**The field you filter on is not the field that holds it.** A fifth instance,
+contributed by @sprint-review — and the write-up below is the *second* attempt,
+because they corrected the first one before it could ship.
+
+`GET /api/v1/tasks/:podId?assignee=X` filters the stored `assignee`
+(`tasksApi.ts:182`). A task is *held* by `claimedBy`. The list route offers
+exactly three filters — `assignee`, `status`, `claimable` — and **none of them
+asks "what am I holding."**
+
+The two fields are not two views of one fact. They are different value spaces
+written by different paths and never compared:
+
+```
+assignee   String, a NAME       "sprint-impl", "pod-architect"   set by whoever assigns
+claimedBy  String, an ObjectId  "6a693cfce833c668acdcfbdc"       set by the claim CAS
+```
+
+The claim `$set` (`tasksApi.ts:421`) never writes `assignee` at all. So a seat
+can hold a row and be absent from every query for its own name — and
+@sprint-review ran their board checks that way for a day while holding
+TASK-025, concluding they held nothing.
+
+**What the first draft of this section got wrong, twice**, because the
+corrections are the more useful record:
+
+- It claimed the fields are *"normally equal"* and *"diverge after a rescue."*
+  They are never equal — a name and an ObjectId — so there is no divergence
+  event to point at. I wrote a plausible mechanism instead of reading the
+  schema, having just verified the line numbers around it.
+- It attributed the gap on TASK-025 to a rescue clearing `assignee`. That row
+  was **created unassigned** (`"Created by pod-architect"`, no assignee), so
+  the gap existed from the first claim and no rescue was involved. My own note
+  on that row says so twice, and I still reached for the mechanism I had been
+  thinking about all night.
+
+The real shape is duller and worse: there was never a moment when
+`?assignee=` would have found a held row that wasn't also separately
+labelled. The filter answers a question about labels; the seat was asking a
+question about custody; nothing in the API distinguishes them.
+
+**And the obvious remedy is not free**, which @sprint-review raised 54 seconds
+after @ux-lead proposed it — and then withdrew, correctly, when the precedent
+turned out not to transfer. (The first version of this paragraph said they
+flagged it *"before anyone proposed it."* That was wrong, and they corrected
+it against their own credit while reviewing this entry.) `claimable` is deliberately absent from the MCP tool
+schema, with the reason written at `tasksApi.ts:174`:
+
+> Exposing it teaches every seat to poll the whole board on a timer — the
+> surface is the guard, because a tool description isn't one.
+
+A general `heldBy=<anyone>` filter crosses that line: it is a board view
+wearing a custody name, and it would be used to find rows to race. A
+`heldBy=me` resolved server-side from the caller's identity does not — there
+is no board in the answer, so there is nothing to poll for. The distinction
+is worth stating because the two look identical in a schema and differ
+entirely in what they teach.
+
+**The state that removes a row from every surface.** A fourth reachability
+failure, distinct enough to name: `done` is not just a status, it is a
+retirement from attention. Three instances the same day, none of them a wrong
+query:
+
+- A rescue census run as `status=pending,claimed` returned 15 events. Re-run
+  across `done` it returned 22 — TASK-015 had completed at 13:54:31 and took
+  its seven rescues out of the count with it. The number changed because the
+  row moved, not because anything about the rescues did.
+- @sprint-review's producer-parity audit — the evidence D1 of ADR-024 is built
+  on — lived in **TASK-006's completion notes**, marked done 2026-08-18. It sat
+  there undated for three days while four merged PRs falsified it, and nobody
+  re-read it because nobody re-reads a done row.
+- They had already named this exact hazard when creating TASK-023: *"carved out
+  of TASK-014's F1, which is done — the finding was living in a completed task's
+  notes, which is how findings evaporate."* Then left their largest finding in
+  one.
+
+The board's terminal states are built for *stop bothering me*, and they work:
+`done` correctly removes a row from the kernel sweep's orbit, from found-work
+advertisements, and from status-filtered queries. The cost is that it removes it
+from readers too, and there is no state meaning **finished, but the knowledge in
+here is still live**. A finding's shelf life is therefore capped by the lifetime
+of the task that happened to surface it — which is arbitrary with respect to how
+long the finding stays true.
+
+The remedy is placement, not memory: a finding that outlives its task belongs in
+`docs/` or an ADR *before* the task closes. Naming the hazard is not protection
+— the person who named it did it anyway, three days later, with their best
+finding of the sprint.
+
+**When three readers converge on the wrong account.** The gitlink rollback in
+#1089 is the cleanest instance, because nobody was careless and every
+explanation was offered in good faith:
+
+| reader | account | why it was wrong |
+|---|---|---|
+| @ux-lead | "not your doing — #1078 moved the pin, your checkout predates it" | the branch was cut from `origin/main` that morning, already at `5d88a3f1` |
+| @sprint-review | "the existing guard already catches this" | containment passes a *former* pin: `compare/70bd82b8...5d88a3f1` → `behind_by=0` |
+| pod-architect | agreed with both before checking either | — |
+
+Three accounts, all plausible, all pointing away from the defect. The true
+cause was in none of them: `git add -A` in a checkout whose submodule sat at an
+older commit, staging a stale pointer as an intentional edit. The author typed
+no submodule command, so no explanation that assumed intent could reach it.
+
+What broke the convergence was one command that could have returned either
+answer — `git merge-base --is-ancestor`. Not more scrutiny, and not a fourth
+opinion: a check whose result was not implied by the story being told.
+
+The hazard this names is specific. A wrong account offered *in your favour* is
+harder to test than one offered against you, because accepting it costs
+nothing in the moment and the social gradient runs toward agreement. Both of
+these ran toward the author, and the author took them.
+
+**The habits that follow.**
+
+1. Name the surface in the claim. "GitHub shows no review" is reportable;
+   "it was unreviewed" is not.
+2. Before believing an absence, run a positive control that would have produced
+   output. If you cannot construct one, you cannot report the absence.
+3. When a check saves you once, ask what else in the same function it applies
+   to. The second destruction path is usually adjacent to the first.
+4. Never diff a PR head to reason about a merge. Compute the merge
+   (`git merge-tree`) — a two-way diff against a branch tip is a different
+   question wearing the same clothes.
+5. Timestamp status summaries, and re-read the room before restating a plan.
+   A plan repeated without re-reading is a claim about the present made from
+   memory of the past.
+6. Date every audit quote at the point of quoting it, and move a finding out of
+   a task row before completing the row. `done` retires a fact from every
+   surface at once, including the ones you will search later.
+7. Test an exculpatory account exactly as hard as an accusatory one. Agreement
+   is not evidence, and a plausible story that lets you off costs nothing to
+   accept and everything to be wrong about.
+8. Apply a precedent by its stated harm, not its subject. @sprint-review's
+   own framing, after withdrawing an objection they had raised correctly and
+   scoped wrongly: `tasksApi.ts:174` keeps `claimable` out of the MCP schema
+   because *"exposing it teaches every seat to poll the whole board on a
+   timer."* Read by subject — *a filter on the task list* — it blocks any new
+   filter. Read by harm — *board-wide scanning for other people's work* — it
+   blocks `heldBy=<anyone>` and permits `heldBy=me`, because there is no board
+   in that answer. A precedent whose reason is written down can be scoped by
+   that reason; one whose reason is not written down can only be applied by
+   resemblance, which is how a guard becomes a general prohibition nobody
+   chose.
+9. Prefer a checkable claim to silence. A cue, comment or doc that states
+   something falsifiable is an instrument: someone can hold it against the code
+   and find the gap. Deleting the claim to stop it being wrong deletes the
+   detector and leaves the defect. @sprint-review reached this while withdrawing
+   their own proposal — the kernel's lease cue named two renewal paths as
+   equivalent, they weren't, and *that discrepancy is how the bug was found*.
+   Rewording the cue to mention only the working path would have removed the
+   one artifact capable of exposing the other.
+
+
+## 38. Two write routes, one contract — and only one delivers (2026-08-22, operator session)
+
+`POST /api/pg/messages/:podId` and `POST /api/messages/:podId` accept the same
+body, require the same auth, write to the same `messages` table, and return
+the same-shaped row with a 200. One of them runs the mention pipeline
+(`enqueueMentions` → agent events → native runs → wake-on-message). The other
+persists the row and returns.
+
+An operator script asked `@recorder` a question through the PG-prefixed route.
+The message appeared in the pod, humans could read it, wrapper seats saw it on
+their next context read — and the mention reached zero agents, because
+`pgMessageController.createMessage` has no mention code at all. Two asks were
+silently swallowed before the missing `agentDelivery` field in the response
+gave it away.
+
+**This is the second bite.** The 2026-08-15 silence alert (#954) found the
+same class on a sibling route. The route survived because nothing about it
+looks broken: the 200, the row, the socket echo are all real. The only
+distinguishing signal is a field that is *absent* — and an absent field reads
+as "older response shape," not "your message reached nobody."
+
+**Rules earned.**
+
+- A message write route that skips the mention pipeline is not a smaller
+  version of the real one — it is a different thing wearing the same
+  signature. Either route it through the mention-aware controller or delete
+  it (TASK-039). A second copy of `createMessage` is a copy, and copies
+  drift.
+- Delivery must be **positively visible in the response**. `agentDelivery`
+  present-with-zeros says "nobody was mentioned"; `agentDelivery` absent
+  must not be a possible output of a healthy send. A caller cannot act on
+  the absence of a field it doesn't know exists.
+- When an agent doesn't respond to a mention, check the POST response for
+  `agentDelivery` BEFORE reading agent-side logs. Thirty seconds there beats
+  the twenty minutes this cost tracing runs, events, and a just-landed
+  deploy that had nothing to do with it — proximity to a deploy makes every
+  bug look like a regression.
+
+## 41. A conflicting PR's checks describe a tree that will never exist (2026-08-22, pod-architect + sprint-review)
+
+> Numbering assumes #1122 (entry 39) and #1132 (entry 40) land first. If they
+> merge in a different order, renumber this one rather than them.
+
+Three stacked threading PRs sat at heads I had just pushed. Their pages showed
+green ticks. I reported them as green in a task update. All three reports were
+wrong, in two different ways, and both ways look identical to a passing build.
+
+**What was actually true.**
+
+`#1109` had squash-merged at 18:50:59Z. At ~18:55 I pushed two more commits to
+its branch — a real fix, with tests. The branch ref moved; the PR was already
+closed, so nothing dispatched and nothing merged them. `gh pr view` kept
+reporting `headRefOid` as the pre-merge commit, so the PR page showed a full
+green rollup **for the parent commit**, three commits behind the branch.
+
+`#1120` and `#1128` were `CONFLICTING/DIRTY`: `main` had taken the squashed
+2/4 while their branches still carried the unsquashed originals. GitHub builds
+`pull_request` events against a *merge ref*, and a PR that is conflicting **at
+the moment of the event** has none — so `tests.yml` did not dispatch. What
+remained was CodeQL, which triggers on `push`, needs no merge ref, and passed.
+**Four checks, four green ticks, zero tests.**
+
+Measured, because the first draft of this entry said "a conflicting PR never
+dispatches tests" and @sprint-review falsified it by finding eight green runs
+— Tier 1 among them — on `3f31d103`, a conflicting head. Their measurement was
+right and the sentence was wrong. Timestamps settle it:
+
+| Head | Pushed | Conflict began | `pull_request` dispatched? | Runs (unique names) |
+|---|---|---|---|---|
+| `9366e11e` (#1120) | 18:53:21Z | 18:50:59Z, not yet computed | yes | 11 (11) |
+| `4942ad3d` (#1120) | 18:57:12Z | known by then | **no** | 4 (4) — CodeQL family only |
+| `3f31d103` (#1136) | 19:38:29Z | 19:44:07Z, six minutes later | yes | 8 (5) — 5 `pull_request` + 3 `workflow_dispatch` |
+
+The last row said "11 checks" in the first version of this entry. @sprint-review
+measured it at 8 runs across 5 names and was right — and it was a number I had
+myself counted correctly earlier the same hour before contradicting it here.
+The duplication is sprint-impl's manual re-dispatch landing on the same sha as
+the automatic run, so a name-count and a run-count disagree by three.
+
+The two PRs' `pull_request` sets also differ in **membership**, 11 names
+against 5, not merely in size. I left that labelled as an unchased hypothesis;
+@sprint-review measured it, and re-deriving it confirms the 5 are a strict
+subset of the 11 with exactly six extras:
+
+```
+CodeQL · Analyze (actions) · Analyze (javascript-typescript) · Analyze (python)
+Source changed ⇒ version bumped · Stale-base merge guard
+```
+
+Two are merge-to-main guards and are correctly base-scoped — both
+`package-version-guard.yml` and `pr-base-freshness.yml` declare
+`pull_request: branches: [ main ]`, so a PR onto a feature branch is outside
+their remit by design. The other four are CodeQL's, and there is no
+`codeql.yml` in the repo: that is GitHub default setup, scoped outside our
+workflow files entirely.
+
+**Which means a PR's "full" check set is a property of its BASE, not of the
+repo.** There is no fixed number to compare against. Eleven is complete for a
+PR onto `main`; five is complete for a PR onto a feature branch; and a stacked
+PR that gets retargeted to `main` at merge time will be judged by guards that
+never ran on it. Counting checks tells you nothing unless you know what the
+denominator should have been — which was the mistake one paragraph up, made
+in an entry about exactly this.
+
+**And base is necessary, not sufficient — the CHANGED PATHS move it too.**
+Found by applying the paragraph above to this very PR. `#1135` is docs-only,
+targets `main`, and reports 10 checks against `#1120`'s 11; the missing one is
+`E2E Tests`, because `playwright.yml` filters on
+`frontend/** · backend/** · e2e/** · playwright.config.*` and a `docs/**` diff
+matches none of them. The workflow never dispatches, so the check never exists.
+
+**I then attached a consequence to that finding which was false, and it is
+worth keeping the wreckage visible.** I wrote that a docs-only PR therefore
+settles at `MERGEABLE/UNSTABLE` permanently, that no future event produces the
+absent check, and that a "merge only when CLEAN" rule would deadlock on
+documentation. I posted that to the pod as something to act on.
+
+It is wrong. Waiting for the runs to finish and re-reading:
+
+```
+#1142  MERGEABLE/CLEAN   checks=10  E2E absent
+#1143  MERGEABLE/CLEAN   checks=10  E2E absent
+```
+
+An absent `E2E Tests` does not prevent `CLEAN` — it is not a required check,
+so its non-existence costs nothing. The `UNSTABLE` I had seen on `#1135` was a
+check still **pending**, not a check **missing**, and it resolved on its own.
+
+So the mistake was reading a transient state as a structural one, and then
+inventing a mechanism to explain it. The invented mechanism was internally
+coherent — paths filter, no dispatch, no check, never CLEAN — which is exactly
+what made it convincing enough to commit and to broadcast. Every step was true
+except the one connecting them to the observation.
+
+The membership finding above survives intact and was independently verified
+from `playwright.yml` and from `E2E=0` on all three PRs. Only the consequence
+was fabricated.
+
+So the denominator is a function of *(base, paths touched)*. Three of this
+entry's corrections have now come from treating a check count as comparable
+across PRs that were never comparable.
+
+**So there are two mechanisms, not one, and the second is the worse of them.**
+
+1. *Push while the PR is known-conflicting* → no `pull_request` dispatch. The
+   checks that appear are the push-triggered ones. This is what hit `4942ad3d`.
+2. *Become conflicting after the checks ran* → every check stays attached to
+   the sha, still green, now describing a state that no longer exists. Nothing
+   re-runs, because nothing was pushed. This is what hit `3f31d103`, and it is
+   what makes the first mechanism look false to anyone who measures afterwards.
+3. *The base auto-retargets when the parent merges* → **no event fires at all.**
+   Named in advance by Sam (56969) from an 2026-08-04 incident, and confirmed
+   here: `#1106` merged at 15:15:08Z, GitHub retargeted `#1109` from the parent
+   branch to `main`, and the next workflow run on that branch was at 15:53:20Z
+   — 38 minutes later, triggered by a push, not by the retarget. Zero runs at
+   15:15.
+
+**Why nothing fires, not just that nothing fired.** @sprint-review (57010)
+supplied the cause behind the measurement, and re-deriving it confirms every
+part. A base change emits `pull_request.edited`, and **no workflow in this repo
+subscribes to `edited`** — `grep -rn 'edited' .github/workflows/` returns
+nothing. Three declare their types explicitly:
+
+```
+release-safety.yml         [opened, synchronize, reopened, ready_for_review]
+package-version-guard.yml  [opened, synchronize, reopened, ready_for_review]
+pr-base-freshness.yml      [opened, synchronize, reopened]
+```
+
+and the four others on `pull_request` — `tests.yml`, `playwright.yml`,
+`secret-scan.yml`, `mintlify.yml` — take GitHub's default set, which is the
+same list minus `ready_for_review`. `edited` is in none of them. So the
+retarget does fire an event; it fires one that nothing is listening for, which
+is why `update-branch` works and a base flip does not: the former pushes a head
+commit and produces `synchronize`.
+
+Stated precisely, because the two halves have different evidence: *zero runs at
+the retarget* and *no subscriber to `edited`* are both measured here. That
+GitHub emits `edited` specifically on a base change is from its documentation,
+not from an event payload I captured — consistent with the observation rather
+than demonstrated by it.
+
+**The root fix exists and is probably not worth taking.** Adding `edited` to
+those `types` lists would make a retarget re-run CI on its own. It would also
+re-run CI on every title and body edit, since `edited` covers those too. That
+is a bad trade on a busy repo, so the mitigation stays where Sam put it: force
+a head event deliberately. Worth writing down that the alternative was
+considered and declined, or the next reader re-derives it.
+
+4. *The base branch predates the workflow fix* → the fix never applies. For a
+   `pull_request` event GitHub reads the workflow definition from the **merge
+   ref**, which is base + head — so the BASE branch's copy of the file decides
+   whether the event matches. `#1123` dropped `branches: [main]` from
+   `tests.yml` on main at 15:20:27Z, and `#1132` still got zero test runs from
+   a head pushed at 18:11:30Z, three hours later, because its base
+   (`docs/ax-two-call-sites`, last touched 06:52) still carries the old
+   filter. Verified by reading `tests.yml` on that branch.
+
+   Its whole check list is one skipped `Release Branch Guard`, and its
+   `mergeStateStatus` is `CLEAN` — nothing failing, because nothing ran.
+
+   **ATTRIBUTION, corrected.** @sprint-review established this mechanism at
+   15:25:50Z — including "the trigger is read from the PR's own merge ref" —
+   measured on `#1120`, whose head was pushed 15:22:21Z, two minutes after
+   `#1123` merged, and produced zero runs for the same reason. They also
+   corrected their own earlier "merge #1123 first and the ordering stops
+   mattering" in the same message.
+
+   I derived it independently nine hours later from `#1132` and posted it as
+   "they measured the counts and declined to claim the cause; this is the
+   cause." That was wrong. They claimed it, first, and correctly; their
+   message was sitting unread in my redelivery queue while I re-derived it.
+   Two instances, two PRs, one mechanism — theirs is the finding and mine is
+   the confirmation.
+
+   **Read `event`, not the count, when asking whether a fix reached a PR.**
+   @sprint-review (57058) measured zero runs on `#1120`'s `0147fa24`, then one
+   run six minutes later — a flip that reads exactly like "my earlier claim
+   was wrong, #1123 did reach it after all." It was my hand-dispatch landing
+   between their two checks. The discriminator is the `event` field:
+   `workflow_dispatch` proves someone pushed a button, `pull_request` proves
+   the trigger matched. Only the second is evidence about the fix.
+
+   This is worth more than the instance because a manual dispatch is the
+   standard response to noticing a PR has no checks — so the act of working
+   around the bug produces exactly the artifact that makes the bug look
+   absent, and the person most likely to measure afterwards is the one who
+   dispatched. Both counts in the table above are split by event for this
+   reason.
+
+   **A workflow fix on `main` reaches a stacked PR only when that PR's BASE
+   absorbs it.** Not the head — the base. So "we fixed CI for stacked PRs" is
+   true of the repo and false of every PR already stacked on a stale branch,
+   and there is no signal distinguishing the two.
+
+   I got this wrong twice before reading the file. First guess: the head
+   predated the fix (refuted by timestamps — it postdates it by three hours).
+   Second: a paths filter (refuted — `tests.yml` has none). Rule 16's "make
+   the mechanism predict something" is what killed both.
+
+Mechanism 3 is the worst of the three for a stacked PR, because nothing about
+it looks wrong. There is no conflict, no thin check list, no red. The PR is
+green and mergeable — and it now means something different from what was
+tested, since it merges into `main` rather than into its parent branch, and
+every check on it was computed against the old base. A green rollup is exactly
+what you would expect to see, and exactly what you get.
+
+The second is worse because the first at least leaves a thin check list as a
+hint. The second leaves a **complete, genuinely-passing rollup** on a
+PR that can no longer be merged and whose tests have never run against the
+tree it would produce. There is no artifact anywhere that says so.
+
+Note the window in row 1: `9366e11e` was pushed 142 seconds after the merge
+that broke it and still got a full dispatch, because GitHub had not recomputed
+mergeability yet. Whether your push lands before or after that recomputation
+decides which mechanism you get, and nothing in the UI marks the boundary.
+
+**Why the instrument can't tell you.**
+
+Both failures are absences. A commit with no check runs has no failures. A
+workflow that never dispatched leaves no red X — it leaves nothing, and the UI
+renders nothing as clean. The rollup is a fold over the checks that exist; it
+has no opinion about the checks that should exist. Reading it answers "did
+anything fail," which is not the question — the question is "did the suite run
+on *this* commit."
+
+The same shape has now been recorded here four times under different names
+(entries 34, 35, 37). It keeps recurring because every instance is a status
+read against the wrong object: the registry instead of the consumer, the
+workflow's clock instead of the pod's, the parent commit instead of the head.
+
+**Rules earned.**
+
+- **Verify by sha, not by PR.** `gh api repos/:o/:r/commits/<sha>/check-runs`
+  and compare the sha you queried to the branch tip you pushed. A PR's
+  `headRefOid` can lag its own ref, and on a merged PR it stops updating
+  entirely. If the count of check runs is zero, that is the loudest possible
+  signal, and it prints as silence.
+
+  **Rider — which sha, for a provenance check.** "By sha" is not yet specific
+  enough, because `gh pr view` hands you two real ones and the wrong choice
+  answers rather than errors. This repo squash-merges, so a merged PR's
+  `headRefOid` is **never** an ancestor of `main`:
+
+  ```
+  gh pr view 1161 --json mergeCommit,headRefOid
+  39032b7c  mergeCommit.oid  merge-base --is-ancestor origin/main → yes
+  7f677235  headRefOid       merge-base --is-ancestor origin/main → NO
+  ```
+
+  Both commits exist, both belong to #1161, and `--is-ancestor` fed the head
+  exits non-zero — which reads as *the fix was never deployed*, inverting the
+  conclusion of the exact check used to establish that #1161 **is** live in the
+  running image. There is no error state to notice. Use `mergeCommit.oid` for
+  "did this land / is it in that image"; use `headRefOid` only for "what did CI
+  run against." Caught by @sprint-review (2026-08-25) in a close-out that was
+  right on every other fact — the merge timestamp included, which is what made
+  the wrong sha survive a re-read.
+
+  **And if that comparison keeps failing, stop pushing rather than
+  re-dispatching.** @sprint-review (57014) caught this branch taking four heads
+  in twelve minutes against a `tests.yml` that runs 5–6 — a cadence under the
+  suite's runtime means no run can ever land on the tip, and every fix looks
+  like one more dispatch away. The rule above detects the mismatch; only
+  noticing the *rate* tells you why it will keep recurring. Green-on-head needs
+  a quiet period.
+- **Check `mergeable` before reading `statusCheckRollup`.** On `CONFLICTING`
+  the rollup is either a smaller set than you think (mechanism 1) or a full
+  set measured against a tree that no longer exists (mechanism 2). Neither is
+  evidence about what merging would do. Read the two together or neither —
+  and note that a *complete* green rollup on a conflicting PR is the worse
+  signal, not the reassuring one.
+- **A squash merge orphans anything pushed to that branch afterwards.** The
+  window is as long as your commit takes. Before pushing to a branch you
+  believe is open, confirm it: a closed PR accepts the push, moves the ref,
+  and reports nothing. Recovery is a cherry-pick onto a fresh branch off
+  `main` — cheap, but only if you notice.
+- **A stack does not survive its own base squash-merging.** The child now
+  conflicts on every file the squash touched, and — per the above — goes
+  quiet rather than red. Rebase children onto `main` immediately after a
+  parent lands; do not wait for a review to surface it, because the review
+  will be looking at the same green ticks.
+- **A retargeted PR needs a new head event before its checks mean anything.**
+  Sam's press plan (56969) is the working form: merge the parent, verify the
+  child's `baseRefName` actually flipped and the PR did not auto-close, then
+  force a head event (`gh pr update-branch`) so CI runs against `main`. No
+  stacked PR merges without its own green run *at the new base*.
+- **You can tell which base a run was against, from the run list.** The
+  base-scoped guards are the tell: `Package Version Guard` and
+  `PR Base Freshness` both declare `pull_request: branches: [ main ]`, so their
+  PRESENCE certifies the run happened with `main` as base and their absence
+  says it did not. That is how `#1109` was confirmed to have satisfied the rule
+  before it merged — both guards appear in its 18:30 run, three hours after the
+  retarget. Reading the check *names* answers a question the check *count*
+  cannot.
+
+## 42. A dual-auth route degrades to the other identity silently, so a test can name a shape it never exercises (2026-08-22, sprint-review + pod-architect)
+
+> Numbering follows entry 41's caveat: 39 and 40 are still reserved by #1122
+> and #1132. Renumber this one, not those, if they land in another order.
+
+`/api/v1/tasks` does not take one auth middleware. It dispatches on the token:
+
+```ts
+function auth(req: AuthReq, res: Res, next: () => void) {
+  const token = ((req.header?.('Authorization') || '').replace('Bearer ', ''));
+  if (token.startsWith('cm_agent_')) return agentRuntimeAuth(req, res, next);
+  return regularAuth(req, res, next);
+}
+```
+
+The two branches produce **different request shapes** — `agentRuntimeAuth`
+assigns `req.agentUser` and never `req.user`; the human path does the reverse.
+And the fallback is unconditional: a request with no `cm_agent_` prefix does
+not fail, it takes the human branch and succeeds. Omitting the header is
+indistinguishable, from the response, from supplying it.
+
+**And the same divergence runs one level down, inside `middleware/auth.ts`
+itself** (@sprint-review, 2026-08-23). That middleware is a second dispatcher,
+on a second prefix, and its two branches both assign `req.user` — with
+different shapes:
+
+```ts
+:51  req.user = { id, username, email, role };   // cm_ API token
+:81  req.user = { id };                          // browser JWT
+```
+
+So a consumer reading `req.user.username` or `req.user.role` works on one path
+and is `undefined` on the other, with no error either way. That is not a
+hypothetical: `agentProfile.ts:249` carries a comment calling it "the third
+application" of the lesson, and a census of the wide-field consumers on main
+found two more with no fallback — `registry/publish.ts` persisted
+`publisher.name: undefined` for every browser-session publish (#1211), and
+`github.ts:146` answers `403 Admin only` to a real admin because no browser
+session carries `role`. The entry above names the cause; #1124 shipping inert,
+the term #1127 replaced, and these two are what it produced.
+
+**The generalization is the one worth carrying:** a dispatcher that picks an
+identity is easy to reason about, because you can ask which identity you are.
+A dispatcher that picks a *shape* is not, because the failure is a field that
+is merely absent — and absence is the one thing neither branch reports. Count
+the assignment sites, not the branches: `grep -n 'req.user = ' backend` returns
+two lines, and they are not the same object.
+
+
+**What that costs a test author.** Every case in
+`tasksApi.updateRenewsLease.test.js` went through the human mock, so
+`req.user` was always populated and the agent branch had never run — across
+two rounds of fixes to code whose whole subject was the agent identity. The
+first draft of the tests written specifically to cover the agent shape
+*also* went through the human path, and passed. A test can carry "agent" in
+its name, assert the right thing, go green, and be about the other identity
+entirely. The only tell is a header the test does not have to set.
+
+**Why this is an agent-experience defect and not a testing anecdote.** The
+false model is taught by the surface, not by the test: a route named `auth`,
+mounted once, reads as one identity contract. Nothing at the call site says
+"this endpoint has two request shapes and picks between them by string
+prefix." Three of the day's four wrong conclusions trace to reading `req.user`
+on a path that only ever populates `req.agentUser` — including
+`resolveAgentInstanceId`, whose `req.user?.isBot` gate has been dead on the
+agent path since it was written.
+
+**What to do.**
+
+- **Setting the auth header is part of naming the shape.** A test whose
+  subject is the agent path must send `Bearer cm_agent_*`; without it the name
+  is the only agent-specific thing in the test. Assert the shape arrived
+  (`expect(req.agentUser).toBeDefined()` in the mock, or one case that must
+  fail on the human path) rather than trusting the route to have chosen.
+- **A silent branch needs a loud test.** Where a dispatcher falls back rather
+  than erroring, at least one case must prove the fallback did *not* fire.
+- **Grep the middleware, not the docstring, for which property is assigned.**
+  `agentRuntimeAuth` assigns `req.agentUser` at `:102` and `:191` and nowhere
+  else — one grep, and it settles every question of this shape.
+- Companion rule, on the method that missed it: reviewer-checklist rule 17 —
+  a mutation proves a term matters to the suite, not that the suite's shape is
+  real.
+
+## 43. The seat believed it was silent; the kernel published its reasoning — and the seat caught it itself (2026-08-25, sprint-review, found by the seat)
+
+**The surface:** the `NO_REPLY` sentinel contract, and every frame that teaches
+it. The kernel's rule (CLAUDE.md, `sanitizeAgentContent`, pinned since #785):
+suppression is **total-match only** — a bare sentinel inside a substantive
+reply is treated as producer leakage, stripped, and the remaining content
+POSTS. The wake frames teach the sentinel as "otherwise return NO_REPLY" —
+without the totality clause.
+
+**The false model it taught:** sprint-review wrote replies of the shape
+`NO_REPLY.\n\n<private reasoning about why it was staying silent>`, believing
+a leading sentinel silenced the whole turn. The kernel stripped the token and
+published the reasoning — 11 times in one day (58650–58652, 58657–58659,
+58661–58663, 58665–58666), one long enough to become an attachment. The
+orphan `.` opening each message is literally the period after `NO_REPLY`,
+surviving the strip. Several of the published messages *say* "no decision
+pending, so no post." They were posted.
+
+**How it surfaced:** the seat itself. Message 58667: "Correcting myself: I've
+posted ~11 messages today that I believed I was withholding." No monitor
+caught this; the agent audited its own ledger against its own intent and
+reported the delta. The transcript reads as a working seat narrating noise —
+which is what made the same seat look like the *source* of the churn it was
+in fact trying to withhold from.
+
+**Why both sides are individually right:** #785's strip exists because
+gateways leak sentinel tokens into real replies, and swallowing a genuine
+reply is the worse error. The seat's model exists because the frames say
+"return NO_REPLY" and a model naturally appends its rationale. The contract
+and the teaching diverge exactly at "reply that STARTS with the sentinel" —
+measured intent there is silence, the kernel's reading is leakage.
+
+**Rules earned:**
+- A sentinel taught without its totality clause WILL be prefixed. Every frame
+  that says "return NO_REPLY" must say "as the ENTIRE reply — anything after
+  it will be posted publicly."
+- Strip-and-post has a measured failure mode the #785 decision did not see:
+  intended-silence leakage. Whether a LEADING bare sentinel should suppress
+  the whole reply is now an open contract question (TASK-067) — it is a
+  semantics change to a load-bearing invariant and needs Sam, not a patch.
+  **RESOLVED 2026-08-26: Sam ratified suppress-on-leading; mid and trailing
+  keep strip-and-post.** Position is the discriminator, and both halves of the
+  original argument survive intact — at the head the intent is unambiguous, and
+  anywhere else the token is still leakage inside a reply the agent meant to
+  send. Shipped in `sanitizeAgentContent` with the contract restated in
+  CLAUDE.md; the frames' totality clause stays, since it is now the accurate
+  description of the mid/trailing half.
+- An agent's self-audit is a detection channel. The seat found in one turn
+  what the operator's noise measurement had misattributed for a day.
+
+## 51. "Has anyone reviewed this head?" has two disjoint answers, and the one an agent reaches for first cannot name a commit (2026-08-29, pod-architect, caught by a peer)
+
+**The surface:** a pull request's review state, read from an agent. GitHub
+has two collections an agent reaches for when asking it, and `gh` projects both:
+
+| what you call | what it returns | carries `commit_id`? |
+|---|---|---|
+| `gh pr view N --json comments` · `/issues/:n/comments` | issue comments | **no** |
+| `gh pr view N --json reviews` · `/pulls/:n/reviews` | review events | yes |
+
+They are disjoint sets, not one set and a subset. `gh pr review --comment`
+files a review event that never appears in the comments collection. Verified
+on `#1332`: three reviews and three issue comments, zero overlap.
+
+**A third collection exists, and it does not change the rule.**
+`/pulls/:n/comments` returns *inline* review comments, and those do carry
+`commit_id`. They are not a fourth answer to hunt for: every inline comment
+carries a `pull_request_review_id`, and that id is always a review event
+`/pulls/:n/reviews` already returns — verified on `#1312` (4 inline comments,
+all under review `5046947281`), `#1302` and `#1260`. So reading the reviews
+surface still surfaces them. Two cautions, because this entry is itself about
+getting a surface count wrong: the frame is "two collections that answer the
+gate question, one of which cannot name a tree", not "a PR has two comment
+collections" — it has three. And they are not rare here. The peer who caught
+this measured zero across five of my PRs and reasonably read that as "no seat
+files them"; a repo-wide sweep of `/repos/:o/:r/pulls/comments` returns them on
+`#1312`, `#1302`, `#1297`, `#1274`, `#1260`, `#1176`, `#1094`, `#1022` and
+further back. The five-PR sample was all docs rows; inline comments live on
+code review.
+
+**The false model it taught.** The comments surface is the obvious one: its
+name is the English word for the thing, and `--json comments` is the projection
+an agent reaches for. Worse, `gh`'s human projection actively hides the split.
+`gh pr view N` with no flags prints *neither* collection — verified, it stops at
+the body. `gh pr view N --comments` prints **both, interleaved**, distinguishable
+only by a `status:` line (`none` for an issue comment, `commented` for a review
+event) and carrying no sha on either. So the flag that reads as "show me the
+comments" is the one place the two are unified, and `--json comments` — the form
+an agent would pick to filter them — silently returns half. On `#1338`:
+`--comments` shows 2, `--json comments` returns 1. So an agent asking "has a reviewer
+looked at the tree that would press?" reads it, sees nothing, and concludes
+nobody has. On 2026-08-29 that produced a published claim on TASK-087: "three
+hours later the PR still carries no comment after mine, so the re-gate has not
+happened … a press today would be pressing a tree nobody re-read." Two review
+events were sitting at that exact head, stamped 07:43:09Z and 07:54:09Z. The
+warning was an argument against pressing a PR that was ready.
+
+**The sharper half, which is not "the comments API is incomplete."** An issue
+comment carries **no `commit_id` at all** — confirmed against the raw payload's
+key set, and against `gh`'s own projection, neither of which has any sha field.
+So that surface cannot answer the question even in the cases where it *does*
+show a gate. It can tell you somebody said something; it can never tell you
+which tree they said it about. A negative from it is not a result, and a
+positive from it is not one either.
+
+**Measured on eight open PRs the same morning, the blind spot cuts three ways:**
+
+- `#1268` — a review at the *current* head. A comments-only read omits a live gate.
+- `#1323` — a review at `2d180528` while the head is `976e2a6f`. A comments-only
+  read cannot see it; a reviews read shows it is **stale**, which is the fact
+  that matters.
+- `#1330` — **zero review events**, and yet correctly gated: the approval lives
+  in an issue comment whose body says "Re-gated at `a1607e89`". The gate is real
+  and current, and the only thing binding it to a tree is that the reviewer
+  *typed the sha into the prose*. Nothing queryable records it.
+
+That third case is the one worth keeping. It is not a gap in the record — it is
+a convention doing the record's job, and it fails silently the first time
+someone omits the sha, or edits the head afterwards.
+
+**And the check that convention forces you to build is width-sensitive.** Once
+`#1330`'s gate exists only as a hand-typed sha in prose, the only way to ask
+"is this PR gated at its current head?" is to search comment bodies for a
+prefix of the head sha. That check has a free parameter nobody thinks about,
+and getting it wrong fails in the direction that looks like an answer. Most
+gate comments here write **8**-character shas (`a1607e89`, `976e2a6f`,
+`2d180528`) — that is what `%h` produces — but it is a majority habit and not a
+rule: 9-character gates exist too, on `#1322` and on a `#1325` comment. Run the
+query at a **9**-character prefix and the issue-comment arm returns **zero on
+all 12 open PRs** measured on 2026-08-29 — not one hit anywhere in the
+population. At 8 the same query finds a gate at head on **9 of those 12**. A
+width that is one character too long does not degrade; it silently converts the
+arm into an arm that never ran, and its output is indistinguishable from "no
+seat gates PRs in comments."
+
+**Retune nothing — delete the parameter.** The first version of this paragraph
+prescribed cutting the prefix to 7, git's minimum abbreviation, "so the check
+catches both conventions and any future one shorter than 8". That is
+self-refuting, and a reviewer said so: `grep 'a1607e8'` does not match `a1607e`.
+Seven catches conventions of length ≥7 and is defeated by anything shorter, in
+exactly the way 9 was defeated by 8 — it moves the threshold and tells the next
+reader the check is safe. Instead, invert the comparison: extract hex tokens
+from the comment body and ask whether **the head starts with the token**. That
+has no width in it at all. Verified against the same population, it finds
+`a1607e89` on `#1330` and `35e4a1af` on `#1327`, and on `#1325` it catches both
+`1d777174` and `1d7771748` without being told either width exists — and it
+drops `#1330` from three hits to one, because the substring form was
+triple-counting one sha across three comments while the token form counts
+distinct shas.
+
+A minimum token length survives, and it is a different kind of knob: it exists
+only to stop short hex strings colliding with unrelated prose and manufacturing
+a gate. Getting it wrong over-reports, which someone notices; getting a *prefix
+width* wrong under-reports to zero, which reads as an answer. When a parameter
+cannot be removed, move it to the side that fails loudly.
+
+**The load-bearing half is the control, not the width.** An absence is a claim
+about an instrument. Give the query a positive control: if an arm returns zero
+across an entire population, prove it can return non-zero at all before
+publishing the zero. That catches this whole class regardless of which width —
+or which comparison — anyone picks.
+
+**What to do.**
+
+- **Read `/pulls/:n/reviews` for anything about gates — and do not stop there.**
+  It is the only surface that answers "which tree", and the question is almost
+  always about a tree, because an approval is a statement about a sha and not
+  about a PR. But `commit_id` certifies *delivery*, not *reading*; see the
+  amendment below before building a predicate on it alone.
+- **Do not treat an empty comments read as evidence of an ungated head.** State
+  which surface you queried, the same way you would name any other instrument
+  before reporting an absence.
+- **When you gate a PR in an issue comment, name the sha in the body** — you are
+  supplying by hand the field that surface does not have. And when you *move* a
+  head after someone gated it, say so where they gated, because their approval
+  is now a claim about a tree that no longer exists.
+- **Do not build a check on `gh pr view --comments`.** It is the friendliest
+  read and the worst instrument: it merges the two collections, labels the
+  difference only as `status: none` vs `status: commented`, and prints no sha
+  for either. It is the right thing to *read*, and never the right thing to
+  parse.
+- **Before publishing an absence, run the positive control.** An arm that
+  returns zero across an entire population has to be shown capable of returning
+  non-zero first. This is the rule; everything below about widths is one
+  instance of it.
+- **Do not match a sha prefix in prose at a fixed width.** Extract the hex
+  token and test whether the head starts with it — the comparison then has no
+  width to get wrong. A 9-character prefix against this repo's mostly-8
+  convention returns zero on every PR and reads as "nobody gates in comments"
+  rather than as a broken query, and cutting to 7 only relocates that failure.
+- Scope: PRs only. An issue has one comment surface and none of this applies.
+
+**Amendment (2026-08-31): `commit_id` is pinned at submit time, so the
+surface this entry prescribes has a false-positive mode of its own — and the
+arm this entry demotes is what caught it.**
+
+The obvious gate predicate is *latest review's `commit_id` == `headRefOid`*.
+On `#1401` it returns TRUE for a review that never saw the head it names.
+Sequence, measured on the raw payload: a reviewer read `770fb1fa`, a push
+landed `6f2d74b4` seventeen seconds later, the review was submitted at
+03:48:09Z. GitHub pinned it to the head *at submit*, so review `5062966011`
+carries a body saying `770fb1fa` and a `commit_id` of `6f2d74b4`. Two reviews
+on that PR now share one `commit_id` and only the later one read it.
+
+No queryable field discriminates. `submitted_at` is *after* the push, so a
+timestamp comparison ratifies it rather than catching it — the review is
+posterior to the commit on every ordering the API exposes. The only record of
+which tree was actually read is the sha the reviewer typed into the prose,
+which is the convention this entry already calls "a convention doing the
+record's job."
+
+So the two arms fail in **opposite directions**, and that is the reason to
+conjoin rather than choose. `commit_id` over-reports: it can name a tree
+nobody read. The prose token under-reports: it is silent whenever the reviewer
+omits the sha. A gate is at head when *both* hold — `commit_id` equals the
+head **and** a hex token in the body is a prefix of it. And prose is not the
+unparseable half it looks like: the width-free token extraction prescribed
+above is a predicate, not a reading habit, so conjoining costs nothing that
+this entry did not already build.
+
+Writer-side, the cheap half is the reviewer's: re-resolve the head immediately
+before submitting, and after submitting assert the returned `commit_id`
+matches the sha named in the body. That closes the gap at the source instead
+of asking every reader to run the conjunction — but the conjunction is still
+the right sweep, because a reader cannot know which reviewers adopted it.
+
+**Measured, after the fact was published as one instance.** @sprint-review
+swept 115 reviews across every open PR and found **three** — `#1401`, `#1233`,
+`#1219` — each with the same signature, a body sha that is an ancestor of the
+pin by exactly one commit. They also corrected their own first count of six
+downward: three of the flagged reviews cited `origin/main` baseline shas, which
+is correct practice a naive sha-mismatch filter punishes.
+
+The complementary population is the interesting one, and my first pass got it
+wrong. Across **120 merged PRs (`#1192`–`#1404`), 63 reviews**, the corrected
+count is **one**: `#1347` review `5060655774` names `53914e88` against a pin of
+`c817e8ee`, an ancestor at distance one — the same signature as the three open
+ones. I published that population as a **zero**, and the zero was an artifact of
+my own checkout.
+
+Three runs of that sweep returned zero, each for a different instrument fault,
+and all three rendered identically to a real result: a malformed `--jq`
+invocation, a window that excluded a known-positive PR, and — the one that
+survived a positive control — **a body sha my clone had never fetched**. The
+first two were caught by running `#1401` as a positive control, which flags
+`770fb1fa` on review `5062966011`. The third was not, and the reason generalises:
+a positive control proves the classifier can return non-zero, and says nothing
+about whether the classifier can *see* the object it is asked to classify.
+`53914e88` lives only on `refs/pull/1347/head`; one
+`git fetch origin '+refs/pull/*/head:refs/remotes/pr/*'` — 1,176 refs, 1.8
+seconds — makes it resolve, and the review reclassifies from "vanished" to
+"defect". **Fetch every ref your predicate can be asked about before running it,
+not the ones your question happens to name.**
+
+**And the evidence I gave for it having vanished could not have come out any
+other way.** I wrote that the sha "is absent locally *and* `git fetch origin
+53914e88` returns `couldn't find remote ref`", offering the second clause as
+corroboration. Abbreviated names are not valid in the wire protocol, so that
+command fails for **every** sha in every review body — verified against one
+whose object is now demonstrably present in the local store, where it still
+fails. A check that returns the same answer whatever the world is doing is not
+a control; it is the first observation typed a second way, and reading it as
+independent is what let a one-source claim look corroborated.
+
+So the corrected rate is **4 of 178 reviews — 3 of 115 on open PRs, 1 of 63 on
+merged ones**. But that counts defective review *objects*, and this entry is
+about defective *gates*, which are not the same population: an object is a gate
+only when it is the **last** review on the PR. Applying the conjoined predicate
+to each PR's last review instead, **two gates are currently wrong** — `#1233`
+(`5018330181`, its only review) and `#1219` (`5018870747`), both open, both
+where the defective review is the latest one. On `#1401` and `#1347` a later
+review pins to *and names* the true head — `#1347`'s `5060776691` names
+`c0ea8fa4` in full, the merged head — so the bad object sits in the history and
+the gate is sound. **No merge was gated by a defective review.**
+
+That restores an observation I made first and then talked myself out of: the
+defect *does* tend to clear before a press, because a PR tends to acquire a
+review at its final head on the way to merging. `#1347` is that mechanism
+working, not a counterexample to it. "Four instances, one of them merged" reads
+as a bad merge and there wasn't one, so state the numbers separately: **4
+defective objects, 2 defective gates, 0 defective merges.**
+
+**A count arrives with its predicate implicit, and that is how it travels
+wrong.** The four was established under the filter *does this review object
+carry the signature*; I spent it on the question *is this gate trustworthy*.
+Those differ by exactly the supersession step, and nothing in the count's name
+says so. Same shape as the zero two paragraphs up — a number believed at a scope
+it was never measured at.
+
+**The adjacent gate failure this predicate cannot see is stale pinning** — a
+last review that was honest about the tree it read, on a head that has since
+moved. Both arms compare a body token to a *pin*; neither asks whether the pin
+is still the head, so such a gate scores perfectly clean and is worth nothing.
+I swept for it rather than assert it: at 2026-08-31T04:5xZ, across the **73 open
+PRs, 71 had a last review pinned exactly at head, one had no review at all, and
+the single stale pin was this PR** — an in-flight re-gate, not rot. The class is
+real, empty of rot here, and recorded so the next reader knows the sweep was run
+rather than skipped. That 71-of-73 is also why supersession is the dominant
+mechanism above: this repo already re-reviews at head as a matter of course.
+
+**Every count in this paragraph is instantaneous, and the stale-pin bucket is
+the one that proves it — it drains by itself.** A reviewer re-derived the
+partition twelve minutes later against 74 open PRs and found *two* stale pins,
+`#1405` and `#1406`; forty minutes after that both were pinned at head again,
+because a stale pin's membership condition is "someone has pushed and not yet
+been re-gated", which the next review clears. That is why it must not be
+collapsed into the defect bucket, and why their first re-derivation — which
+omitted the `pin == head` test and returned four defective gates — was two too
+large: **defects persist and require an edit to clear; stale pins expire.** Two
+buckets with the same predicate signature and opposite half-lives. It is also
+the fourth count in this entry to change meaning without changing its name, and
+the first one contributed by a reader, inside the review of the section that
+names the disease.
+
+**The writer-side remedy this entry proposes is insufficient, and the review
+that passed this entry is the demonstration.** Gate `5063156212` re-resolved
+`headRefOid` immediately before submitting and asserted it equalled the sha in
+its own body. The check passed — both were `82c7e7c3` — and its author had not
+read `82c7e7c3`; the analysis came from a local PR ref last fetched one commit
+earlier. The review was *correctly pinned to a head its author had not read*:
+the defect this entry documents, produced inside a review of this entry, by
+someone running the remedy it prescribes.
+
+The remedy guarantees `named_sha == headRefOid`. It guarantees nothing about
+which tree was analysed, because the fetch that populated the working refs
+happened before the resolve. So it converts *a review naming a stale tree* into
+*a review naming the current tree and having read a stale one* — strictly harder
+to detect, since every queryable field and the prose token now agree. **Two
+quantities cannot catch this; the check needs a third.** That third is
+`analysed_sha`, and the only ways to have it are to re-fetch and re-derive
+*after* resolving the head, or to record the ref you read from and compare it.
+Name the ref, not only the sha.
+
+**Silence is the larger hole, not violation.** Partitioning all 73 open PRs by
+their last review: 66 carry a body token prefixing the head; 2 carry one that is
+neither prefix nor ancestor of `main` (`#1233`, `#1219`); 1 carries only an
+ancestor of `main` (`#1211` — a baseline citation, which is correct practice for
+the object and names no head, so it is arguably its own class); 1 has no review
+at all (`#942`); and **3 have a latest review containing no sha in any form**
+(`#1243`, `#1227`, `#1142`). On those three the conjunction does not fail — it is
+silent. Three gates the predicate cannot evaluate, against two it can and does:
+the coverage gap is bigger than the defect. That is the argument for the
+writer-side habit over the reader-side sweep, and for the habit being the
+three-quantity form rather than the two.
+
+One more instance of the same disease, caught in the act this time. My first
+pass at that partition asked *does any body token prefix the head* and returned
+**three** defective gates, having swept `#1211`'s baseline citation into the
+defect bucket. The entry's own rules put it elsewhere. A coarser predicate
+wearing the same word produced a number one too large — the third time in this
+entry that a count changed meaning without changing its name.
+
+One refinement survives unchanged. **The discriminator is per-review, not
+per-token** — *no* body token equals the pin, rather than *some* body token
+differs from it. Review `5062970141` cites five earlier shas beside its own pin
+and is correct; keyed per-token it would read as a defect.
+
+**All four instances are an ancestor of the pin at distance exactly one** —
+`#1401` `770fb1fa`→`6f2d74b4`, `#1233` `d331b16d`→`8fd4b3d0`, `#1219`
+`19d41910`→`76578d95`, `#1347` `53914e88`→`c817e8ee`. Each of us measured the
+other's population rather than take the number, which is the only reason this is
+stated as four for four. Distance is not part of the filter, so the uniformity is
+a finding rather than an artifact of selection — with one caveat worth stating:
+a token far enough behind its pin is likelier to have landed on `main` too, which
+routes it to the baseline bucket, so the method is mildly biased against large
+distances and four is a small sample.
+
+It matters because it bounds both halves of the remedy. The writer never has to
+ask *how far* back to look — re-resolving the head immediately before submitting
+is sufficient, because the gap is one push, not a drift. And the reader of a
+flagged gate knows exactly what was missed: the diff of a single commit, which is
+usually cheap enough to just read.
+
+**The guard that should have caught this was scoped to the headline, and the
+defect lived in the residue.** The rule one paragraph up — never publish an
+all-population zero without a positive control — is right, and I followed it: the
+zero was controlled, and it passed. What produced the zero was a *single negative*
+sitting in a different bucket, and no rule reaches a lone item classified as
+uninteresting. So the guard belongs on any bucket whose membership would move the
+headline, not on the headline itself. Concretely: before publishing a rate,
+re-examine every item the classifier declined to count, because those are the ones
+nothing else will check.
+
+**Method note.** The correction came from the peer whose review I had just
+declared missing; verifying it myself rather than accepting it is what turned
+"the comments API is incomplete" into the `commit_id` asymmetry, and sweeping
+the other seven PRs is what found `#1330`, where both APIs are silent and the
+gate is real anyway.
+
+## 49. A progress note re-claimed a row a human had re-pointed two days earlier (2026-08-28, pod-architect, found by the seat)
+
+**The surface:** `commonly_update_task`, whose tool description is *"Append an
+update note to a task without changing status — visible in the task drawer
+history."* Behind it, `POST /api/v1/tasks/:podId/:taskId/updates`
+(`backend/routes/tasksApi.ts:537`).
+
+**The false model it taught:** that posting a note is observationally inert on
+a row you do not hold. Sam re-pointed TASK-070 to `@sprint-impl` at
+2026-08-28T23:17Z. I wrote a handoff note into the drawer *specifically so I
+would not claim the row and block them* — and the note claimed it for me:
+`status` `pending` → `claimed`, `claimedBy` set to my id, a 30-minute lease
+opened, `lapsedFrom` cleared. The response says so (`leaseRenewed: true`), but
+that response is the whole task document, which exceeds this seat's tool-output
+token limit — so the one field that would have contradicted the description
+arrives in a file the caller has to go and parse.
+
+**The mechanism, and it is deliberate code doing a narrow job over an unbounded
+range.** The handler has a second `findOneAndUpdate` for the case where the row
+was swept back to `pending` before the note landed:
+
+```js
+{ podId: podFilter, taskId, status: 'pending', lapsedFrom: { $in: identities } }
+```
+
+Its comments name the race precisely and it is a real one — the deferral
+warning *"post a task update or re-claim — either renews the lease"* routinely
+arrives after the sweep it warns about (TASK-029, 2026-08-22: warning 12:24,
+sweep 12:54, note 12:56). The restore is what makes the cue's two options
+actually equivalent.
+
+**The bound the race has and the predicate does not.** That race is minutes
+wide. `lapsedFrom` carries no timestamp and is invalidated by nothing except a
+successful restore, so the predicate is open forever. TASK-070 lapsed from me
+at **2026-08-26T23:54Z** and my note restored it at **2026-08-28T23:33Z** —
+**48 hours later**, across a human's explicit re-point to a different seat in
+between. Sam's re-point did not clear it, and could not have: his own note fell
+through to the note-only fallback, because his identities do not match
+`lapsedFrom` either.
+
+**Why the assignment was invisible to the thing that should have carried it.**
+The row's `assignee` field is `null`. Sam re-points by writing prose into an
+update note, which no predicate reads. So the only machine-readable record of
+who owns the row is `claimedBy` — and the restore branch overwrites exactly
+that, from a field describing who owned it two days ago.
+
+**What I checked before filing.** That the id was mine and not a peer's, by
+comparing against a row I know I hold. That `leaseRenewed` was `true` and
+`lapsedFrom` was `null` afterwards, from the persisted response rather than
+inferred. That `lapsedFrom` must have held the string `pod-architect` — the
+sweep note says *"(was: pod-architect)"*, and of the four identities the
+handler collects, the username is the only one that is not an ObjectId.
+
+**Cheapest fix that keeps the race closed:** clear `lapsedFrom` when anyone
+other than the lapsed holder writes to the row. The TASK-029 race is two
+minutes of silence, so nothing else touches the row inside it; a re-point,
+a peer's note, or a claim all mean the restore's premise has expired. A
+`lapsedAt` timestamp bounded to one lease period would also work and is
+strictly more code.
+
+**The general shape, which is not about tasks.** A predicate written for a
+race is a predicate about *time*, and storing only the participant stores the
+wrong half. `lapsedFrom` answers "who" and the guard needed "who, and recently"
+— so the code is correct for every case its comments discuss and unbounded for
+every case they do not. When a comment justifies a branch by describing a
+window, check that something in the row actually measures the window.
+
+**Negative control, and the two that don't work — @sprint-review supplied
+both halves, the second while withdrawing the first.** The restore query is
+`{ status: 'pending', lapsedFrom: { $in: identities } }`, so a control has to
+hold `status` fixed and vary only `lapsedFrom`. TASK-023 (`claimed`) and
+TASK-080 (`done`) were offered first: both came back with the original holder's
+`claimedBy` untouched, which rules out *"an update claims by default"* — but
+each fails the `status` term as well as the `lapsedFrom` one, so neither can
+isolate which term did the work. The clean control is **TASK-084**: `status:
+'pending'`, `lapsedFrom: null`, two `commonly_update_task` calls from
+@sprint-review, latest `2026-08-29T00:18:10Z`, and `claimedBy` still `null`
+(re-read from the API at 00:24Z rather than carried across). That one varies
+`lapsedFrom` alone, and it is what licenses the claim: `lapsedFrom` naming the
+caller is the discriminator, exactly as the mechanism above predicts. Worth
+stating because without it the obvious repair goes to the wrong branch — the
+primary claim path is fine, and only the restore branch needs bounding.
+
+The near-miss is its own lesson, and it is the same one as entry 47: a control
+that varies two terms at once confirms the conjunction, never the term you care
+about. Both rows were real measurements, correctly reported, and still could not
+support the sentence they were cited for.
+
+**Second-order, for anyone writing tool descriptions:** *"without changing
+status"* is a promise about the common path stated as a property of the tool.
+The seat that most needs the exception is the one deliberately avoiding a
+claim, and that is the seat the description reassures.
+
+## 50. The instrument that counts sentinels misses the worst sentinels (2026-08-26, pod-architect + sprint-review)
+
+**Surface:** `catch { return <sentinel> }` across `backend/`, and the two
+confirmed defects it has already produced — `readLongTerm` returning `''` on a
+transport failure (#1275) and `findLiveIntegration` returning `null` when the
+Integration lookup throws (#1287 item 2).
+
+**The defect class:** a catch block returns a value that is *also reachable on
+the success path*. The caller cannot distinguish "this failed" from "this
+legitimately has nothing", so the loudest condition — backend unreachable, auth
+revoked, index missing — renders as the quietest and most common one. In #1275
+the guard `err?.status && err.status !== 404` skipped the error branch exactly
+when `err.status` was undefined, which is precisely the transport-failure case.
+
+**The specimen, because it needs no call-site read to see.**
+`backend/routes/registry/detect.ts`, twice in one file:
+
+```
+:92   if (!skillsDir)      return { status: 'unavailable', skills: [] };
+:98   catch (error)        return { status: 'unavailable', skills: [] };
+
+:132  if (!dockerfilePath) return { status: 'unavailable', aptPackages: [], pythonPackages: [] };
+:138  catch (error)        return { status: 'unavailable', aptPackages: [], pythonPackages: [] };
+```
+
+Identical expression, six lines apart, guard and catch. "The directory is not
+there" and "`readdirSync` threw" return the same object. The success path is
+*visible in the same screenful*, which is what makes this the clearest statement
+of the class: you do not need to know what the caller does with it.
+
+**A second instance where the correct value was already on the line above.**
+`backend/services/discordService.ts`:
+
+```
+:500  return (this.integration as IntegrationDoc).status || 'unknown';
+:502  catch (error) { return 'error'; }
+```
+
+`'error'` is a member of the `IntegrationStatus` enum
+(`backend/models/Integration.ts:118`). `'unknown'` is not. The function already
+had an out-of-band sentinel for "no answer", one line above the catch, and the
+catch reached past it for an in-band one.
+
+**A third, collapsing three conditions into one string.**
+`backend/services/systemExchangeTriggers.ts`:
+
+```
+:353  return inst?.instanceId || 'default';
+:355  catch { return 'default'; }
+```
+
+The query threw, no active installation exists, and `instanceId` is literally
+`'default'` are indistinguishable at the call site.
+
+**And the reciprocal — which fires the same tell harder, and is correct.**
+`backend/services/avatarService.ts` normalises an avatar reference:
+
+```
+:37  if (LEGACY_COLOR_AVATARS.has(value))              return value;
+:38  if (/^data:/i.test(value) || value.startsWith('/')) return value;
+:47  } catch {
+:48      return value;
+:50    return value;
+```
+
+Four `return value` in thirteen lines, one of them the catch. By "the success
+path and the catch return the identical expression, in view of each other" —
+the tell `detect.ts` seems to teach — this is the most flagrant site in the
+repo. It is also exactly right. `services/agentMessageService.ts:474`,
+`services/skillsCatalogService.ts:134` and `routes/pods.ts:180` are the same
+shape: normalise this thing; keep the original if it will not parse.
+
+**So the discriminator is not syntactic, and not about the value. It is a
+question about the `try`:**
+
+> Name the question the code inside the `try` is asking. Then check whether the
+> value the catch returns already answers a *different* question elsewhere in
+> the same function.
+
+Where throwing is the only way to ask, the catch is the `else` and the collapse
+is the specification. All four correct sites are the same construct — `new
+URL(...)` at `avatarService.ts:42`, `agentMessageService.ts:474`,
+`skillsCatalogService.ts:125`, `pods.ts:177`. Where the code asked one question
+and the catch answers a different one with the same value, it is a defect:
+
+```
+detect.ts:96             readdirSync   — "is it there?" was already answered at :91
+detect.ts:136            readFileSync  — already answered at :131
+discordService.ts:499    initialize()  — 'error' is an IntegrationStatus enum member
+telegramBridgeService    findOne       — null already means "no live integration"
+systemExchangeTriggers   findOne       — 'default' is a real instanceId
+```
+
+This is why the paired snippets look identical and are not: in `detect.ts` the
+guard *above* the `try` has already answered the question the catch answers, and
+in `avatarService` the guards at `:37`/`:38` answer different questions while the
+catch answers the one only a throw can ask. The difference is one line up, in
+both.
+
+**Not sufficient either, and the entry would be dishonest to close on it.**
+`try { JSON.parse(trustedInput) } catch { return {} }` is predicate-shaped and
+still collapses a fault. Two further things it does *not* discriminate on,
+checked against these nine sites:
+
+- **How tightly the `try` is scoped.** `detect.ts:95-97` wraps exactly one
+  statement and is a defect; `skillsCatalogService.ts:124-134` wraps eleven, ten
+  of which cannot throw, and is correct. Scope is orthogonal — though a wide
+  `try` is a latent hazard: add one throwing call inside those ten lines and the
+  site becomes a defect with the catch never edited. (Mirror of the `void
+  asyncFn()` hazard, where *narrowing* someone else's `try` is what breaks it.)
+- **Whether the caller branches.** See above — no caller here does.
+
+The procedure survives; every predicate offered as a shortcut to it has failed.
+
+**How we found the class, and every proxy that failed on the way.** The sweep
+started by enumerating sentinel *literals* and widened the set twice — `false`,
+`null`, `''`, `[]`, `{}`, then `0` and `""` — reaching a confident 21 sites at
+`994a963f`. `0` and `""` contributed nothing; only `{}` ever moved the count.
+
+- **Literal-only** missed every site above: all four return a non-literal.
+- **Non-literal** is not closer to the class, it errs the other way — the same
+  sweep pulls in `return res.status(400).json({ error: err.message })` from
+  several controllers, which is maximally *loud*.
+- **Bare `catch {` vs bound `catch (err) {`** misses too: the `discordService`
+  and both `detect.ts` sites are bound, with the binding unused.
+- **"The value looks like an error"** was the proxy that made us wave the two
+  `detect.ts` sites through on the first pass. They were in the census output,
+  read as explicit failure values, and were classified out by hand — by the
+  people writing this entry about proxies failing.
+
+**Rules earned:**
+- The discriminator is a question about the `try`, not about the value, the
+  syntax, or the caller: name what the code inside it is asking, then check
+  whether the catch's return value already answers a different question in the
+  same function.
+- Do not close a write-up about failed proxies by handing over a new one. Six
+  were tried here; the one that separates all nine sites is stated as a
+  procedure with its counter-example attached, not as a rule.
+- Six proxies were tried and all six failed, three of them invented during this
+  write-up: sentinel-literal, non-literal, bare-vs-bound catch, "the value looks
+  like an error", "guard and catch return the same expression in view of each
+  other", and "the caller branches differently". A syntactic tell can be
+  necessary; none was sufficient.
+- A shape count is the number that gets quoted, and it is not a defect count.
+  Publish it as "N sites share the shape; K confirmed defects; the rest
+  unclassified" or do not publish it.
+- Widening an enumerated set feels like rigour and cannot escape the axis you
+  enumerated on. When a sweep is defined by a value set, run one census with the
+  filter removed and classify by hand — that pass is the only one that can tell
+  you the axis was wrong. Here the count turned out to fail in *both* directions,
+  which is the finding; a proxy that only over-counts is a much smaller problem.
+- Publish the correct site next to the defect, not the defect alone. Both
+  `detect.ts` and `avatarService.ts` fire the same tell; showing only the first
+  installs the proxy that the second refutes.
+- No lint rule can see this. `@typescript-eslint/no-floating-promises` has no
+  analogue, because the defect is a relation between two return sites rather
+  than a property of either.
+
+## 52. The prescribed fix erases the evidence for the warning that prescribed it (2026-08-30, pod-architect, found by the seat)
+
+**The surface:** the kernel's lease-deferral warning — the drawer note pushed by
+`KernelWorkSweepService.rescueLapsed`
+(`backend/services/kernelWorkSweepService.ts:228`) and the wake enqueued by
+`notifyLeaseWarning` (`backend/services/taskEventService.ts:375`). Both state a
+count and both prescribe the same action:
+
+> `Lease lapsed but <holder> is still listening — rescue deferred (N of MAX). Renew by posting a task update or re-claiming.`
+
+> `[Your lease on TASK-0NN has lapsed. You are still listening, so the kernel deferred the rescue — K deferrals left.]`
+
+**The false model it taught:** that the count is something you can check. It is
+not, once you have obeyed. Both prescribed actions zero the field the count is
+made of — the note path at `backend/routes/tasksApi.ts:580`
+(`$set: { claimExpiresAt: …, rescueDeferrals: 0 }`) and the claim path at
+`:438` (`rescueDeferrals: 0, lapsedFrom: null`). So a seat that does exactly
+what the warning says, and then reads the row to confirm the state it was
+warned about, finds `rescueDeferrals: 0` — a row that denies having been
+deferred at all. The only moment a non-zero is observable is *before* acting on
+the wake that reports it, which is the one ordering the warning's own wording
+discourages.
+
+**The second half is worse, because it makes a correct batch response
+manufacture a false one.** The fold is keyed on the task, not on the holder:
+
+```js
+{ agentName, instanceId, podId, status: 'pending', 'payload.leaseWarningTaskId': task.taskId }
+```
+
+That is deliberate and the comment says so — *"a seat holding two lapsed rows is
+warned once about each."* Two rows therefore produce two pending events. The
+sentence is rendered once, at enqueue (`taskEventService.ts:391`) and stored
+verbatim into `payload.content` (`:425`) — nothing re-renders it on the way out. A seat that
+wakes on the first warning and
+renews *both* rows in one pass — the efficient answer, and the one the pod's
+own economics ask for — leaves the second event queued with text asserting a
+lapse and a deferral count that no longer exist. The fold's `$set` refreshes
+`payload.content` only for the same `leaseWarningTaskId`, so no renewal can ever
+correct a sibling event. The N−1 remaining wakes are made false by construction,
+by compliance.
+
+**Evidence (2026-08-30).** Both rows this seat holds, TASK-069 and TASK-079,
+were renewed in one pass through `POST /api/v1/tasks/:podId/:taskId/updates`.
+Both responses came back `leaseRenewed: true`, `status: claimed`,
+`rescueDeferrals: 0`. Nothing in that post-state distinguishes *never deferred*
+from *deferred twice, then complied* — which is the whole difficulty: the
+compliant arm and the untouched arm are byte-identical.
+
+**What to take from it**
+
+- A notification whose prescribed action mutates the state it reports must be
+  read as of enqueue, never as of delivery. The payload already carries the
+  immutable snapshot (`payload.deferralsUsed`); the rendered sentence does not
+  say that it is a snapshot, and the sentence is what gets read.
+- For a seat: read `rescueDeferrals` and `claimExpiresAt` off the row *before*
+  renewing. Afterwards the value is gone, and its absence is indistinguishable
+  from never having existed — and the second producer of that absence is you.
+- For the kernel: an event a prior action has falsified should be invalidated at
+  delivery rather than delivered. Either fold per (holder, sweep) instead of per
+  task, or re-check `rescueDeferrals` on the row before handing the event to the
+  seat. Both are cheap; neither exists today.
+- No lint rule can see this. The defect is a relation between an event's
+  enqueue-time snapshot in one collection and a `$set` on another, and each half
+  is locally correct.
+## 52. A producer and a consumer, each green, disagreeing about one key's depth (2026-08-30, sprint-review, gating #1347 + #1349)
+## 53. A producer and a consumer, each green, disagreeing about one key's depth (2026-08-30, sprint-review, gating #1347 + #1349)
+
+ADR-026 D6 shipped as two PRs. #1347 (backend) minted a delivery nonce and put
+it on the wire. #1349 (`workers/agent-runtime`) read it back on ack. Both were
+`CLEAN`. #1347 was 11/11 green, #1349 10/10. Merging both would have shipped a
+nonce the consumer never presents.
+
+The producer writes it **into the payload**:
+
+```ts
+// backend/services/agentEventService.ts — list(), the claim
+const enrichedPayload = {
+  ...basePayload, ...digestBundle,
+  ...(event?.deliveryNonce ? { deliveryId: event.deliveryNonce } : {}),
+};
+return { ...event, payload: enrichedPayload };
+```
+
+The consumer declares it **at the top level**:
+
+```ts
+// workers/agent-runtime/src/cap.ts
+export interface CapEvent { _id: string; type: string; podId?: string; deliveryId?: string; ... }
+// workers/agent-runtime/src/agent-do.ts
+await ackEvent(cfg, event._id, event.deliveryId);   // undefined
+```
+
+Both files read correct in isolation. `podId` *is* a top-level field on the
+event, so the consumer's shape is not obviously wrong — it is wrong for exactly
+one key.
+
+**Why neither suite could see it.** The consumer's new test is:
+
+```ts
+await ackEvent(cfg, 'e1', 'nonce-abc');
+expect(JSON.parse(init.body)).toEqual({ deliveryId: 'nonce-abc' });
+```
+
+That pins the client's serialization one call frame *below* the extraction. A
+test that hands a function the value under test can never tell you the function
+would have been given it. The producer's suites, symmetrically, assert what the
+claim writes to Mongo and what the ack route accepts — both true, and neither is
+a statement about what a driver reads.
+
+**Rules earned:**
+
+- **A contract split across two PRs is exercised by neither PR's CI.** Gate the
+  pair. When a PR title or body names another PR ("D6 consumer", "the other half
+  of #N"), fetch both heads and review them as one change, and record which
+  producer sha the consumer was read against — that pairing expires the moment
+  either head moves.
+- **Derive the wire shape from the producer's serializer, not the consumer's
+  type declaration.** The interface is the author's belief about the wire. Here
+  the actual shape was recoverable in two reads: the claim uses `.lean()` with
+  no `.select()`, and the route is a raw `res.json({ events })`, so the wire
+  object is the Mongo doc with one key added inside `payload`.
+- **The failure mode is depth, not spelling.** A misspelled key gets caught by
+  the first manual smoke. The right key at the wrong nesting level survives
+  review, type-checking, and both suites, because every individual file is
+  self-consistent.
+- **Additive-by-design hides it further.** The producer deliberately made the
+  nonce optional so pre-D6 drivers keep working. That is the correct migration
+  shape, and it also means a consumer that reads `undefined` behaves exactly
+  like a consumer that has not adopted yet. Where a rollout is gated on a
+  counter of non-adopters, a mis-wired consumer does not just fail silently — it
+  holds the gate shut.
+- **The missing test is diff-level, not unit-level:** one fixture in the real
+  wire shape, handed to the loop that does the extracting. Assert on what the
+  loop passes downward, not on what you passed into it.
+---
+
+## 54. The tool's key and the product's display name are different strings, and every surface hands the agent the wrong one (2026-08-31, sprint-review)
+
+**Surface:** `commonly_read_file({ podId, fileName })`, and the 404 it returns —
+`"File not found in this pod"` — when `fileName` is a file's display name rather
+than its storage key. Filed as #1403 with a positive control.
+
+**The reproduction, both spellings, same pod, same file.** Pod
+`6a692a1be833c668acdb84cf`, `task-092-wake-toggle-spec.md`, which
+`commonly_list_files` returns *twice*:
+
+```
+fileName: "task-092-wake-toggle-spec.md"   → 404 "File not found in this pod"
+fileName: "1788132942731-759380077.md"     → 200, name: "task-092-wake-toggle-spec.md"
+```
+
+**The AX defect is not the two-vocabulary design. It is which vocabulary the
+agent arrives holding.** The tool description is accurate — it says to pass the
+`fileName` from `commonly_list_files`. But every *other* surface an agent reads
+carries the human name: the `[[upload:…|task-092-wake-toggle-spec.md|…]]` marker
+in chat, the `name` field in the successful read's own response body, and the
+sentence a peer types when it says a spec is attached. So the display name is
+the string an agent naturally has, and passing it is the default path, not the
+edge case.
+
+**What makes it an AX entry rather than a bug report: the error asserts a fact,
+and the fact is false.** "File not found in this pod" is not a hint about
+vocabulary; it is a confident claim about pod contents, and it is wrong. A seat
+acting on it correctly concluded the spec was missing and asked its author to
+re-send. The 404 was not evidence for that, and nothing in the response let the
+seat know. Same class as #1012 — a failure that renders as a decision.
+
+**The compounding half, which is the part a fix must not miss.** The stated
+recovery — list the pod's files and map name → key — is capped below the horizon
+where it is needed:
+
+- `commonly_list_files` → 25 entries, oldest `2026-08-30T13:28:33Z`
+- `GET /api/agents/runtime/pods/:podId/context` → 20 entries, and no `uploadedAt`
+- `GET /api/pods/:podId/files` → **401** on a `cm_agent_*` token
+
+In a pod producing ~25 attachments in 14 hours, anything older than half a day is
+unreachable by name *and* unlistable by key. An agent told "the spec is attached,
+dated 08-27" has no path from that sentence to the bytes. **A teaching error is
+only teaching if the lesson it points at is reachable.**
+
+**The rule, for any tool taking an opaque identifier:** if the product displays a
+different string for the same object anywhere an agent can read it, accept both,
+or make the miss name the alternative it found (`no file with key 'X'; did you
+mean '1788…-….md' (name: 'X')?`). Do not return an assertion about the world when
+what you detected was a lookup miss — the two are not the same claim, and only
+one of them is yours to make.
+## 48. A memory tool that offers seven sections, reads back one, and receipts them identically (2026-08-26, ux-lead + pod-architect)
+
+**The surface:** `commonly_save_my_memory`, `commonly_log_cycle`, and the CLI
+wrapper's memory bridge (`cli/src/lib/memory-bridge.js`, `cli/src/commands/agent.js`).
+
+**What the tools offer.** `commonly_save_my_memory`'s description enumerates
+seven writable sections — `soul | long_term | daily | dedup_state |
+relationships | shared | runtime_meta` — and `commonly_log_cycle` adds an
+eighth, `cycles`, with the explicit promise that "past entries surface back via
+the event payload `cyclesDigest` field."
+
+**What a CLI-wrapper seat can actually read.** One section. `readLongTerm`
+(`memory-bridge.js:24-28`) issues `GET /api/agents/runtime/memory` and returns
+`body?.sections?.long_term?.content || ''`. That string becomes
+`ctx.memoryLongTerm`, and `ctx.memoryLongTerm` is the **only** memory input to
+`buildPrompt` in both adapters (`cli/src/lib/adapters/claude.js:81,475`;
+`codex.js:84,420`). Positive control: `sections.long_term.content` is the sole
+occurrence of any `sections.` access anywhere in `cli/src`, and the string
+`soul` appears in that tree zero times. There is no code path by which a
+wrapper seat reads `soul`, `daily`, `relationships`, `shared`, `dedup_state`,
+`runtime_meta`, or `cycles`.
+
+**The second, independent drop — and the reason the promise is not simply
+false.** The kernel *does* build the digests. `buildMemoryDigestBundle`
+(`backend/services/agentMemoryService.ts:799-818`) emits `memoryDigest`,
+`cyclesDigest` (`buildCyclesDigest`, last 5 entries), `longTermDigest`, and
+`recentDailyDigest`, and `agentEventService.ts:1187-1190` spreads that bundle
+into every delivered event payload. The wrapper then discards it:
+`extractPrompt` (`cli/src/commands/agent.js:609-613`) reads
+`p.content || p.prompt || p.text` and nothing else, so the entire bundle is
+dropped before the spawn. The spread site even carries the comment "agents on
+un-adopted runtimes see a payload that's structurally unchanged" — the author
+knew each runtime had to adopt the fields, and the CLI wrapper never did. The digests only reach runtimes that render the whole
+payload — i.e. moltbots. **`commonly_log_cycle`'s promise is true of the
+backend and false of every wrapper seat**, which is why it survived: each half
+is correct in isolation, and neither half's author owns the other.
+
+**The receipt is what makes it undetectable.** `POST /memory/sync` answers
+`{ok: true, schemaVersion: 2}` for every section (`agentsRuntime.ts:2596`; the
+`cycleMutation` spread is empty for non-`cycles` writes). A write to `daily`
+and a write to `long_term` return byte-identical responses. Nothing in the
+success path distinguishes "durably stored and injected into your next prompt"
+from "durably stored and never read by anything."
+
+**The measured damage.** Two seats, found on the same day, neither by a
+monitor:
+- ux-lead's envelope had **no `long_term` section at all**. Every durable write
+  they had made in two months went to `daily` (3 entries) or `cycles` (40).
+  `readLongTerm` returned `''` on every wake. Zero of those writes were ever
+  read back.
+- pod-architect had a populated `long_term` but had stopped writing `cycles` on
+  2026-08-06 and **did not notice for twenty days** — because nothing ever
+  surfaced one, so the absence produced no symptom. Its `system_exchanges`
+  section, meanwhile, holds ~45 identical auto-written `agent-dm-loop-trip`
+  strings out of 50, so even doc-level `updatedAt` cannot distinguish an
+  authored write from machine noise.
+
+Both seats had been calling a tool that reported success, storing data in a
+store that retained it, for a reader that did not exist.
+
+**Rules earned:**
+- **A write surface must name its readers.** A section list is a claim about
+  what can be stored, and agents read it as a claim about what will be
+  remembered. Every writable section's description should say which runtimes
+  read it back, or say plainly that none do.
+- **An identical receipt across a capability boundary is the bug.** `ok: true`
+  that is byte-identical for a section with a reader and a section without one
+  makes the distinction unobservable from the only surface the agent has. This
+  is the same shape as entry 20 (instruments that could not tell "missing" from
+  "empty") and entry 38 (two write routes, one contract, one delivery).
+- **"Surfaces back via X" needs the runtime qualifier.** A promise that holds
+  for moltbots and fails for wrapper seats is entry 13's shape — one
+  instruction, two driver classes — recurring on the memory surface. Per entry
+  37, a fact is scoped to the surface you read it from.
+- **Absence of a read produces no symptom, so it must be checked directly.**
+  Neither seat's failure was visible in any output. The detection was reading
+  the envelope back with `commonly_read_agent_memory` and comparing it against
+  what had appeared in the prompt. That comparison is the only available test,
+  and no frame currently tells an agent to run it.
+---
+
+## 47. The cap built to bound stuck events is now the largest producer of them (2026-08-25, Sam + sprint-review + pod-architect)
+
+> Numbering assumes #1213 (entry 46) lands first. Several open PRs carry
+> adjacent numbers; renumber this one rather than them.
+
+`AgentEventService.garbageCollect` retires an event to `failed` after three
+delivery attempts without an ack. The pass exists for a real defect — Task
+#67, an event stuck in `delivered` forever because `list()` only returns
+`pending`, so a crashed poller's claim is neither retried nor surfaced. The
+comment above it says so, and the reasoning is sound.
+
+Measured on the live instance 2026-08-25: **169 events retired at
+`attempts >= 3`**, every one carrying `error: "requeue cap exhausted after 3
+delivery attempts without an ack"`. Sam's summary of it is the entry's title
+and belongs verbatim: *the retirement cap built to prevent stuck-unsurfaced
+events manufactured 71 of them, including two gate requests.* The 71 was
+@sprint-review's count on 2026-08-23; it is 169 two days later.
+
+**The first explanation was over-claiming, and fixing it changed nothing.**
+The poller fetched `limit: 10` and processed serially, so it claimed ten and
+started one; the sweep reclaimed the nine it could not begin, at `attempts +
+1` each. #1166 set `limit: 1` — "the fetch IS the claim" — and reached every
+seat on 2026-08-24 (worktree file-sync 09:40:01Z, all ten pollers restarted
+by 10:26Z).
+
+Retirements resumed at 11:00Z and did not slow:
+
+| day (UTC) | retired | window |
+|---|---|---|
+| 08-22 | 36 | 04:40 → 23:30 |
+| 08-23 | 35 | 02:10 → 04:06 |
+| 08-24 | 76 | 11:00 → 23:50 |
+| 08-25 | 22 | 00:10 → 05:50 |
+
+The 31-hour gap from 08-23 04:06 to 08-24 11:00 is the fleet being down, not
+a quiet period — it spans the restart, which is exactly why a naive
+before/after split on the cutover is misleading. It yields 71 before and 98
+after, and reads as "the fix made it worse". What the daily shape actually
+says is narrower and worse: **the fix removed one cause and the retirement
+rate is unchanged, so the dominant cause was never over-claiming.**
+
+**What it actually is.** `attempts` increments when the poller CLAIMS an
+event, and the requeue pass returns any `delivered` row older than
+`AGENT_EVENT_REQUEUE_DELIVERED_MINUTES` (default 10) to `pending`. So an
+event whose turn simply runs long is reclaimed *from the agent currently
+processing it*, three times, and then retired — while the turn is still
+running. Nothing crashed. Nothing is stuck. A sampled post-fix retirement:
+created 08-22T22:57Z, last delivered 08-25T05:32Z, retired 08-25T05:50Z,
+`attempts: 3`.
+
+The premise is stated in the code and is measurably false:
+
+> The 10-min default accommodates legitimately-long-running tool calls —
+> codex exec for multi-slide LLM generation can take 3-5 min — without
+> re-firing while the agent is still processing.
+
+#1166 measured this seat over 11.5h: **median 128s, p90 669s — 11.1 min — 13
+turns over 600s, max 1153s.** The p90 turn exceeds the threshold. Effective
+redelivery is `[T, T+P)` with the `*/10` schedule, so 10–20 min; a turn past
+~30–60 min of cumulative windows is retired by construction.
+
+This is also where the stale redeliveries come from. Every trigger in the
+2026-08-25 pod-architect session arrived stamped 2026-08-23T05:1x–05:4xZ —
+~50 hours old, the same frozen `payload.content` re-served. That is the
+requeue loop, seen from inside the agent.
+
+**Why this is an agent-experience defect and not a tuning issue.** Nothing
+reports it to the party who loses work. The agent finishes its turn and acks
+an event that is already `failed`; the sender sees a message that was
+delivered; the cap logs a count with no owner. Two of the retired events were
+@sprint-review's requests to gate a PR — a peer asked twice, in the pod, and
+neither ask reached anyone. The failure mode of a safety valve is that it
+looks like the absence of a problem.
+
+**What to do.**
+
+- **A timeout on work you do not measure is a guess with a default.** The
+  threshold's comment names a workload (3–5 min codex exec) that is not the
+  workload it now governs. Before setting or trusting one, measure the p99 of
+  the thing it bounds — and re-measure when the runtime changes.
+- **`attempts` counts CLAIMS, not failures.** Any cap keyed on it retires
+  slow work and crashed work identically, because the two are the same
+  document. Distinguishing them needs a signal the worker sends while
+  running, not a deadline the sweeper reads.
+- **Raising the default is the smaller half.** It moves the boundary; it does
+  not make a long turn distinguishable from a dead poller. The shape that
+  does is a lease the poller extends — bound to the turn, not to a fixed
+  window. Until that exists, `AGENT_EVENT_REQUEUE_DELIVERED_MINUTES` must at
+  least exceed the measured p99 turn, and the two numbers must be changed
+  together with the `*/10` schedule.
+- **Retirement must name its casualty.** A terminal transition on an event
+  that was addressed to someone should be visible to the sender, not only to
+  a log line counting rows.
+- Related: entry 36 (the fleet's checkout tracks no revision) — the same
+  hand-synced worktree is what made "the fix is merged" and "the fix is
+  running" two different questions here.
+
+## 55. A shared state map does not mean every renderer consumes it (2026-09-07, sprint-impl)
+
+*Origin observation: @ux-lead, msg 65479; verification and path comparison: @sprint-review, msgs 65482 and 65484; implementation: @sprint-impl, PR #1599.*
+
+The settled-decision map was hydrated and the flat transcript renderer already
+projected it into a human ruling row. The test fixtures therefore looked
+covered while always putting the decision request at the root. In production,
+the real request (64684) was a reply under 64679. The expanded-replies branch
+passed the raw `V2MessageRow`, so the live thread showed ordinary request/reply
+prose with no ruled marker even though Activity correctly said “Sam ruled”.
+
+**Lesson:** shared state is not shared behavior. When a stateful surface has
+multiple renderers, a fixture must exercise each structural path that can
+consume the state. A green root-only test can prove the map is populated while
+missing the user-visible path entirely. The safe test shape is the real
+source → reply → durable ruling relationship, and the implementation must
+assert both the transformed row and suppression of the duplicate durable row.
+
+## 56. An interactive decision tool can be hidden by a generic human cue (2026-09-08, kai)
+
+*Origin observation: Sam, msg 65680; verification: `formatPodContextFrame` in
+`backend/services/agentMentionService.ts` and the Commonly MCP tool registry.*
+
+The runtime frame told agents that when they needed “a decision” they should
+`@mention` a human. The MCP package already exposed `commonly_request_decision`,
+which posts an interactive card and later delivers a typed `decision.ruled` event. The
+conflicting cue made an agent wait for a mention-visible response or author a
+card-shaped chat message instead of calling the tool. The generic mention path
+is still correct for merge presses and ordinary answers; this was a discovery
+failure, not a missing API.
+
+**Repair:** teach the decision-card choice in the delivered runtime frame and
+the bundled Commonly skill; keep decision cards and `@human` addressing
+complementary (while FYI mentions remain ordinary messages); cross-reference
+the choice from `commonly_post_message`; pin the distinction in MCP
+orientation/tool-description tests; and align the CLI fork frame with the
+same AND semantics. The decision tool posts its own ask,
+remains advisory (not privileged-action consent), and does not require
+unrelated work to stop while a ruling is pending.
+
+## 57. A documented remedy that its own failure never points at (2026-09-18, sprint-impl)
+
+*Origin observation: sprint-impl running TASK-130's backend suites in this
+checkout; verification: `backend/TESTING.md` ("Node 25+ kills any suite whose
+require graph reaches `buffer-equal-constant-time`"), `backend/__tests__/utils/globalSetup.js`,
+measured with `npx -y -p node@{22,24,25,26} node -e "typeof require('buffer').SlowBuffer"`.*
+
+`backend/TESTING.md` already carried the whole story of this trap, including the
+exact Node-22 invocation. The seat still lost the detour, because the failure it
+describes points nowhere near the doc. Two dependency-shaped errors arrived in a
+row, neither naming a Node version: first
+`Module ts-jest in the transform option was not found` (this checkout simply had
+no `backend/node_modules`), then, after `npm ci`,
+`TypeError: Cannot read properties of undefined (reading 'prototype')` raised
+four frames under `jws` inside a package the test never imports. The remedy is a
+paragraph in a testing doc — findable only if the version is already suspected.
+
+Two of the doc's own facts were also off by one release boundary, so even a
+reader who found it could be misled: measured, `buffer.SlowBuffer` is a
+`function` on Node 22 and 24 and `undefined` on 25 and 26. The heading said
+"Node 26", which understates the range and sends a Node 25 user looking
+elsewhere.
+
+**Repair:** the doc now states the measured boundary rather than the version on
+which it was first noticed, and `globalSetup` writes the remedy to stderr when
+Node ≥ 25, before any worker fails. One line where the consumer is, instead of a
+paragraph where the consumer is not. Rule: when a doc exists to explain a
+failure that a bare dependency error will produce, put the pointer at the
+failure, not only in the doc — and state removals as measured boundaries, not as
+the version of the machine you happened to hit them on.
+
+## 58. An acceptance that reads nothing reports success (2026-09-20, kai)
+
+*Origin observation: the deferred post-deploy acceptance for the credential-delivery
+change (#1801); verification: `ps eww` on this box, 2026-09-20 — the same command
+returned 8606 bytes with `PATH=` present for a live codex adapter child and 2166
+bytes for its MCP child, 1.2–1.7 KB for `/opt/homebrew/bin/node` and
+`/usr/bin/python3`, and argv only for `/bin/sleep` (75 bytes), `/bin/bash -c` (70),
+`/usr/bin/tail` (88), the `npm exec` shim (96) and the live pi adapter child (86) —
+including a `sleep` spawned *by* the readable `python3`, so the spawner is not the
+discriminator. `sudo` changed none of it.*
+
+The acceptance for #1801 is "read the spawned adapter child's environment and
+confirm the runtime token is not in it". `ps eww` returns no environment at all for
+some processes — and it does not say so — so the check as written could not
+distinguish "the token was withheld" from "the instrument saw nothing", and it
+reported the former, which is the answer everyone wanted. The failure has no
+signature in its own output: an empty read and a withheld token look identical, and
+the empty read is the one that looks like success. Other processes on the same
+command read in full, so the instrument was not obviously broken — only blind for
+the process the claim happened to be about. **The cause is not established**: an
+earlier draft of this entry blamed the seatbelt sandbox the adapters use, and a
+codex adapter child reading in full on the same host — with nothing under
+`sandbox-exec` in its tree — contradicts that. What is measured is that the read is
+per process, and that the blind case is silent.
+
+Nothing about this is macOS-specific: any negative assertion (`absent`, `empty`,
+`unchanged`, `no leak`) over a read that can silently return nothing has the same
+failure mode, and the more the negative is the desired result, the less likely
+anyone notices.
+
+**Repair:** every env-reading acceptance positive-controls its read — a verdict of
+`withheld` requires a variable that must be present (`PATH` by default) in the same
+output, an empty read is reported as `UNREADABLE` (a statement about the instrument,
+not about the credential), and a *present* token needs no control because finding it
+is itself proof the read reached the block. Where an outside read is blind there is a
+second route: the child reports its own environment, which cannot read nothing, so its
+`withheld` verdict stands without a control and the control is reported as context —
+and the acceptance record says which route it used. A route-2 record also says *where*
+it was made — pid, ppid and the parent argv chain — and the `--seat` label is checked
+against that chain instead of asserted, because a self-report is evidence about *some*
+process, and a label the reporter never verifies is how the evidence ends up attributed
+to the supervisor rather than the adapter. The match has to be the launcher's own
+argument shape (`commonly agent run <seat>`, and not inside a prompt-bearing argv —
+a claude ancestor is `claude -p <whole prompt>`, so pod text that quotes the launcher
+can fake the tokens), and that is not pedantry: a substring match confirms
+labels that are wrong — `--seat commonly`, `--seat run` and `--seat node` each "appear"
+in the supervisor's own command line — and a standalone token is not the seat either,
+since `pi` matches the pi adapter binary. A weak match is reported as *not confirmed*
+rather than as a pass, and the run exits non-zero when it cannot place itself: a withheld
+verdict about a process nobody located is the same shape of non-answer as a blind read,
+so `--self-report` exits 1 unless the label is the launcher's own seat argument, and 3
+when the credential is present — a finding stays distinguishable from a non-answer. That
+is the same rule one level up: an instrument that cannot distinguish looks the same as
+one that can. Both routes check the criterion as
+written, *no `cm_agent_` value in any variable*, not merely the absence of the declared
+token variable, because a value that moved to another name is the same leak. Instrument:
+`scripts/verify-seat-credential-delivery.mjs` (route 1, `--self-report` for route 2)
+with `scripts/lib/credential-env-read.js`, unit-tested in
+`backend/__tests__/unit/scripts/credentialEnvRead.test.js`; its `--self-test` exits
+non-zero if the rule regresses. Rule: before a negative verdict about a process, prove
+the read was live — or say the instrument was blind and name the route that can answer.
+
+**The same rule one turn further out: the process under test must postdate the code
+under test.** A seat-level verdict is evidence about *the code that process loaded*, and a
+seat supervisor loads its cli modules at start — so an adapter fix is live only at that
+seat's next respawn. A peer's `--self-report` returned `3` (`TOKEN PRESENT`) at the fixed
+instrument and it was not the fix failing: their supervisor (pid 1510) began Sep 3 23:03
+against a cli installed Sep 19 19:09, sixteen days older than the code it was being
+measured for. Compare `ps -o lstart= -p <supervisor pid>` with the install mtime before
+believing any seat-level verdict — a pre-fix seat's *finding* is evidence about the old
+code, and a pre-fix seat's `withheld` would be evidence about nothing.
+
+Then run it against **the candidate, not the population you were already reasoning
+about.** The check was applied to the seats under discussion and not to the two seats that
+could actually supply the missing leg — which had started 19 and 21 seconds *after* that
+install, so they needed a turn, not a restart, and the sentence written about them ("only
+on a turn after their next respawn") added a step nobody needed. Executed on the process
+being judged the rule decides something; run against the population it reads as diligence
+and decides nothing. Corollary when planning who supplies an acceptance leg: a post-fix
+seat that shares no pod with the measurer cannot be asked at all — the agent-DM route
+refuses with `sharePod` — so reachability is as load-bearing as freshness.
+
+## 59. A CodeQL PR alert is not necessarily a new alert record (2026-09-22, folio)
+
+*Origin observation: the CodeQL PR check on #1814 reported "N new alerts in code
+changed by this pull request"; verification: Connectors-room messages 71070,
+71071, 71074, and 71075, with the code-scanning alerts API and the changed
+`agentRuntimeAuth` middleware as the comparison surface.*
+
+The wording makes a re-attributed main-branch finding sound like a new
+exposure. On #1814, all 21 reported alerts were already present on `main`. For
+example, alert #676 has been open on `refs/heads/main` since 2026-04-07. The PR
+touched `agentRuntimeAuth`, a middleware shared by every flagged route, so the
+same alert records became reachable from the pull-request ref and were counted
+by the PR check. The message is about the alert's presence on the changed ref,
+not proof that the pull request introduced the vulnerability.
+
+**Repair:** separate the two questions before treating the check as a new
+finding:
+
+1. Compare alert numbers from the paginated code-scanning alerts API on
+   `refs/pull/<n>/head` with the numbers on `refs/heads/main`. An alert number
+   present on both refs is an existing record that the PR re-attributed, not a
+   new alert created by the PR.
+2. For an alert that is newly reachable, inspect the path's precondition. In
+   this case, the relevant lookup runs only for a real spawn credential, so the
+   sink's reachability depends on that credential precondition rather than on
+   every request reaching the code.
+
+Never dismiss an alert just to make a PR check green. A CodeQL alert is one
+record across refs; dismissing it from the PR view dismisses the main-branch
+record too. Report the ref comparison and the sink precondition separately,
+then let the security gate decide whether an alert needs remediation or only
+needs attribution clarified. Vera gates this entry before the press.
+
+## 60. Replicate a breakage on the BASE, not on the branch (2026-09-20, vera)
+
+*Origin observation and rule: @vera, msg 70687, transcribed onto TASK-105 and drafted here by Kai; the fold and its retraction: #1759 and TASK-019 — the behaviour change was pushed onto a cleared tests-only head (`59d99388`), the clearance was withdrawn, and the head was restored to the stamped `36bfadfc` by Kai.*
+
+A reproduction that only fails in the presence of another branch's code is evidence about *that branch*. #1759 had been cleared as tests-only against `main`, and the behavior change folded into it made the tests' discriminating power depend on code that was not on `main` — so a red there would have proved the branch, not the fix, and the reviewer's stamp (given for a tree without it) could not cover what arrived. Nothing was wrong with the tests; the *base* was wrong for them.
+
+**Repair:** run the reproduction against the base the change will actually land on — the fetched `origin/main` at the moment of the run, not the branch under discussion — and if the defect exists only once another PR is present, that PR is a **prerequisite**: merge it, then cut the change from the new base. The ordering is not etiquette. It is the only thing that makes the red attributable, and a fold is the one move that hides a prerequisite inside a review someone already gave.
+
+## 61. Two fixtures that share one document name cannot discriminate the forms (2026-09-20, vera)
+
+*Origin observation and rule: @vera, msg 70690, transcribed onto TASK-105 and drafted here by Kai.*
+
+A reader that resolves its input by name cannot tell which of two similarly-shaped forms it was handed when both fixtures carry the *same* name. The test then asserts the shared name and stays green under either form — including the form the fixture set was supposed to prove impossible. The tell is a fixture pair whose only difference is in the body of the file while the citation, the filename, or the anchor is identical.
+
+**Repair:** give each form its own name, and have the assertion state which name it read. The name is the discriminating input; without it the mutation that swaps the forms has nothing to trip on, and the surviving ledger entry reads like a pass. Where the real surface genuinely does collide on one name, that collision is the thing under test — assert the resolver's tie-break rather than asserting the name.
+
+## 62. A test whose title overclaims its assertion agrees with itself, not with the tree (2026-09-20, wren)
+
+*Origin observation and rule: @wren, msg 70661, transcribed onto TASK-105 and drafted here by Kai.*
+
+A suite's titles are most of what a reviewer at speed actually reads, and a title is a claim about scope. When the assertion is narrower than the title — a prune test named for three states that asserts two, a pairing test that asserts two values without asserting their provenance — the suite is internally consistent and the *reader* is wrong in a direction the author never sees. It is the same failure as entry 1, one layer in: the name is the interface, and nobody runs the assertion to check the name.
+
+**Repair:** either the title names exactly the forms asserted, or the assertion widens to the title's claim. Widen by preference where the formula is cheap: a test named for "completed, abandoned-decline and refusal history" should assert the refusal row is pruned, not assert the array it happens to receive. Mutation is the audit that settles it — if deleting the third form leaves the suite green, the title is overclaiming.
+
+## 63. A mutation survivor can be an unreachable branch, and an explained survivor is evidence while an unexplained one is a hole (2026-09-20, kai)
+
+*Origin observation: TASK-019's ledger on `kai/task019-i-pair-atomic`; gate by @vera.*
+
+Removing `.sort({_id: 1})` from the pairing derivation reddened **nothing**. The mutation was not weak — the fixture could not reach the branch it aimed at, because both halves of the pair came from a single installation whose ordering never decides anything. Reported as a survivor with that explanation, it is information about the fixture: the ordering rule is unproven, and the tripwire says so. Dropped from the table, it reads as 30 quiet greens.
+
+**Lesson:** a `SURVIVED` verdict is a claim about the fixture as much as about the code, and the two readings are not interchangeable. An explained survivor names a branch the suite cannot reach, and that is evidence — usually evidence that the fixture needs a second case, or that the code is dead. An unexplained survivor is a hole in the ledger and must be treated as a red until it is understood.
+
+## 64. A subset run is not the suite, and a wrongly-scoped lint reads as a red gate (2026-09-23, kai)
+
+*Origin observation: #1828's verification; measured against the repo's own scripts at `58232e6a`.*
+
+Two directions of the same error in one turn. Reporting "3 touched suites, 38 passed" is a claim about three suites — the full backend run (`420/420`, `3842 passed`) is the claim a gate can act on. And `npx eslint src __tests__/*.mjs` run from `cli/` returned 324 `'expect' is not defined` errors, which is not a red gate but an invocation that linted test files outside the configured environment: the repo's gate is `npm run lint:cli` from the repository root (`cd cli && eslint src --ext .js`), and it is clean. Both numbers were true when read alone and false as statements about the tree.
+
+**Repair:** a PR asked for gates reports the command the repository names, run from the directory the repository names, over the whole suite — and when a count disagrees with expectations, the first question is what the command actually covered, not whether the code got worse.
+
+## 65. Verify a peer's required refresh by patch-id, and say which paths it covers (2026-09-23, wren)
+
+*Origin observation and rule: @wren's structure re-run on #1826, with the patch-id computed by Kai; mirrored on the PR.*
+
+A refresh that adds only evidence changes the head without touching the reviewed code, so "I refreshed the base" is not something a reviewer can act on — and "the code is unchanged" asserted from a memory of what was pushed is exactly the claim that turns out to be false the one time it matters. The mechanical form is one command over the *code* path: `git diff <stamped-sha> <new-head> -- . ':(exclude)docs/design/evidence'` empty means the stamped range still describes what will land, and the new head needs a re-stamp under the old patch-id rather than a re-review. #1826's refresh resolved to patch-id `668fde6c` against the range Vera had stamped at `5d201069`, which is why the clearance re-attached.
+
+**Repair:** state old head → new head, name the paths the comparison excluded, and print the patch-id. A carry is a per-file claim, not a whole-PR one.
+
+## 66. A harness that reaches a module with a `credentialRoot()` default must inject a root (2026-09-19, kai)
+
+*Origin observation: TASK-085 / #1812; the default root `~/.commonly/credentials` was removed by that change.*
+
+The module read a credential root from the environment with a fallback to the operator's home, and a harness that exercised the writer without setting one therefore wrote into `~/.commonly/credentials` on the machine running the tests. The dangerous case is not the passing run: it is the **mutation** — delete the guard that refuses to write outside a sandboxed home and the test still passes, having quietly written into the operator's real credential store. A mutation harness is exactly the instrument that will do this, because its job is to remove guards.
+
+**Repair:** every harness that can reach such a writer injects an explicit root (a temp dir), asserts the file landed under it, and asserts nothing was created at the default. Then a mutation that deletes the guard fails on a path assertion instead of writing to `$HOME` — the harness owns the blast radius it creates.
+
+## 67. A mutation ledger is an instrument: verify the detector and the fake before trusting the greens (2026-09-23, kai)
+
+*Origin observation: #1828's ledger; @connector-ops raised the survivor, @vera adopted the consequence (msg 71318), rule stated by Kai after two false survivors in one ledger.*
+
+Two `SURVIVED` verdicts in one ledger turned out to be the instrument, in two different places. The **detector** matched only test names that *began* with the expected string, so four genuine reds — whose test names carried the mutation's expectation mid-sentence — were reported as survivors; the other twenty-seven were sound only because their expectations happened to be phrased as prefixes. The **fake** cleared both refusal columns whenever it saw either reset in the SQL, so deleting one of the two assignments could not redden: the fake could not tell a half-reset from a full one.
+
+**Repair:** before trusting a green ledger, prove it can go red — a clean-tree baseline must show zero failure lines, and an injected failure must be detected — and make each fake honour the guard, column or branch the statement actually carries, so a partial deletion is observable. Then look at the survivors first: a survivor that turns out to be the instrument is worth more than thirty quiet greens, which is the whole reason to write the ledger down rather than remember it.
+
+## 68. A predicate's domain comes from its producers, not only from its store (2026-09-23, kai)
+
+*Origin observation: #1852's claim-existence predicate, read independently by @connector-ops (msg 71952) and @vera (msg 71956); the miss was Kai's.*
+
+The predicate asked whether a message id names a row, so I asked Postgres what an id could be — `messages.id` is `SERIAL`, hence the int4 upper bound, and `'999999999999'` raising `22003` was the finding that produced it. That reasoning was sound and complete for the question I asked. It was the wrong question: ids also arrive from **Mongo**. A post-thread comment enters the mention and wake path as an ObjectId (`postController.ts:295` enqueues with `_id: comment._id`; the payload builders stringify it into `messageId`), so the shape test refused a legitimate id, the route answered 404, and every driver's `createClaimKeeper` treats a non-2xx as `{failOpen: true}` — the wake race silently stopped deduping and one comment produced N replies. Nothing shipped only because a reviewer read the callers as well as the column.
+
+The name helped the error along: `isMessageId` reads like *the* id predicate when it was only one namespace's, and a name that claims the whole domain stops the reader asking what else feeds it.
+
+**Repair:** before writing a shape test around a value, enumerate its **producers** — every call site that can supply it — and not just the store that would validate it; an enumeration over the wrong domain is still a guess, however exhaustive it looks. When a shape the predicate does not recognise is answered with a non-2xx by a caller documented to fail **open**, the predicate is an availability decision, not a tidiness one: say which namespaces it verifies, which it passes through unverified, and file the pass-through as the defect it is rather than letting the accepted shape imply the check.
+
+## 69. A name resolves in its own scope: read the definition the call site binds, not the one you already know (2026-09-27, connector-ops)
+
+*Origin observation: TASK-162's scope note 162c, corrected by @wren (Connectors room, msg 74667); the collision is removed by #1943 (TASK-165), open at the time of writing.*
+
+Two functions named `isPodMember` lived in the backend with opposite rules. The util (`utils/isPodMember.ts`) returned true on `pod.createdBy` before looking at `members`; a local copy in `server.ts` (`:503`) read `pod.members` only. Having just spent a row on the util's creator bypass, I read `isPodMember(pod, socket.userId)` at `server.ts:536` as the util and filed "a creator who left can still post over the socket" as a live write-path gap, and repeated it to the operator. The call bound the file's own strict copy three dozen lines up; the socket path had refused a departed creator all along. The name was doing the reasoning, and it pointed at the definition I already had in my head.
+
+**Repair:** before asserting what a call does, resolve the binding in that file (a local `const`, an import, a re-export) and read the body it reaches, not the body its name reminds you of. And when two definitions share a name with different semantics, delete one or rename it, then write the entry: a name that means two things in one codebase will keep producing confident wrong claims until one of the meanings is gone.
+
+## 70. An idempotency key that the tool description never names is read as ordinary metadata (2026-09-25, sprint-impl)
+
+*Origin observation: TASK-063, filed by @pod-architect on 2026-08-25 and reproduced live by @ux-lead at 2026-09-25T08:09Z on TASK-163; repaired by keying the pair.*
+
+`commonly_create_task` listed `sourceRef` as one more optional string. Nothing on the tool surface said it was an idempotency key, so the natural reading — a source is where the ask came from, and each ask gets its own row — was the wrong one, and the failure arrived as a **success**: the route deduped on the ref alone and answered `alreadyExists: false` next to a *different* task's row, discarding the caller's title, and on a settled row it reopened that row to `pending` instead. Two seats concluded they had created tasks they had not; one lost a completed row for 28 seconds and had to re-complete it. The response was self-contradictory, but a caller that reads `alreadyExists` and the returned `_id` — the two fields the shape invites it to branch on — never sees the contradiction.
+
+The second half is that the only place the key was stated anywhere a caller could find it was prose **outside the tool**: the guides promised "the same source reference already has a task → returns the existing task". A guarantee that lives in the guide and not in the tool description is not a contract the caller has, because agents read the tool list.
+
+**Repair:** when a parameter changes what a call *means* rather than only what it carries, name that in the tool description where the tool is listed — and never let a response contradict itself on the field callers branch on (`alreadyExists: true` on a reopen, because it does exist; `reopened` carries what happened). A composite key states both halves in the description. The guides and `docs-site` were corrected in the same change, since a stale promise is how the next caller arrives confidently wrong.
+
+## 71. A wrong commit author is not in any state you can audit (2026-09-27, kai)
+
+*Origin observation: @connector-ops, msgs 74828 and 74854 — `#1957` held `Kai <kai@commonly.me>`, `#1960` held `kai <kai@commonly.me>` (case varies), and the closing instruction was to find it with `env | grep GIT_` plus a config sweep; the env hypothesis was refuted by @vera, msg 74855 (her spawn env carries no `GIT_AUTHOR_*`/`GIT_COMMITTER_*` and her token file declares no `env` block at all); mechanism and re-author trees: @kai, msg 74856.*
+
+A wrong author reads as a **setting**, so the natural instrument is an audit of state: `~/.gitconfig`, a worktree-local config, `~/.commonly`, the launch agents, the spawn environment. That audit came up empty — in every worktree `git config user.name` was already `Lily Shen` with the noreply email, locally *and* globally — and an empty audit does not read as "wrong instrument". It reads as "keep looking", which is where the cost was: two PRs blocked, one dequeued, and a press script refusing with exit 7.
+
+The author had been set by `-c user.name=kai -c user.email=kai@commonly.me` on the `git commit` command line. That is a **per-invocation override**: applied at commit time, recorded in the commit object, recorded nowhere else on disk. Nothing an author can read afterwards — no config file, no env var, no reflog entry — distinguishes it from a config that was later corrected, so every audit of state is guaranteed to come back clean while the commits stay wrong. The commit is the witness, and so is the command that made it.
+
+What made this expensive beyond the two PRs is that the failure is **silent and permanent on the landing side**: the press is where the identity matters, not the push, so a squash on `main` mints a `Co-authored-by:` trailer from a wrong author line that no later amend of the branch can remove.
+
+**Repair:** treat a wrong author as an override question, not a config question. Read it off the commit (`git log -1 --format='%an <%ae>'`) and then look at the command that produced it — shell history, the agent's own commit step — instead of sweeping state, because state cannot contain a per-invocation flag. Never pass `-c user.name=`/`-c user.email=` on a commit at all: the working tree's identity is already correct, and an author that is not the lane's Lily Shen is by definition a deliberate act that needs a reason, not a default. Rectify it without touching the tree (`git commit --amend --reset-author --no-edit`, then `--force-with-lease`), and hand the gate the tree hash: a re-author cannot change a tree, so `<old>^{tree} == <new>^{tree}` plus the author line is the entire re-confirmation (@vera, msgs 74855/74858). The control that actually holds lives at the press — refusing a non-Lily author outright — because no inspection an author performs can catch a flag that only ever existed on someone else's command line.
+
+**Measured on `main`, not hypothesized (verified at the trailers, 2026-09-27).** The press has already minted this five times: `git log origin/main -300 --format='%b' | grep -c 'Co-authored-by: Lily Shen <lily@commonly.me>'` returns **5** — `159bc313`, `f064d578`, `8bfca7b7`, `6e56dfee`, `ce3a8b6b` — each a noreply-Lily squash whose body carries a trailer naming `lily@commonly.me`. Those five are otherwise correct: the **name** was right and the **address** was wrong. That is the generalisation worth carrying, and the one a name-based check misses — **the failure does not need a wrong person, only a wrong email.**
+
+**The audit can also be wrong the same way twice, and its wrong answer is `0`.** Reading `%b` a line at a time loses every trailer — only a body's *first* line carries the format's separator — so the instrument reported a clean tree for a tree with five permanent wrong trailers. The form that does it, quoted so it can be re-run rather than believed:
+
+```
+git log origin/main -300 --format='%h%x09%b' | awk -F'\t' 'NF>1 {print $2}' | grep -c 'Co-authored-by: Lily Shen <lily@commonly.me>'
+→ 0     (on main `ddb089a6`; the same tree gives 5 through --format='%b')
+```
+
+**The near-misses are why that number has to be measured beside the form that produced it, not inferred from what the check intended.** On the same tree: `| cut -f2` — the obvious rebuild — returns **5**, because `cut` passes a line carrying no delimiter through whole; `| cut -s -f2` returns **0**; `--format='%h %b' | awk '{print $2}'` returns **0**, because a trailer's second word is `Co-authored-by:`, not the address. Three commands that all mean "count the trailers", two of which report a clean tree that is not clean. An audit that fails to `0` is indistinguishable from a clean audit — this entry's own subject, one level up — so the count has to come from a reader that keeps multi-line fields whole, and the check has to be able to fail.
+
+**Repair, extended:** compare the **full identity string** (`%an <%ae>` against the lane's exact noreply line), not the name; and check the trailer sources as well as the tip — a squash mints `Co-authored-by:` from the *branch commits'* author lines, so a branch whose commits carry the wrong address lands permanently even when every merge commit is perfect. The reader is `git log <range> --format='%an <%ae>'` over the PR's commits.
+
+*No automated witness: nothing in CI reads this entry, and the audit of state that misses this defect is exactly what makes the prose necessary. The enforcement is the press script's author check.*
+
+## 72. A status sentence posted once is not stale data — it is a permanent answer (2026-09-29, kai)
+
+*Origin observation: @connector-ops, msg 75251 and the notes on TASK-178, which also carried the fix options; the claim repeated by @vera in her clearance, msg 75252, and corrected by her at 75253 once the process was measured; copy, arms and this entry: @kai.*
+
+A seat was attached at 11:15:3xZ, its install intro posted "Nothing is running me yet, so mentioning me won't reach anyone", its launchd runner came up, and its first real turn posted at 11:15:52. Forty minutes later a peer routed a docs-only PR away from that seat because "she isn't running" — by then it had been running for 53 minutes and had already stamped another PR. The instrument that produced the wrong answer was the sentence. The process (`launchd` pid, never restarted) and the derived state both said otherwise the whole time, and the derived state is surfaced where that reader already was: the mention typeahead's subtitle and the direct-room reach banner come from the same `deriveAgentState` verdict (`useV2ThreadMentions`, `V2Thread`).
+
+**The sentence was not wrong when it was written, which is why nothing caught it.** `deriveAgentState` returns `never-connected` structurally — no token has ever been used — so at post time the flat declarative was a fact. What is wrong is that a chat message cannot be superseded: nothing edits it, nothing retracts it, nothing dates it. A reader has no way to tell a sentence written at 11:15 from one written at 11:55, so a claim that was true for under a minute is read as present tense forever. This is not staleness — stale data degrades as it ages, and an audit can find it. It is a **permanent** answer that never becomes wrong, so nothing ever corrects it.
+
+**The cost is amplified by whose voice it is in.** The reader here is usually another agent, which cannot see the process or the host; a sentence attributed to the seat itself is the most authoritative artifact in the pod, and it beats a signal that is merely absent. The message also has two names for one thing — the CLI's `attach` and the registry's `install` both reach the same composer through `POST /api/registry/install` — so a reader who goes looking for "the attach template" in `cli/src` finds nothing, and the sentence keeps its authority precisely because nobody finds the code that writes it.
+
+**Repair:** a one-shot artifact may report a state only if it does both of two things — **scopes the claim to the moment it was written**, and **names the surface that does change**. Either alone leaves the trap open: a scoped claim with no pointer still ends the reader's search, and a pointer on an unscoped claim still reads as present tense. Both state-bearing arms of `composeInstallIntro` now do both ("As I post this…" + a pointer to the seat's live state); the invitation arm asserts no state and was deliberately left alone, because a caveat on a line that claims nothing just adds noise. The codebase already had the other legal shape and it is worth naming as the contrast: the stalled-connect nudge makes the same kind of claim and keeps a **forward commitment** ("I'll post here the moment I connect") with a resolution post that supersedes it. A claim with no resolution to close it has to be self-limiting instead.
+
+**And the reader's half, which is the part an agent needs:** liveness comes from the process or the derived state, never from a sentence — **including a sentence the seat wrote about itself.** A seat that says "nothing is running me" is reporting its install, not its present, and the check that settles it is `deriveAgentState` (the roster, the mention subtitle) or the runner's own process. *Witness: `registry.install-intro-honesty.test.js` — an arm asserting both halves on both state arms, with the invitation arm as the negative control, under an 8-mutation ledger, 8 killed, no survivors.*
+
+## 73. A flag named for the connection answered a question about the turn (2026-09-29, kai)
+
+*Origin and repair: @kai. The rename rides with the park-path refusal fix in the same pull request; the producers were counted rather than remembered.*
+
+`BrokerCallInput.hosted?: boolean` sat in the broker's call input, and `assertSeatCanConfine` opened with `if (input.hosted) return;`. Read as a name, `hosted` says *this call is on a hosted connection* — the adjective belongs to the connection, which the same file spells `connectionType === 'hosted-mcp'` a dozen lines away. On that reading the bypass is a property of the provider, and a reader has two opposite and equally plausible conclusions: that every hosted tool legitimately skips the seat-confinement refusal, or that the GitHub path's refusal and the hosted path's bypass are an inconsistency and one of them is a bug. Both are wrong, and the second one is the kind of wrong that gets "fixed".
+
+What the flag actually means is that the **turn** has no shell: the runtime is Commonly's own (`grantBrokerProjectionService.dispatchHostedBrokerTool`), so there are no shell, web or file tools to confine. A shelled seat may call a hosted tool and must still be judged; a hosted turn calling a GitHub tool would still not be confinable. The name could not express that, and the safety-relevant question it *did* raise — can a caller reach this field? — is not answerable from the name at all. Answering it meant grepping the corpus for producers, which is the tell: **the property that mattered was reachability, and the name advertised a category.**
+
+**Repair:** rename the field to `hostedTurn` in `BrokerCallInput` and in `assertSeatCanConfine`, with the type comment naming the single caller that sets it; `grantBrokerProjectionService` is updated to match, and the four suites that pass the flag follow. The behaviour is unchanged and the gate for it already existed: with the early return deleted, `seatGrantConfinement.test.js`'s "a hosted turn is out of scope" arm goes red (measured — one mutation of the guard, one arm red, no collateral).
+
+**Lesson:** a boolean that switches off a security check names the *condition it excuses*, not the surface it arrived from. `hosted` excused a turn; it named a connection; and the one thing a reader most needs — who can set this — is not in the name in either case.
+
+## 74. `browser_snapshot` answers a different question than "does this element have a name" (2026-09-30, sprint-review + sprint-impl)
+
+*Origin: @sprint-review, whose `browser_snapshot` of the landing page reported TASK-216's wedge line as reading nothing — a reading that survived a positive control. Both instruments, the control redesign, and the cross-build re-runs: @sprint-impl. Both seats can defend the whole entry: the block below was produced independently on each harness, and each of us re-ran the other's control set (msgs 75757, 75764, 75775, 75782–75784).*
+
+Every seat is handed this tool as "Capture accessibility snapshot of the current page, this is better than screenshot", and the question it most invites — *does this element have an accessible name?* — is the question it does not answer. It is wrong in **both** directions, on one page in one session. Driven over stdio (`@playwright/mcp@0.0.83` → `playwright-core 1.64.0-alpha-1790635538000`, browser pinned to `chromium_headless_shell-1243`) against live `commonly.me` with seven labelled siblings injected, it printed:
+
+```
+- generic "CTRL_PLAIN_DIV" [ref=e4]: plain div text
+- generic [ref=e5]: explicit generic text
+- text: span text
+- group "CTRL_GROUP" [ref=e6]: group text
+- generic "CTRL_EMPTY"
+- paragraph [ref=e7]: para text
+- heading "CTRL_HEADING" [level=2] [ref=e8]: heading text
+```
+
+**Direction one — a name it drops that exists.** `paragraph [ref=e7]` carries `aria-label="CTRL_PARA"`, and Chromium's own tree (`Accessibility.getPartialAXTree`) reports `paragraph name="CTRL_PARA" ignored=false`. The snapshot prints no name. On the real page at `9ac94e95` that was TASK-216's wedge line, a `<p aria-label>` whose every word child is `aria-hidden`, so the name was its only exposure until #2042 (`b5a93235`) moved the sentence into a clipped span as content. Over that markup as a static page carrying the shipped `.v2-landing__word { display: inline-block }` rule, `browser_snapshot` prints
+
+```
+- paragraph [ref=e2]:
+  - generic [aria-hidden] [ref=e3]: Teammates,
+  - generic [aria-hidden] [ref=e4]: not
+  - generic [aria-hidden] [ref=e5]: subagents.
+```
+
+with no name on the paragraph, the default `ariaSnapshot()` prints a bare `- paragraph`, and CDP names it `paragraph name="Teammates, not subagents." ignored=false`. The name exists in the browser and the words are visible on screen; **what an assistive technology announces was not measured.**
+
+**Direction two — a name it prints that the model refuses.** `CTRL_PLAIN_DIV` is a bare `<div aria-label>` — implicit `generic` — and it is **named**, while `CTRL_EXPLICIT` (`role="generic"`, same attribute) prints bare. `ariaSnapshot()` over the same sibling set has no such asymmetry: it drops both (`- text: plain div text`, `- generic: explicit generic text`). So the implicit/explicit split is a property of the **mode**, not of a second implementation: `browser_snapshot` *is* `page.ariaSnapshot({ mode: "ai" })` (`playwright-core`'s bundled `tools`, which `@playwright/mcp`'s 747-byte `index.js` re-exports). Re-measured directly on the alpha build — no MCP transport in the path — as a two-axis table with CDP as the browser's answer, the answer moves twice: at role `generic`, an implicit `<div aria-label>` is named and an explicit `role="generic"` is not; and an implicit `<p aria-label>` is not named either, in either mode. Neither report was wrong — they answered different questions.
+
+The empty labelled div is the same disagreement in miniature: the `ai` mode prints `- generic "CTRL_EMPTY"`, the default mode prints **no line at all**, and CDP names it either way.
+
+**Why the control missed direction one.** It was a `heading` — `- heading "CTRL_HEADING" [level=2] [ref=e8]: heading text` — a role whose names the `ai` mode *does* print. The control showed the instrument could print a name and said nothing about the role under test. A control that does not hold the role fixed tests nothing about the element being asked about — and holding only the role fixed is not sufficient either, because the declaration form is a second live variable: direction two above holds the role at `generic` and flips on the declaration alone. Where a claim spans more than one variable the control set is a table, not a specimen.
+
+**Repair:** none in code — the surface is a third-party tool description we do not own, so the repair is a reader. For any ARIA naming question the instrument is CDP `Accessibility.getPartialAXTree` (or `getFullAXTree`), never a snapshot formatter; where a snapshot is wanted anyway, name the call *and its mode*, because `browser_snapshot` is `ariaSnapshot({ mode: "ai" })` — one formatter, and the mode is the thing that changes the answer. Recorded for the next seat in `docs/development/FRONTEND.md` (`## Testing` → "Measuring the accessibility tree — name the instrument", PR #2043), with the three-way table and both disagreement examples, so it does not have to be re-derived.
+
+**Lesson:** a snapshot is a rendering decision, not a measurement. "The accessibility tree says X" was never checkable, and the tool's own description supplies exactly the authority that stops a seat looking — while the two failure directions here are not noise around a correct answer, they are two opposite answers to a question the tool was never asked. Corollary for every future a11y control: showing that an instrument can print *some* name says nothing about the role you are testing — nor about whether the role was declared or implicit. Hold every variable but the one under test.
+
+## 75. A claim names a tree, and a needle is a guess about the code — so a figure without its head reads exactly like evidence (2026-09-30, sprint-impl)
+
+*Origin: @sprint-impl — the recomputation of #2049's figures was taken over a subject `404a8f30` had already replaced, and the three-needle absence of the same session was empty; @sprint-review reached the same false negative independently, from different needles, ten minutes later, and published theirs in a gate (`5362301910`, retracted at `5362406679`); @ux-lead located the read that settled it, `c5c2c38a:1404`. The row-title half was measured on TASK-203 by both seats; the identifier and bucket cases are @sprint-impl's. Every figure below was re-measured for this entry and carries the head it was measured at in the sentence it appears in.*
+
+#2049's comment carried a recomputed table for a slice of `v2-landing.css` — the arithmetic was done correctly, over a read that no longer existed. `404a8f30` had already replaced the construction those numbers described, so the sentence was not stale in its digits; it was stale in its **subject**. Nothing in the artifact can show that: a claim that quotes numbers and a head looks measured, and a reader who checks the arithmetic finds it sound. Stale data degrades, and an audit can find it; this kind does not — it stays exactly as confident as when it was written, about a tree it no longer describes.
+
+**The mirror was measured the same day on a row title, not a comment.** TASK-203's title named head `6cde8789` and carried `c5c2c38a`'s line table. Re-measured both, in `frontend/src/v2/landing/v2-landing.css`: each head carries six `prefers-reduced-motion` matches — five at-rules and a sixth that is a prose line mentioning the property — at `498·1149·1175·1201·1271` with the prose at `1110` for `c5c2c38a`, and at `506·1182·1208·1234·1304` with the prose at `1143` for `6cde8789`. Two facts fall out. The tables are close enough that **no reader can tell by inspection which head the numbers came from** — which is why the head has to be in the sentence and not in the surrounding paragraph. And "six blocks" was wrong for a second reason: five of the six matches are at-rules and the sixth is a comment, so a count of matches is not a count of blocks. The title now labels every figure with its head, and that shape is the repair: *"Figures, each labelled by its head: `c5c2c38a` / `8a692533` share ONE CSS blob — … ; `6cde8789` is a different head — …"*
+
+**The absence was worse than unmeasured, and two seats produced it within ten minutes.** A gate PASS reported the construction absent at #2019's pre-fix heads from three needles, two spelled with a `@media (` prefix the construction does not have and the third the fix's own name (`5362301910`); the same emptiness was reported from scratch patterns at msg 75883. Re-measured at `c5c2c38a`: the read is present at `frontend/src/v2/__tests__/v2-layout-invariants.test.ts:1404` — `landing.slice(landing.indexOf('prefers-reduced-motion'))`, introduced by `c5edaf1c`, removed by `404a8f30`, absent at `cfd74e8f` (0 hits for `indexOf('prefers-reduced-motion'` in `frontend/src`) — while `split('@media (prefers-reduced` finds 0 hits, `reducedMotionBlock` finds 0 (the fix introduced that name — it is on the branch at `6cde8789`, which also removed the `:1404` read, and it reaches `cfd74e8f` with `404a8f30`), and `indexOf('@media (prefers-reduced` finds one hit at `:2853` in `c5c2c38a`'s tree — the same read sits at `:2903` at `cfd74e8f`, so even this line number needs its head — a different read, `v2.indexOf('@media (prefers-reduced-motion: reduce) {', sectionFrom)`. So the needles were not three probes: one was empty because it guessed a prefix the code does not have, one was empty because it named what only the fix adds, and the third returned a hit that had nothing to do with the read under test. Nor do the gate's own cells reproduce: at its three heads, `git grep -F` for its three needles hits in five of nine cells — `indexOf('@media (prefers-reduced` once at each of `8a692533:2853`, `6cde8789:2902` and `0dafe74f:2902`, `reducedMotionBlock` twice at each of `6cde8789` and `0dafe74f` — where the gate reported zero in all nine, and the whole `frontend/src` scope gives the same counts; only `8a692533` of the three was pre-fix. **Agreement between needles none of which was spelled from the tree under test is worth nothing, and a zero that does not reproduce is a fact about its instrument.** What made it travel is that it read like diligence: it entered a gate as a stated gap, the next message built on it, and it reached a board row before `c5c2c38a:1404` stopped it.
+
+**Three more of the same shape, all from the same day.** (a) *An identifier written before the instrument returned it:* a row note carried `5911308544` for a pull-request comment that `gh pr comment` had printed as `5911356163` — a reconstruction of the pattern where a measurement was needed, and the wrong value is unreachable rather than merely wrong. (b) *A bucket that could not answer its own question:* a first scan of #1534–#1749 (194 merged) flagged 43 rows against the count rule, and **40** of those had `title == first commit subject` — identical candidates, so those rows had no answer; fetch both candidates for every row, the discipline the bucket skipped, and the same window holds **3** genuine overrides (#1623, #1644, #1645). The bucket ran to completion and its output looked like a result. (The window slides: the same pages now return #1535–#1750, so the range is stated as measured rather than as a name.) (c) *A column that could not vary:* `git merge-base --is-ancestor origin/main <tip>` was false on all 29 rows measured against `origin/main` = `cfd74e8f` — 22 affected tips and 7 controls — because `origin/main` has advanced past every one, so it separated nothing while reading as a clean split; the parent count is what separates them (22 of 22 against 7 of 7). A measurement that cannot fail is not a measurement, exactly as an assertion that cannot fail is not a test.
+
+**Repair:** the claim half has no code to change and the repair belongs in the artifact. Every figure carries the head it was measured at, in the same sentence. Identifiers are quoted from the tool's own output, never rebuilt from the pattern. Before a column is cited it is shown to take more than one value, and before a bucket is believed it is shown capable of returning the other answer. A needle is never evidence about code that has not been read — spell it from the file, or read the file. The code half of this incident did get a shared reader: `blockContaining` / `reducedMotionBlock` (`frontend/src/v2/__tests__/v2-layout-invariants.test.ts:93-102` at `cfd74e8f` — the name `404a8f30` introduced, rebuilt by `1179018e` on a `blockContaining` it wrote beside `blockAt` in the test file when it collapsed the three brace-walk copies; `07aba418` (#2051) moved both to `../lib/cssBlocks`), which finds the block **carrying** the needle rather than the first block of that kind — **and whose own comment is the rule's next instance**: it names five blocks at `531/1395/1421/1447/1517` with the prose line at `1356`, figures that were true at `b5a93235` and false at every `main` commit that carries the comment, where the same five sit at `535/1399/1425/1451/1521` and the prose at `1360`: `662966ec` (#2046) added four lines above them, it is an ancestor of `828fe52a`, the parent `1179018e` landed on, and `1179018e` is the first `main` commit to carry those figures. The helper built to make a claim checkable carries figures that have never been true on the main it shipped to. (`grep -c` returning six rather than five is the other half of that comment: the sixth match is the prose line itself.)
+
+**Lesson:** a claim's figures and the tree they came from are two facts and only one of them is in the claim. The neighbour is review-checklist rule 49, which holds a *run* against the head it cites; this is that separation one level out — a *claim* against the tree it describes — and it survives every instrument on the author's side, because every one of them reads the tree the author is standing in. The reader's check is cheap and it is the head rather than the figures: ask what those numbers would be one head earlier, and if the answer is "much the same", the claim cannot be checked by reading it.
+
+*Witness: the code half is covered by the suite that now reads through `blockContaining`, with the three replaced copies gone at `cfd74e8f`; the claim half has no test and cannot have one, which is why this is a habit — the rule is the sentence that carries its head.*

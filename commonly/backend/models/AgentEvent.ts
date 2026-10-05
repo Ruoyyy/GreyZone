@@ -1,0 +1,137 @@
+import mongoose, { Document, Model, Schema, Types } from 'mongoose';
+
+// ADR-012 §3: terminal `'acked'` state added in Phase 2. Lifecycle:
+//   pending → delivered (on fetch-claim) → acked (on explicit ack)
+//   pending → failed (on enqueue/persistence error; terminal)
+//   delivered → failed (on delivery-side terminal error; rare)
+// Existing rows without an `'acked'` value continue to read as `'delivered'`
+// indefinitely; the ack-gate below short-circuits if status is already `'acked'`.
+export type AgentEventStatus = 'pending' | 'delivered' | 'acked' | 'failed';
+export type DeliveryOutcome = 'acknowledged' | 'posted' | 'no_action' | 'skipped' | 'error';
+
+// ADR-003 Phase 4: cross-agent ask/respond payloads. The `type` field on
+// AgentEvent is intentionally unconstrained (a plain String) so adding new
+// event types is additive — no schema migration required. These interfaces
+// document the payload contract for the two ask-related event types.
+
+/**
+ * Event type: 'agent.ask'
+ * Delivered to the TARGET agent of a `commonly_ask_agent` call.
+ * Payload shape:
+ */
+export interface IAgentAskEventPayload {
+  requestId: string;       // unique id; use to call POST /asks/:requestId/respond
+  fromAgent: string;       // sender agent name (lowercase)
+  fromInstanceId: string;  // sender instanceId
+  question: string;        // the question text
+  podId: string;           // string form of the pod id (same as event.podId)
+  expiresAt: string;       // ISO8601 — after this, respond() returns 410 Gone
+}
+
+/**
+ * Event type: 'agent.ask.response'
+ * Delivered to the ORIGINAL SENDER of an ask once the target responds.
+ * Payload shape:
+ */
+export interface IAgentAskResponseEventPayload {
+  requestId: string;       // matches the originating 'agent.ask' event
+  fromAgent: string;       // responder (the original ask target)
+  fromInstanceId: string;
+  question: string;        // echoed for context
+  response: string;        // the answer
+  podId: string;
+}
+
+/**
+ * Event type: 'decision.ruled'
+ *
+ * Delivered to the agent that raised an advisory DecisionRequest after a
+ * human member has durably ruled it. This is a dedicated turn, rather than a
+ * chat.mention-shaped inference from the visible threaded reply, so drivers
+ * can tell a settled fork from ordinary conversation.
+ */
+export interface IDecisionRuledEventPayload {
+  decisionId: string;
+  pick: string;
+  ruledBy: { userId: string; username: string };
+  ruledAt: string;
+  rulingMessageId: string;
+  podId: string;
+}
+
+export interface IAgentEventDelivery {
+  outcome?: DeliveryOutcome;
+  reason?: string;
+  messageId?: string;
+  details?: unknown;
+  updatedAt?: Date;
+}
+
+export interface IAgentEvent extends Document {
+  agentName: string;
+  instanceId: string;
+  podId: Types.ObjectId;
+  type: string;
+  payload?: unknown;
+  status: AgentEventStatus;
+  attempts: number;
+  deliveredAt?: Date;
+  error?: string;
+  delivery?: IAgentEventDelivery;
+  // ADR-012 §3: snapshot of AgentMemory.revision captured at the
+  // pending → delivered claim. Persisted on the doc so the ack handler
+  // can bump lastSeenRevision exactly once per event without trusting
+  // the client to echo it. `null` for events fetched before §3 shipped.
+  memoryRevisionAtDelivery?: number | null;
+  // ADR-026 D6: identifies WHICH delivery is outstanding. Minted at every
+  // pending → delivered claim, echoed to the driver as `deliveryId`, and
+  // required to match on ack. Cleared by the requeue, which is what makes a
+  // superseded child's late ack fail instead of terminating the new child's
+  // delivery. `null` for events claimed before D6 shipped.
+  deliveryNonce?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const AgentEventSchema = new Schema<IAgentEvent>(
+  {
+    agentName: { type: String, required: true, lowercase: true, trim: true },
+    instanceId: { type: String, default: 'default' },
+    podId: { type: Schema.Types.ObjectId, ref: 'Pod', required: true, index: true },
+    type: { type: String, required: true },
+    payload: Schema.Types.Mixed,
+    status: { type: String, enum: ['pending', 'delivered', 'acked', 'failed'], default: 'pending' },
+    attempts: { type: Number, default: 0 },
+    deliveredAt: Date,
+    error: String,
+    memoryRevisionAtDelivery: { type: Number, default: null },
+    deliveryNonce: { type: String, default: null },
+    delivery: {
+      outcome: {
+        type: String,
+        enum: ['acknowledged', 'posted', 'no_action', 'skipped', 'error'],
+      },
+      reason: String,
+      messageId: String,
+      details: Schema.Types.Mixed,
+      updatedAt: Date,
+    },
+  },
+  { timestamps: true },
+);
+
+AgentEventSchema.index({ agentName: 1, instanceId: 1, status: 1, createdAt: 1 });
+// ADR-024 D3 reads one pod-scoped inbox page after finding the global head.
+// This keeps that bounded page and its true-count query from scanning pending
+// work in every other pod for the same agent installation.
+AgentEventSchema.index({ agentName: 1, instanceId: 1, status: 1, podId: 1, createdAt: 1 });
+
+export const AgentEvent: Model<IAgentEvent> = mongoose.model<IAgentEvent>(
+  'AgentEvent',
+  AgentEventSchema,
+);
+
+export default AgentEvent;
+// CJS compat: let require() return the default export directly
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+module.exports = exports["default"]; Object.assign(module.exports, exports);

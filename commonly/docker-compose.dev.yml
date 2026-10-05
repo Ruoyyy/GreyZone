@@ -1,0 +1,403 @@
+# Every service logs through json-file with a size cap. Without it, a service that
+# auto-restarts and reconnect-loops against a gone dependency grows its log without
+# bound: on 2026-09-27 one leftover container wrote 197 GB and filled the host disk.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # MongoDB service
+  mongo:
+    logging: *default-logging
+    image: mongo:8.2
+    container_name: mongodb-dev
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-password}
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:-commonly}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:-commonly_dev}
+      MONGO_APP_DATABASE: ${MONGO_APP_DATABASE:-commonly}
+    volumes:
+      - mongo-data-dev:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet -u \"$${MONGO_INITDB_ROOT_USERNAME}\" -p \"$${MONGO_INITDB_ROOT_PASSWORD}\" --authenticationDatabase admin --eval \"db.adminCommand({ ping: 1 })\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - app-network-dev
+
+  # PostgreSQL service
+  postgres:
+    logging: *default-logging
+    image: postgres:17
+    container_name: postgres-dev
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
+      POSTGRES_DB: ${PG_DATABASE:-commonly}
+    volumes:
+      # postgres:latest can set PGDATA to a major-versioned path such as
+      # /var/lib/postgresql/18/docker, so local dev mounts the parent dir.
+      - postgres-data-dev:/var/lib/postgresql
+    networks:
+      - app-network-dev
+
+  # Backend service (Development)
+  backend:
+    logging: *default-logging
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: backend-dev
+    ports:
+      - "5000:5000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      # Application settings
+      - NODE_ENV=development
+      - PORT=5000
+      
+      # Database settings
+      - MONGO_URI=${DOCKER_MONGO_URI:-mongodb://commonly:commonly_dev@mongo:27017/commonly?authSource=admin}
+      - PG_USER=${PG_USER:-postgres}
+      - PG_PASSWORD=${PG_PASSWORD:-postgres}
+      - PG_HOST=${DOCKER_PG_HOST:-postgres}
+      - PG_PORT=${PG_PORT:-5432}
+      - PG_DATABASE=${PG_DATABASE:-commonly}
+      
+      # Authentication
+      - JWT_SECRET=${JWT_SECRET:-development-jwt-secret}
+      - LOCAL_DEV_LOGIN_ENABLED=${LOCAL_DEV_LOGIN_ENABLED:-1}
+      - LOCAL_DEV_LOGIN_EMAIL=${LOCAL_DEV_LOGIN_EMAIL:-dev@commonly.local}
+      - LOCAL_DEV_LOGIN_PASSWORD=${LOCAL_DEV_LOGIN_PASSWORD:-password123}
+      - LOCAL_DEV_LOGIN_USERNAME=${LOCAL_DEV_LOGIN_USERNAME:-localdev}
+      
+      # Email settings (SMTP2GO)
+      - SMTP2GO_API_KEY=${SMTP2GO_API_KEY}
+      - SMTP2GO_FROM_EMAIL=${SMTP2GO_FROM_EMAIL}
+      - SMTP2GO_FROM_NAME=${SMTP2GO_FROM_NAME}
+      - SMTP2GO_BASE_URL=${SMTP2GO_BASE_URL}
+      
+      # Frontend URL
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+
+      # Marketplace manifest
+      - MARKETPLACE_MANIFEST_PATH=/app/packages/commonly-marketplace/marketplace.json
+      # Agent provisioning config paths
+      - OPENCLAW_CONFIG_PATH=/app/external/clawdbot-state/config/moltbot.json
+      - COMMONLY_BOT_CONFIG_PATH=/app/external/commonly-bot-state/runtime.json
+      - CLAWDBOT_WORKSPACE_DIR=/app/external/clawdbot-state/workspace
+      # Allow backend to orchestrate docker compose for local runtimes
+      - AGENT_PROVISIONER_DOCKER=${AGENT_PROVISIONER_DOCKER:-1}
+      - AGENT_PROVISIONER_DOCKER_COMPOSE_FILE=/repo/docker-compose.dev.yml
+      - DOCKER_COMPOSE_BIN=docker-compose
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-commonly}
+      # OpenClaw workspace root for per-agent workspaces
+      - OPENCLAW_WORKSPACE_ROOT=/app/external/clawdbot-state/workspace
+      # Skills catalog index
+      - SKILLS_CATALOG_PATH=/app/docs/skills/awesome-agent-skills-index.json
+      
+      # AI Integration
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LITELLM_BASE_URL=${LITELLM_BASE_URL}
+      - LITELLM_API_KEY=${LITELLM_API_KEY}
+      - LITELLM_CHAT_MODEL=${LITELLM_CHAT_MODEL}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
+      
+      # Discord Integration
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}
+      - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - DISCORD_PUBLIC_KEY=${DISCORD_PUBLIC_KEY}
+      
+      # Test settings
+      - TEST_JWT_SECRET=test-jwt-secret
+      - TEST_MONGO_URI=mongodb://mongo:27017/commonly-test
+    volumes:
+      # Mount source code for live reloading
+      - ./backend:/app
+      # Mount marketplace manifest from repo root
+      - ./packages/commonly-marketplace:/app/packages/commonly-marketplace:ro
+      # Mount skills catalog index
+      - ./docs/skills:/app/docs/skills:ro
+      # Mount agent service manifests for auto-registration
+      - ./external/commonly-agent-services:/app/external/commonly-agent-services:ro
+      # Mount agent runtime config state for provisioning
+      - ./external/clawdbot-state/config:/app/external/clawdbot-state/config
+      - ./external/clawdbot-state/workspace:/app/external/clawdbot-state/workspace
+      - ./external/commonly-bot-state:/app/external/commonly-bot-state
+      # Docker socket for provisioning
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Compose file reference inside container
+      - ./docker-compose.dev.yml:/app/docker-compose.dev.yml:ro
+      # Mount repo root so docker-compose build contexts resolve correctly
+      - ./:/repo:ro
+      # Prevent overwriting node_modules
+      - /app/node_modules
+    networks:
+      - app-network-dev
+    # Development: restart on crashes
+    restart: "no"
+
+  # Frontend service (Development)
+  frontend:
+    logging: *default-logging
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: frontend-dev
+    mem_limit: "2g"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    environment:
+      - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:5000}
+      - REACT_APP_DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}
+      # Optimized development server settings for lower CPU
+      - CHOKIDAR_USEPOLLING=false
+      - WATCHPACK_POLLING=false
+      - ESLINT_NO_DEV_ERRORS=true
+      - GENERATE_SOURCEMAP=false
+      - TSC_COMPILE_ON_ERROR=true
+    volumes:
+      # Mount source code for live reloading
+      - ./frontend:/app
+      # Prevent overwriting node_modules
+      - /app/node_modules
+    networks:
+      - app-network-dev
+    # Development: restart on crashes
+    restart: "no"
+    stdin_open: true
+    tty: true
+
+  # LiteLLM model gateway (optional)
+  litellm:
+    logging: *default-logging
+    profiles: ["litellm"]
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm-dev
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-dev-litellm-key}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./external/litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"
+    networks:
+      - app-network-dev
+    restart: "no"
+    command: ["--config", "/app/config.yaml"]
+
+  # External agent runtime (Clawdbot / Moltbot Gateway)
+  # Uses Claude Code OAuth when ~/.claude is mounted (uses your Claude Code subscription)
+  clawdbot-gateway:
+    logging: *default-logging
+    profiles: ["clawdbot"]
+    build:
+      context: ./_external/clawdbot
+      dockerfile: ${CLAWDBOT_DOCKERFILE:-Dockerfile}
+    container_name: clawdbot-gateway-dev
+    depends_on:
+      - backend
+    environment:
+      # Required for Claude Code OAuth authentication
+      - HOME=/home/node
+      - CLAWDBOT_GATEWAY_PORT=${CLAWDBOT_GATEWAY_PORT:-18789}
+      - CLAWDBOT_GATEWAY_BIND=${CLAWDBOT_GATEWAY_BIND:-lan}
+      - CLAWDBOT_GATEWAY_TOKEN=${CLAWDBOT_GATEWAY_TOKEN}
+      - CLAWDBOT_CONFIG_DIR=/home/node/.clawdbot
+      - OPENCLAW_STATE_DIR=/home/node/.clawdbot
+      - OPENCLAW_CONFIG_PATH=/home/node/.clawdbot/moltbot.json
+      - CLAWDBOT_WORKSPACE_DIR=/home/node/clawd
+      - CLAWDBOT_SKIP_BROWSER_CONTROL_SERVER=${CLAWDBOT_SKIP_BROWSER_CONTROL_SERVER:-1}
+      - CLAWDBOT_SKIP_CANVAS_HOST=${CLAWDBOT_SKIP_CANVAS_HOST:-1}
+      - CLAWDBOT_SKIP_CHANNELS=${CLAWDBOT_SKIP_CHANNELS:-0}
+      - COMMONLY_API_URL=${COMMONLY_API_URL:-http://backend:5000}
+      - COMMONLY_USER_TOKEN=${OPENCLAW_USER_TOKEN}
+      - OPENCLAW_RUNTIME_TOKEN=${OPENCLAW_RUNTIME_TOKEN}
+      - OPENCLAW_USER_TOKEN=${OPENCLAW_USER_TOKEN}
+      - OPENCLAW_B_RUNTIME_TOKEN=${OPENCLAW_B_RUNTIME_TOKEN:-}
+      - OPENCLAW_B_USER_TOKEN=${OPENCLAW_B_USER_TOKEN:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+      # Clawdbot uses separate Discord bot to avoid conflicts with Commonly backend
+      - DISCORD_CLIENT_ID=${CLAWDBOT_DISCORD_CLIENT_ID}
+      - DISCORD_BOT_TOKEN=${CLAWDBOT_DISCORD_BOT_TOKEN}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REFRESH_TOKEN=${GOOGLE_REFRESH_TOKEN}
+      # LLM API keys (optional if using Claude Code OAuth)
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL}
+    volumes:
+      - ./external/clawdbot-state/config:/home/node/.clawdbot
+      - ./external/clawdbot-state/workspace:/home/node/clawd
+      # Mount Claude Code credentials for OAuth authentication
+      # The credentials are in ~/.claude/.credentials.json
+      - ${CLAUDE_CREDENTIALS_PATH:-~/.claude}:/home/node/.claude:ro
+      # Mount Commonly MCP server for pod context access
+      - ./packages/commonly-mcp:/app/commonly-mcp:ro
+    ports:
+      - "${CLAWDBOT_GATEWAY_PORT:-18789}:18789"
+    networks:
+      - app-network-dev
+    restart: unless-stopped
+    command:
+      [
+        "node",
+        "dist/index.js",
+        "gateway",
+        "--bind",
+        "${CLAWDBOT_GATEWAY_BIND:-lan}",
+        "--port",
+        "${CLAWDBOT_GATEWAY_PORT:-18789}",
+        "--allow-unconfigured"
+      ]
+
+  clawdbot-cli:
+    logging: *default-logging
+    profiles: ["clawdbot"]
+    build:
+      context: ./_external/clawdbot
+      dockerfile: ${CLAWDBOT_DOCKERFILE:-Dockerfile}
+    container_name: clawdbot-cli-dev
+    depends_on:
+      - clawdbot-gateway
+    environment:
+      - HOME=/home/node
+      - TERM=xterm-256color
+      - CLAWDBOT_GATEWAY_PORT=${CLAWDBOT_GATEWAY_PORT:-18789}
+      - CLAWDBOT_GATEWAY_TOKEN=${CLAWDBOT_GATEWAY_TOKEN}
+    volumes:
+      - ./external/clawdbot-state/config:/home/node/.clawdbot
+      - ./external/clawdbot-state/workspace:/home/node/clawd
+      # Mount Claude Code credentials for OAuth authentication
+      # The credentials are in ~/.claude/.credentials.json
+      - ${CLAUDE_CREDENTIALS_PATH:-~/.claude}:/home/node/.claude:ro
+    networks:
+      - app-network-dev
+    entrypoint: ["node", "dist/index.js"]
+    stdin_open: true
+    tty: true
+
+  # External agent runtime (Clawdbot Bridge)
+  # Disabled: Commonly now uses the OpenClaw gateway channel directly.
+  # clawdbot-bridge:
+
+  # External agent runtime (Commonly Bot)
+  commonly-bot:
+    logging: *default-logging
+    image: node:20-alpine
+    container_name: commonly-bot-dev
+    working_dir: /app/external/commonly-agent-services/commonly-bot
+    depends_on:
+      - backend
+    environment:
+      - COMMONLY_BASE_URL=${COMMONLY_BASE_URL:-http://backend:5000}
+      - COMMONLY_AGENT_TOKEN=${COMMONLY_SUMMARIZER_RUNTIME_TOKEN}
+      - COMMONLY_USER_TOKEN=${COMMONLY_SUMMARIZER_USER_TOKEN}
+      - COMMONLY_AGENT_POLL_MS=${COMMONLY_AGENT_POLL_MS:-5000}
+      - COMMONLY_AGENT_CONFIG_PATH=/app/external/commonly-bot-state/runtime.json
+      - COMMONLY_AGENT_OPTIONAL=1
+    volumes:
+      - ./external:/app/external:ro
+      - ./external/commonly-bot-state:/app/external/commonly-bot-state:ro
+    networks:
+      - app-network-dev
+    restart: unless-stopped
+    command: ["node", "index.js"]
+
+  # NewsHound Agent Bridge (Gemini-powered news agent)
+  newshound-bridge:
+    logging: *default-logging
+    profiles: ["agents", "newshound"]
+    image: node:20-alpine
+    container_name: newshound-bridge-dev
+    working_dir: /app/external/commonly-agent-services/newshound-bridge
+    depends_on:
+      - backend
+      - litellm
+    environment:
+      - AGENT_TYPE=newshound
+      - AGENT_INSTANCE_ID=${NEWSHOUND_INSTANCE_ID:-default}
+      - AGENT_DISPLAY_NAME=${NEWSHOUND_DISPLAY_NAME:-NewsHound 🐕}
+      - NEWSHOUND_BRIDGE_ENABLED=${NEWSHOUND_BRIDGE_ENABLED:-0}
+      - AGENT_MODEL=${NEWSHOUND_MODEL:-gemini-2.5-flash}
+      - AGENT_MODE=${NEWSHOUND_MODE:-passive}
+      - COMMONLY_BASE_URL=${COMMONLY_BASE_URL:-http://backend:5000}
+      - COMMONLY_AGENT_TOKEN=${NEWSHOUND_RUNTIME_TOKEN}
+      - COMMONLY_USER_TOKEN=${NEWSHOUND_USER_TOKEN}
+      - COMMONLY_AGENT_POLL_MS=${COMMONLY_AGENT_POLL_MS:-5000}
+      - LITELLM_BASE_URL=${LITELLM_BASE_URL:-http://litellm:4000}
+      - LITELLM_API_KEY=${LITELLM_API_KEY}
+    volumes:
+      - ./external:/app/external:ro
+    networks:
+      - app-network-dev
+    restart: unless-stopped
+    command: ["node", "index.js"]
+
+  # SocialPulse Agent Bridge (GLM-4.5 powered social agent)
+  socialpulse-bridge:
+    logging: *default-logging
+    profiles: ["agents", "socialpulse"]
+    image: node:20-alpine
+    container_name: socialpulse-bridge-dev
+    working_dir: /app/external/commonly-agent-services/socialpulse-bridge
+    depends_on:
+      - backend
+      - litellm
+    environment:
+      - AGENT_TYPE=socialpulse
+      - AGENT_INSTANCE_ID=${SOCIALPULSE_INSTANCE_ID:-default}
+      - AGENT_DISPLAY_NAME=${SOCIALPULSE_DISPLAY_NAME:-SocialPulse 📊}
+      - SOCIALPULSE_BRIDGE_ENABLED=${SOCIALPULSE_BRIDGE_ENABLED:-0}
+      - AGENT_MODEL=${SOCIALPULSE_MODEL:-glm-4.5-air}
+      - AGENT_MODE=${SOCIALPULSE_MODE:-passive}
+      - COMMONLY_BASE_URL=${COMMONLY_BASE_URL:-http://backend:5000}
+      - COMMONLY_AGENT_TOKEN=${SOCIALPULSE_RUNTIME_TOKEN}
+      - COMMONLY_USER_TOKEN=${SOCIALPULSE_USER_TOKEN}
+      - COMMONLY_AGENT_POLL_MS=${COMMONLY_AGENT_POLL_MS:-5000}
+      - LITELLM_BASE_URL=${LITELLM_BASE_URL:-http://litellm:4000}
+      - LITELLM_API_KEY=${LITELLM_API_KEY}
+    volumes:
+      - ./external:/app/external:ro
+    networks:
+      - app-network-dev
+    restart: unless-stopped
+    command: ["node", "index.js"]
+
+networks:
+  app-network-dev:
+    driver: bridge
+
+volumes:
+  mongo-data-dev:
+  postgres-data-dev:

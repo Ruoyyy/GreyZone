@@ -1,0 +1,784 @@
+import crypto from 'crypto';
+import User from '../models/User';
+import Pod from '../models/Pod';
+import { AgentRegistry } from '../models/AgentRegistry';
+import { normalizeAvatarUrl } from './avatarService';
+
+let dbPg: { pool: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> } } | null;
+try {
+  // eslint-disable-next-line global-require
+  dbPg = require('../config/db-pg');
+} catch (error) {
+  dbPg = null;
+}
+
+let PGMessage: unknown | null;
+try {
+  // eslint-disable-next-line global-require
+  PGMessage = require('../models/pg/Message');
+} catch (error) {
+  PGMessage = null;
+}
+
+let PGPod: { removeMember: (podId: unknown, userId: string) => Promise<void> } | null;
+try {
+  // eslint-disable-next-line global-require
+  PGPod = require('../models/pg/Pod');
+} catch (error) {
+  PGPod = null;
+}
+
+// Pod types that are strictly 1:1 — exactly two members, no joinable widen.
+// Adding a third party to one of these is a bug; a new conversation always
+// spawns a fresh DM pod (see dmService.getOrCreateAgentDmRoom). Single source
+// of truth for ALL membership-add paths (ensureAgentInPod, joinPod controller,
+// claude-code attach in registry/admin, any future code).
+//
+// `agent-admin` is intentionally NOT in this set — multiple admins can share
+// an admin↔agent pod (it's an N:1 admin-team DM, not a strict 1:1).
+//
+// Why it lives here: agentIdentityService.ensureAgentInPod is the most-called
+// add-path and the original site of the agent-room guard, so co-locating the
+// invariant keeps the rule visible to anyone reading that function.
+export const DM_POD_TYPES_GUARD = new Set<string>(['agent-room', 'agent-dm']);
+
+// Resolve the human-readable label for an agent User row. The fallback
+// chain is intentional and load-bearing for any UI / pod-naming surface
+// that shows agent identity (agent-dm pod names, sidebar member rows):
+//
+//   1. `botMetadata.displayName`  — the curated label the registry/preset
+//      sets ("Pixel", "Strategist (Aria)"). This is what humans actually
+//      recognize.
+//   2. `botMetadata.instanceId`   — when displayName is missing AND the
+//      instanceId carries identity (i.e. != 'default'). For OpenClaw-driven
+//      agents the User row stores `agentName: 'openclaw'` (the RUNTIME) +
+//      `instanceId: 'aria' | 'pixel' | ...` (the identity), so falling back
+//      to instanceId here beats falling back to the runtime label.
+//   3. `username`                 — last-resort identifier; always set.
+//   4. fallback string            — for the non-User case (e.g. resolved-
+//      by-alias before the User row is loaded).
+//
+// Why NOT fall back to `botMetadata.agentName`: that field can be the
+// runtime name ('openclaw') rather than the agent's identity. Falling
+// back to it produces "openclaw ↔ openclaw" pod names where what we want
+// is "Pixel ↔ Strategist (Aria)".
+export function resolveAgentDisplayLabel(
+  user: {
+    username?: string;
+    botMetadata?: { displayName?: string; instanceId?: string; agentName?: string };
+  } | null | undefined,
+  fallback?: string,
+): string {
+  const safeFallback = fallback || 'agent';
+  if (!user) return safeFallback;
+  const meta = user.botMetadata;
+  const display = meta?.displayName?.trim();
+  const agentName = meta?.agentName?.trim() || '';
+  const instanceId = meta?.instanceId?.trim() || '';
+  // Leak-pattern detection. If displayName is literally `<agentName> (<instanceId>)`
+  // (e.g. "openclaw (nova)"), it's the runtime label leaking through — some
+  // historical writer formatted displayName as `${agentName} (${instanceId})`
+  // instead of using the curated label. Treat these as if displayName were
+  // missing and fall through to instanceId. Matches both the
+  // `<runtime> (<instance>)` form and the bare `<runtime>` form
+  // (e.g. displayName === 'openclaw'). Also catches the case where
+  // displayName equals just instanceId — the chain below would render the
+  // same thing, but we drop the redundant pass here.
+  const leakedPattern = (
+    !!display
+    && !!agentName
+    && (
+      display.toLowerCase() === agentName.toLowerCase()
+      || (
+        !!instanceId
+        && display.toLowerCase() === `${agentName.toLowerCase()} (${instanceId.toLowerCase()})`
+      )
+    )
+  );
+  if (display && !leakedPattern) return display;
+  if (instanceId && instanceId !== 'default') return instanceId;
+  if (user.username) return user.username;
+  return safeFallback;
+}
+
+const normalizeSegment = (value: unknown): string => (
+  (String(value || '')).toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 40)
+);
+
+const buildAgentUsername = (agentType: string, instanceId: string): string => {
+  const normalized = normalizeSegment(agentType);
+  const instance = normalizeSegment(instanceId);
+  if (!instance || instance === 'default' || instance === normalized) {
+    return normalized || 'agent';
+  }
+  return `${normalized}-${instance}`;
+};
+
+/**
+ * The address every derived agent identity is issued. It is a reserved
+ * namespace, not a mailbox: nothing can deliver to `.local`, yet a registration
+ * that takes one is a *usable* account (login mints for `verified: false`), and
+ * the row it creates is agent-marked by address, so an install adopts it.
+ */
+export const AGENT_ADDRESS_DOMAIN = 'agents.commonly.local';
+
+const buildAgentEmail = (agentType: string, instanceId: string): string => {
+  const username = buildAgentUsername(agentType, instanceId);
+  return `${username || 'agent'}@${AGENT_ADDRESS_DOMAIN}`;
+};
+
+/**
+ * Names an install derives for itself when it has no instance id: the
+ * `AGENT_TYPES` keys, normalized the way `buildAgentUsername` normalizes them.
+ *
+ * Deliberately NOT a shape rule (wren 73988): `openclaw-pixel` is a legitimate
+ * human handle, and its row carries no agent marker, so `getOrCreateAgentUser`
+ * refuses it rather than flipping a person (TASK-133 a). Refusing the shape
+ * would refuse real people to close a case (a) already closes.
+ */
+export const isReservedAgentUsername = (username: unknown): boolean => {
+  const candidate = normalizeSegment(username);
+  if (!candidate) return false;
+  return Object.keys(AGENT_TYPES).some((type) => buildAgentUsername(type, '') === candidate);
+};
+
+/** The derived address namespace, matched as a domain rather than a self-host. */
+export const isReservedAgentEmail = (email: unknown): boolean => (
+  typeof email === 'string'
+  && email.trim().toLowerCase().endsWith(`@${AGENT_ADDRESS_DOMAIN}`)
+);
+
+/**
+ * Refused rather than resolved: the username a derived agent identity maps to is
+ * already held by an account no agent install wrote (TASK-133 a). Adopting that
+ * row flips a person's account to `isBot: true` in place, and the login mints
+ * refuse bot rows (`authController` login filters `isBot: { $ne: true }`) — the
+ * owner would be locked out of the account they registered with, and the flip is
+ * not something they can undo from the UI.
+ */
+/** The refusal's declared code: callers identify it structurally. */
+export const AGENT_USERNAME_CONFLICT_CODE = 'agent_username_conflict';
+
+export class AgentUsernameConflictError extends Error {
+  readonly code = AGENT_USERNAME_CONFLICT_CODE;
+
+  /**
+   * Carried on the error so a caller that only has the thrown value can answer
+   * without re-deriving the mapping (routes/registry/install.ts returns it
+   * verbatim). The message is what gets surfaced, so it names the username and
+   * not the id — `existingUserId` stays a field for logs and tests.
+   */
+  readonly status = 409;
+
+  constructor(
+    public readonly username: string,
+    public readonly existingUserId: string,
+  ) {
+    super(`refusing to adopt the existing non-agent account "${username}" (${existingUserId}) as an agent identity`);
+    this.name = 'AgentUsernameConflictError';
+  }
+}
+
+/**
+ * A row an agent install may adopt: one that already carries agent markers.
+ * `isBot` alone is not the test — the branch this guards exists precisely for
+ * rows written before that flag, so the markers have to be the ones an install
+ * itself writes: the derived agent address, `botType`, or `botMetadata.agentName`.
+ *
+ * The leaf, not the container (vera 73985): `botMetadata`'s sub-paths carry
+ * defaults (`officialAgent: false`, `machineId: null`, `requestedMachineId:
+ * null`), so Mongoose materialises the object on EVERY document —
+ * `Boolean(row.botMetadata)` is true for an ordinary person's row and the
+ * refusal below could never fire. `agentName` is the leaf this writer always
+ * sets (`getOrCreateAgentUser`, create and upgrade arms alike).
+ */
+export const isAgentOwnedRow = (
+  row: {
+    email?: string | null;
+    botType?: string | null;
+    botMetadata?: { agentName?: string | null } | null;
+  },
+  agentEmail: string,
+): boolean => String(row.email || '').toLowerCase() === agentEmail.toLowerCase()
+  || Boolean(row.botType)
+  || Boolean(row.botMetadata?.agentName);
+
+interface AgentTypeConfig {
+  officialDisplayName: string;
+  officialDescription: string;
+  icon: string;
+  botType: string;
+  capabilities: string[];
+  /**
+   * Identity-bearing runtime tag. Pairs with `host` (`'cloud' | 'byo'`) on
+   * the install record (`config.runtime.host`) to fully classify a driver:
+   * the same `runtimeType` can run cloud-hosted (Commonly-managed) or BYO
+   * (user laptop / their server, polling CAP). AGENT_TYPES entries describe
+   * the cloud / first-party variant; `host: 'cloud'` is implicit for
+   * built-ins. CLI-attached agents (`commonly agent attach`) write the same
+   * `runtimeType` with `host: 'byo'` — see `cli/src/lib/adapters/<name>.js`.
+   *
+   *   - 'moltbot'        — OpenClaw gateway (shared k8s deployment)
+   *   - 'internal'       — Commonly-bot (in-process)
+   *   - 'webhook'        — external HTTP endpoint (no deploy)
+   *   - 'claude-code'    — Claude Code (cloud variant has no deploy yet;
+   *                        CLI variant is sam-local-claude et al.)
+   *   - 'codex'          — OpenAI Codex (cloud = LiteLLM-proxied; CLI =
+   *                        sam-local-codex et al.). Legacy `openai` value
+   *                        still resolves via the normalizer in
+   *                        `routes/registry/helpers.ts`.
+   *   - 'managed-agents' — Anthropic Claude Managed Agents API (beta,
+   *                        scaffolding only).
+   *
+   * Legacy `runtimeType: 'local-cli'` + `wrappedCli` (pre-2026-05-04 CLI
+   * attach) is normalized to `runtimeType: <wrappedCli>` + `host: 'byo'`
+   * at read time — installations on disk are not migrated.
+   */
+  runtime: string;
+}
+
+const AGENT_TYPES: Record<string, AgentTypeConfig> = {
+  openclaw: {
+    officialDisplayName: 'Cuz 🦞',
+    // Don't claim a model here. OpenClaw agents route through LiteLLM and the
+    // active model depends on per-agent overrides (dev agents on
+    // openai-codex/gpt-5.4, community agents on OpenRouter free tier, etc.).
+    // The previous "powered by Claude" string was both wrong (we are not
+    // Anthropic) and misleading (community agents aren't on Claude). Keep the
+    // description capability-flavored so it still fits the no-blurb fallback
+    // template in registry/install.ts.
+    officialDescription: 'OpenClaw cloud agent — chat, remember, take real actions when you need it.',
+    icon: '🦞',
+    botType: 'agent',
+    capabilities: ['chat', 'memory', 'context', 'summarize', 'code'],
+    runtime: 'moltbot',
+  },
+  'commonly-bot': {
+    officialDisplayName: 'Commonly Bot',
+    officialDescription: 'Built-in summary bot for integrations, pod activity, and digest context',
+    icon: '📋',
+    botType: 'system',
+    capabilities: ['notify', 'summarize', 'integrate', 'digest'],
+    runtime: 'internal',
+  },
+  'commonly-summarizer': {
+    officialDisplayName: 'Commonly Summarizer (Legacy)',
+    officialDescription: 'Legacy alias for Commonly Bot',
+    icon: '📋',
+    botType: 'system',
+    capabilities: ['notify', 'summarize', 'integrate', 'digest'],
+    runtime: 'internal',
+  },
+  'claude-code': {
+    officialDisplayName: 'Claude Code',
+    officialDescription: 'Claude Code integration for development assistance',
+    icon: '💻',
+    botType: 'agent',
+    capabilities: ['code', 'chat', 'memory'],
+    runtime: 'claude-code',
+  },
+  codex: {
+    officialDisplayName: 'Codex',
+    officialDescription: 'OpenAI Codex integration for code generation',
+    icon: '🤖',
+    botType: 'agent',
+    capabilities: ['code', 'chat'],
+    // Identity tag matches the CLI adapter's runtimeType so a CLI-attached
+    // Codex agent and a hosted Codex agent share runtimeType, differing
+    // only on `host` (BYO vs cloud). Legacy value `openai` (provider-
+    // leaning) still resolves via the normalizer in registry/helpers.ts.
+    runtime: 'codex',
+  },
+  newshound: {
+    officialDisplayName: 'NewsHound 🐕',
+    officialDescription: 'News aggregation and analysis agent - curious, thorough, analytical',
+    icon: '🐕',
+    botType: 'agent',
+    capabilities: ['news', 'search', 'summarize', 'analyze', 'trends'],
+    runtime: 'moltbot',
+  },
+  socialpulse: {
+    officialDisplayName: 'SocialPulse 📊',
+    officialDescription: 'Social media monitoring and sentiment analysis agent - trendy, observant, conversational',
+    icon: '📊',
+    botType: 'agent',
+    capabilities: ['social', 'trends', 'sentiment', 'monitor', 'analyze'],
+    runtime: 'moltbot',
+  },
+};
+
+// Cloud-hosted runtime types — the ones that consume Commonly-managed compute
+// (shared k8s gateway, in-process native runtime, Anthropic managed-agents).
+// This is the single source of truth for the hosted-agent entitlement gate
+// (see routes/registry/install.ts + provision.ts). Installing/provisioning any
+// runtime in this set requires `user.entitlements.cloudAgents` (or admin) so
+// that open registration can be turned on later without handing every new
+// signup free hosted compute. BYO / self-hosted runtimes (webhook, claude-code,
+// or anything carrying `host: 'byo'`) are intentionally NOT gated — connecting
+// your own agent stays open to all authenticated users.
+//
+// `codex` is deliberately absent: a codex install is cloud-hosted by default
+// (LiteLLM-proxied) but flips to BYO when `host === 'byo'` (sam-local-codex et
+// al.), so it's classified in isCloudRuntime() rather than by set membership.
+export const CLOUD_RUNTIME_TYPES = new Set<string>([
+  'moltbot',
+  'internal',
+  'native',
+  'managed-agents',
+]);
+
+/**
+ * Classify an install/provision runtime as cloud-hosted (gated) vs BYO (open).
+ * Pure function over the two fields the install record stores on
+ * `config.runtime`: `runtimeType` and `host`.
+ *
+ * Decision order is load-bearing:
+ *   1. `host: 'byo'` ALWAYS wins → NON-cloud. When a user points Commonly at
+ *      their own compute (laptop CLI wrapper, their own server polling CAP) the
+ *      install record carries `host: 'byo'`. That path must stay open to every
+ *      authenticated user regardless of `runtimeType`, so this is checked first.
+ *   2. `webhook` / `claude-code` are pure BYO runtime types (no Commonly-hosted
+ *      variant exists) → NON-cloud.
+ *   3. Anything in CLOUD_RUNTIME_TYPES (moltbot/internal/native/managed-agents)
+ *      → cloud.
+ *   4. `codex` with no `host: 'byo'` (handled in step 1) → cloud (LiteLLM-proxied).
+ *   5. Everything else (unknown / unspecified runtimeType, e.g. a generic
+ *      standalone marketplace agent that brings its own compute) → NON-cloud.
+ *      Callers that want a built-in cloud agent caught even when the install
+ *      omits an explicit runtimeType should resolve the effective runtimeType
+ *      from AGENT_TYPES first (getAgentTypeConfig(name)?.runtime).
+ */
+export function isCloudRuntime(
+  runtime: { runtimeType?: string | null; host?: string | null } | null | undefined,
+): boolean {
+  const runtimeType = String(runtime?.runtimeType || '').trim().toLowerCase();
+  const host = String(runtime?.host || '').trim().toLowerCase();
+  if (host === 'byo') return false;
+  if (runtimeType === 'webhook' || runtimeType === 'claude-code') return false;
+  if (CLOUD_RUNTIME_TYPES.has(runtimeType)) return true;
+  if (runtimeType === 'codex') return true;
+  return false;
+}
+
+// Legacy agent name mapping is intentionally disabled to avoid alias collisions.
+const LEGACY_AGENT_MAP: Record<string, string> = {
+  'commonly-summarizer': 'commonly-bot',
+};
+
+interface GetOrCreateOptions {
+  displayName?: string;
+  description?: string;
+  instanceId?: string;
+  runtimeId?: string;
+  capabilities?: string[];
+  botType?: string;
+  profilePicture?: string | null;
+}
+
+/**
+ * Disambiguate an agent's displayName at WRITE time so it doesn't collide
+ * with another bot User row's displayName. Mirrors the offline dedup
+ * script's logic (scripts/dedupe-agent-display-names.ts) but runs inline
+ * during getOrCreateAgentUser so a fresh install / reprovision can never
+ * (re-)introduce a "Pixel" / "Pixel" collision.
+ *
+ * Canonical rule (matches the one-shot script — keep these aligned):
+ *   - Group claimants by displayName.
+ *   - Canonical = shortest instanceId; alphabetical tiebreak.
+ *   - Non-canonical entries get suffixed `"<base> (<HumanizedInstanceId>)"`.
+ *
+ * This call returns the disambiguated name the CURRENT caller should use.
+ * It does NOT rewrite peers — for the "new shorter instanceId arrives
+ * after a longer one" edge case, re-run the offline dedup script as a
+ * sweep. In practice the inline check covers the common path: demo /
+ * stub variants installed after a canonical agent.
+ *
+ * `selfUserId` is passed when the caller is updating an existing row so
+ * we don't compare it against itself (would always return canonical and
+ * never apply a suffix).
+ */
+/**
+ * Opaque per-user instance tokens (`u` + sha256(userId) prefix, or the
+ * legacy long form) are machine identity, never human-facing copy — the
+ * same convention the mention-handle rule enforces on the frontend
+ * (isOpaqueInstanceToken in V2PodChat, #930). Keep the two regexes
+ * identical.
+ */
+const isOpaquePerUserToken = (instanceId: string): boolean =>
+  /^u[a-f0-9]{10}([a-f0-9]{14})?$/.test((instanceId || '').toLowerCase());
+
+async function resolveCollisionFreeDisplayName(
+  desiredName: string,
+  instanceId: string,
+  selfUserId?: unknown,
+): Promise<string> {
+  const trimmed = (desiredName || '').trim();
+  if (!trimmed) return trimmed;
+  // Per-user agents (opaque instance tokens) keep the bare name. Every
+  // user's Guide is displayName "Guide" — suffixing the collision would
+  // put the opaque token in every chat byline of every user except the
+  // first ("Guide (U0da521ab41)", observed live 2026-08-13). Their pods
+  // are the owner's own surfaces, so two users' same-named agents never
+  // co-render; if a shared-pod surface ever needs disambiguation, the
+  // honest label is the OWNER, not the token (ADR-020 follow-up).
+  if (isOpaquePerUserToken(instanceId)) return trimmed;
+  // If the name already carries a parenthetical suffix, treat as
+  // already-disambiguated and pass through. Avoids "Pixel (Pixel-Demo) (Pixel-Demo)"
+  // loops when the same install reprovisions.
+  if (/\([^)]+\)\s*$/.test(trimmed)) return trimmed;
+
+  const peerQuery: Record<string, unknown> = {
+    'botMetadata.displayName': trimmed,
+  };
+  if (selfUserId) {
+    peerQuery._id = { $ne: selfUserId };
+  }
+  const peers = await User.find(peerQuery)
+    .select('botMetadata')
+    .lean<Array<{ botMetadata?: { instanceId?: string } }>>();
+  if (peers.length === 0) return trimmed;
+
+  // Include `self` in the canonical-pick comparison so the rule is stable
+  // regardless of which row writes first.
+  const all = [
+    ...peers.map((p) => p.botMetadata?.instanceId || ''),
+    instanceId,
+  ];
+  const canonical = [...all].sort((a, b) => {
+    if (a.length !== b.length) return a.length - b.length;
+    return a.localeCompare(b);
+  })[0];
+  if (canonical === instanceId) {
+    // Caller is the canonical; let them keep the bare name. Peers may
+    // need rewriting via the offline sweep — see comment above.
+    return trimmed;
+  }
+  const humanizedInstance = (instanceId || '')
+    .split(/[-_]/)
+    .map((seg) => seg.charAt(0).toUpperCase() + seg.slice(1))
+    .join('-');
+  return `${trimmed} (${humanizedInstance})`;
+}
+
+class AgentIdentityService {
+  /**
+   * Get or create an agent user with proper bot metadata
+   */
+  static async getOrCreateAgentUser(agentType: string, options: GetOrCreateOptions = {}): Promise<InstanceType<typeof User>> {
+    if (!agentType) {
+      throw new Error('agentType is required');
+    }
+
+    // Handle legacy agent names
+    const resolvedType = AgentIdentityService.resolveAgentType(agentType);
+    const typeConfig = AGENT_TYPES[resolvedType];
+
+    const instanceId = options.instanceId || 'default';
+    const username = buildAgentUsername(resolvedType, instanceId);
+    // `apiToken` is `select: false`; ask for it explicitly or an existing
+    // agent credential looks absent and gets rotated out from under the fleet.
+    let agentUser = await User.findOne({ username }).select('+apiToken');
+
+    // Determine if this is an official (default instance) agent
+    const isOfficial = instanceId === 'default' && !!typeConfig;
+
+    if (!agentUser) {
+      const rawDisplayName = options.displayName || typeConfig?.officialDisplayName || resolvedType;
+      const botMetadata = {
+        displayName: await resolveCollisionFreeDisplayName(rawDisplayName, instanceId),
+        // No invented sentence (#1649): a seat without a description shows no line on
+        // Your Team, never "<name> agent". The hire flow supplies the persona's sentence.
+        description: options.description || typeConfig?.officialDescription || '',
+        icon: typeConfig?.icon || '🤖',
+        runtimeId: options.runtimeId || null,
+        officialAgent: isOfficial,
+        capabilities: options.capabilities || typeConfig?.capabilities || [],
+        agentName: resolvedType,
+        instanceId,
+        runtime: typeConfig?.runtime || 'unknown',
+      };
+
+      agentUser = new User({
+        username,
+        email: buildAgentEmail(resolvedType, instanceId),
+        // Random, and not a function of when the seat was created (TASK-163).
+        // This used to be `agent-password-${Date.now()}`: a millisecond
+        // timestamp, against an identity whose existence is public. Nothing
+        // reads the value — no caller does, and bots cannot log in, because
+        // every login path filters `isBot` — so the old shape bought nothing
+        // and would have become a reconstructable credential the first time a
+        // login path was added without that filter.
+        password: crypto.randomBytes(32).toString('hex'),
+        verified: true,
+        profilePicture: normalizeAvatarUrl(options.profilePicture) || 'default',
+        role: 'user',
+        isBot: true,
+        botType: typeConfig?.botType || options.botType || 'agent',
+        botMetadata,
+      });
+
+      await agentUser.save();
+      console.log(`Created bot user: ${username} (${botMetadata.displayName})`);
+    } else if (!agentUser.isBot) {
+      // Fail closed (TASK-133 a): a row this function did not create may belong to
+      // a person, and adopting it is not reversible — `isBot: true` is refused by
+      // every login mint. Adopt only a row that already carries agent markers;
+      // anything else is refused by name instead of converted in place.
+      if (!isAgentOwnedRow(agentUser, buildAgentEmail(resolvedType, instanceId))) {
+        throw new AgentUsernameConflictError(username, String(agentUser._id));
+      }
+      // Revoke what the row brought (TASK-133 b, wren 74014). An adopted row can
+      // carry credentials no agent ever issued: a person mints an apiToken from
+      // their own session (`routes/auth.ts` POST /api-token/generate) and a CLI
+      // device bearer (`deviceAuthorizationService`), and adoption keeps both —
+      // `routes/registry/tokens.ts` then hands the apiToken back as the agent's
+      // user token, with nothing in the response to say it was a stranger's.
+      // Two writes, because the token is not the only bearer the row can hold.
+      // No runtime token is affected: `agentRuntimeAuth` only authenticates one
+      // on a bot row, and every writer flips before it issues.
+      agentUser.revokeApiToken();
+      agentUser.apiTokenScopes = [];
+      for (const deviceToken of agentUser.deviceTokens || []) {
+        if (!deviceToken.revokedAt) deviceToken.revokedAt = new Date();
+      }
+      // Upgrade existing user to bot if not already marked
+      agentUser.isBot = true;
+      agentUser.botType = (typeConfig?.botType || options.botType || 'agent') as typeof agentUser.botType;
+      const upgradeRawDisplayName = options.displayName || typeConfig?.officialDisplayName || agentUser.username;
+      agentUser.botMetadata = {
+        displayName: await resolveCollisionFreeDisplayName(upgradeRawDisplayName, instanceId, agentUser._id),
+        description: options.description || typeConfig?.officialDescription || '',
+        icon: typeConfig?.icon || '🤖',
+        runtimeId: options.runtimeId || agentUser.botMetadata?.runtimeId || undefined,
+        officialAgent: isOfficial,
+        capabilities: options.capabilities || typeConfig?.capabilities || [],
+        agentName: resolvedType,
+        instanceId,
+        runtime: typeConfig?.runtime || 'unknown',
+      };
+      await agentUser.save();
+      console.log(`Upgraded user to bot: ${username}`);
+    } else {
+      const existingMeta = agentUser.botMetadata || {};
+      const hasStoredDisplayName = typeof existingMeta.displayName === 'string'
+        && existingMeta.displayName.trim().length > 0;
+      // `displayName` is supplied by an AgentInstallation on normal CAP
+      // requests. Installations are pod-scoped; this User row is the
+      // portable principal for (agentName, instanceId). Letting a routine
+      // post refresh the principal label therefore lets one pod rewrite the
+      // label seen by every sibling pod (and every historical PG message
+      // joined through this User). Use an incoming name only when creating
+      // or repairing a principal that has no label. An intentional principal
+      // rename needs an explicit identity-level operation, not a side effect
+      // of posting from one installation.
+      const needsUpdate = !existingMeta.agentName
+        || existingMeta.agentName !== resolvedType
+        || existingMeta.instanceId !== instanceId
+        || !existingMeta.runtime
+        || !hasStoredDisplayName;
+      if (needsUpdate) {
+        const refreshRawDisplayName = hasStoredDisplayName
+          ? String(existingMeta.displayName)
+          : (options.displayName || typeConfig?.officialDisplayName || resolvedType);
+        agentUser.botMetadata = {
+          ...existingMeta,
+          displayName: await resolveCollisionFreeDisplayName(refreshRawDisplayName, instanceId, agentUser._id),
+          description: options.description || existingMeta.description || typeConfig?.officialDescription || '',
+          icon: existingMeta.icon || typeConfig?.icon || '🤖',
+          runtimeId: options.runtimeId || existingMeta.runtimeId || undefined,
+          officialAgent: instanceId === 'default' && !!typeConfig,
+          capabilities: options.capabilities || existingMeta.capabilities || typeConfig?.capabilities || [],
+          agentName: resolvedType,
+          instanceId,
+          runtime: existingMeta.runtime || typeConfig?.runtime || 'unknown',
+        };
+        await agentUser.save();
+        console.log(`Refreshed bot metadata: ${username}`);
+      }
+    }
+
+    return agentUser;
+  }
+
+  /**
+   * One predicate for every human registration path (TASK-133 b, wren
+   * 73987/73988): the sync name rules first (reserved address, `AGENT_TYPES`
+   * keys), then the names an `AgentRegistry` row claims. Verified before the
+   * row exists beats refusing at install, which is where the same collision
+   * would otherwise land as a 409 the operator cannot act on.
+   *
+   * The registry match is by exact name in two forms — as written (lowercased)
+   * and normalized — because a scoped row stores its scope (`@acme/scout`) while
+   * its derived username strips it (`acmescout`). A scoped package whose
+   * normalized form is reached by a *differently spelled* candidate is out of
+   * reach of an exact match and rides the (a) refusal instead: a refused
+   * install, never a flip.
+   */
+  static async resolveAccountNameConflict(account: {
+    username?: unknown;
+    email?: unknown;
+  }): Promise<'agent_email_reserved' | 'agent_username_reserved' | null> {
+    if (isReservedAgentEmail(account.email)) return 'agent_email_reserved';
+    if (isReservedAgentUsername(account.username)) return 'agent_username_reserved';
+    const candidate = normalizeSegment(account.username);
+    if (!candidate) return null;
+    const asWritten = String(account.username || '').trim().toLowerCase();
+    const claimed = await AgentRegistry.exists({
+      agentName: { $in: [asWritten, candidate].filter(Boolean) },
+    });
+    return claimed ? 'agent_username_reserved' : null;
+  }
+
+  static getAgentTypes(): Record<string, AgentTypeConfig> {
+    return { ...AGENT_TYPES };
+  }
+
+  static getAgentTypeConfig(agentType: string): AgentTypeConfig | null {
+    const resolvedType = this.resolveAgentType(agentType);
+    return AGENT_TYPES[resolvedType] || null;
+  }
+
+  static isKnownAgentType(agentType: string): boolean {
+    const resolvedType = this.resolveAgentType(agentType);
+    return !!AGENT_TYPES[resolvedType];
+  }
+
+  static resolveAgentType(agentNameOrType: string): string {
+    const normalized = agentNameOrType?.toLowerCase();
+    return LEGACY_AGENT_MAP[normalized] || normalized;
+  }
+
+  static buildAgentUsername(agentType: string, instanceId: string): string {
+    return buildAgentUsername(agentType, instanceId);
+  }
+
+  static async ensureAgentInPod(agentUser: InstanceType<typeof User>, podId: unknown): Promise<InstanceType<typeof Pod> | null> {
+    if (!agentUser || !podId) return null;
+    const pod = await Pod.findById(podId);
+    if (!pod) return null;
+
+    // ObjectId equality: Mongoose stores `pod.members` as an array of
+    // ObjectId instances. JS `Array.includes` uses `===`, which compares
+    // object references and ALWAYS returns false for two different
+    // ObjectId instances even when they represent the same id. Use
+    // `.equals()` (Mongoose ObjectId / Document method) with a string
+    // fallback for populated refs. Same pattern as `removeAgentFromPod`
+    // below. Mirrors the bug the agent-room guard exposed: under the old
+    // `.includes()` the host agent was treated as "not a member" of its
+    // own room, the guard fired, and `null` propagated to callers as
+    // "pod not found."
+    const agentId = agentUser._id;
+    const isAlreadyMember = pod.members.some((m: any) => (
+      m && typeof m.equals === 'function'
+        ? m.equals(agentId)
+        : String(m) === String(agentId)
+    ));
+
+    if (!isAlreadyMember) {
+      // DM pods are strictly 1:1 (ADR-001 §3.10): exactly two members,
+      // human or agent. Auto-install paths MUST NOT sneak a third member
+      // into an existing DM. A new conversation between a third party and
+      // either of the two existing members spawns a NEW DM pod via
+      // dmService.getOrCreateAgentDmRoom — never widens the existing one.
+      // The same rule applies to agent-room (1:1 user↔agent) and agent-dm.
+      // agent-admin is deliberately N:1 and does not use this guard.
+      if (DM_POD_TYPES_GUARD.has(String(pod.type))) {
+        console.warn(
+          `[ensureAgentInPod] refused: pod ${pod._id} is type=${pod.type} (1:1 DM) `
+          + `and ${agentId} is not already a member. ADR-001 §3.10.`,
+        );
+        return null;
+      }
+      pod.members.push(agentId);
+      await pod.save();
+    }
+    return pod;
+  }
+
+  static async removeAgentFromPod(agentType: string, podId: unknown, instanceId = 'default'): Promise<InstanceType<typeof Pod> | null> {
+    if (!agentType || !podId) return null;
+    const username = buildAgentUsername(agentType, instanceId);
+    const agentUser = await User.findOne({ username }).select('+apiToken');
+    if (!agentUser) return null;
+
+    const pod = await Pod.findById(podId);
+    if (!pod) return null;
+
+    const agentId = agentUser._id.toString();
+    const hadMember = pod.members?.some((member: unknown) => String(member).toString() === agentId);
+    if (hadMember) {
+      pod.members = pod.members.filter((member: unknown) => String(member).toString() !== agentId);
+      await pod.save();
+    }
+
+    if (process.env.PG_HOST && PGPod) {
+      try {
+        await PGPod.removeMember(podId, agentId);
+      } catch (error) {
+        console.warn('Failed to remove agent from PostgreSQL pod members:', (error as Error).message);
+      }
+    }
+
+    return pod;
+  }
+
+  static async syncUserToPostgreSQL(user: InstanceType<typeof User>): Promise<boolean> {
+    // `!PG_HOST` is the unconfigured-mirror case: config/db-pg.ts:75 builds a
+    // Pool only when PG_HOST is set, so there is nothing to sync into. A test
+    // harness that stored the literal string "undefined" made that guard truthy
+    // anyway, so this used to name the string explicitly; __tests__/setup.js
+    // deletes the key instead and the compensation is gone.
+    if (!PGMessage || !process.env.PG_HOST || !dbPg) return true;
+    try {
+      const { pool } = dbPg;
+      const checkQuery = 'SELECT _id FROM users WHERE _id = $1';
+      const checkResult = await pool.query(checkQuery, [user._id.toString()]);
+
+      // For bot users, use display name as username for better UX
+      const displayUsername = user.isBot && user.botMetadata?.displayName
+        ? user.botMetadata.displayName
+        : user.displayName || user.username;
+
+      const isBot = user.isBot === true;
+
+      if (checkResult.rows.length > 0) {
+        const updateQuery = `
+          UPDATE users
+          SET username = $2, profile_picture = $3, is_bot = $4, updated_at = $5
+          WHERE _id = $1
+        `;
+        await pool.query(updateQuery, [
+          user._id.toString(),
+          displayUsername,
+          user.profilePicture || null,
+          isBot,
+          new Date(),
+        ]);
+        return true;
+      }
+
+      const insertQuery = `
+        INSERT INTO users (_id, username, profile_picture, is_bot, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `;
+
+      await pool.query(insertQuery, [
+        user._id.toString(),
+        displayUsername,
+        user.profilePicture,
+        isBot,
+        user.createdAt,
+        new Date(),
+      ]);
+      return true;
+    } catch (error) {
+      console.error('Failed to sync agent user to PostgreSQL:', error);
+      return false;
+    }
+  }
+}
+
+export default AgentIdentityService;
+// CJS compat: let require() return the default export directly
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+module.exports = exports["default"]; Object.assign(module.exports, exports);

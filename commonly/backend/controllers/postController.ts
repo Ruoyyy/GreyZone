@@ -1,0 +1,579 @@
+const Post = require('../models/Post');
+const Pod = require('../models/Pod');
+const User = require('../models/User');
+const Activity = require('../models/Activity');
+const AgentMentionService = require('../services/agentMentionService');
+const DMService = require('../services/dmService');
+
+exports.createPost = async (req: any, res: any) => {
+  const {
+    content,
+    image,
+    tags,
+    podId,
+    category,
+    source,
+  } = req.body;
+  try {
+    const resolvedPodId = podId || null;
+    if (resolvedPodId) {
+      const pod = await Pod.findById(resolvedPodId).select('_id members').lean();
+      const isMember = pod?.members?.some(
+        (memberId: any) => memberId.toString() === req.userId.toString(),
+      );
+      if (!isMember) {
+        return res.status(403).json({ error: 'You are not a member of this pod' });
+      }
+    }
+
+    const resolvedCategory = (category || '').trim() || 'General';
+    const resolvedSource = source && typeof source === 'object'
+      ? {
+        type: source.type || (resolvedPodId ? 'pod' : 'user'),
+        provider: source.provider || 'internal',
+        externalId: source.externalId || null,
+        url: source.url || null,
+        author: source.author || null,
+        authorUrl: source.authorUrl || null,
+        channel: source.channel || null,
+      }
+      : {
+        type: resolvedPodId ? 'pod' : 'user',
+        provider: 'internal',
+      };
+
+    const post = new Post({
+      userId: req.userId,
+      content,
+      image,
+      tags,
+      podId: resolvedPodId,
+      category: resolvedCategory,
+      source: resolvedSource,
+    });
+    await post.save();
+    res.status(201).json(post);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+// Get user statistics (post count and comment count)
+exports.getUserStats = async (req: any, res: any) => {
+  try {
+    const { userId } = req.params;
+    const postCount = await Post.getPostCount(userId);
+    const commentCount = await Post.getCommentCount(userId);
+    res.json({ postCount, commentCount });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+// Search posts by content or tags
+exports.searchPosts = async (req: any, res: any) => {
+  try {
+    const { query, tags, podId, category } = req.query;
+    const searchQuery: any = {};
+
+    if (query) {
+      // Coerce to a bounded string and escape regex metacharacters before it
+      // reaches Mongo. Raw user input as a `$regex` value allowed both
+      // catastrophic-backtracking ReDoS (e.g. `(a+)+b`) and, if an object was
+      // passed, operator injection. Escaping makes it a literal substring match.
+      const term = String(query).slice(0, 200).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      searchQuery.$or = [
+        { content: { $regex: term, $options: 'i' } },
+        { 'comments.text': { $regex: term, $options: 'i' } },
+      ];
+    }
+
+    if (tags) {
+      const tagArray = (tags as string).split(',').map((tag: any) => tag.trim());
+      searchQuery.tags = { $in: tagArray };
+    }
+
+    if (podId) {
+      if (podId === 'global' || podId === 'none') {
+        searchQuery.podId = null;
+      } else {
+        searchQuery.podId = podId;
+      }
+    }
+
+    if (category) {
+      searchQuery.category = category;
+    }
+
+    const posts = await Post.find(searchQuery)
+      .populate('userId', 'username profilePicture isBot botMetadata')
+      .populate('comments.userId', 'username profilePicture isBot botMetadata')
+      .populate('podId', 'name type')
+      .populate('likedBy', '_id')
+      .sort({ createdAt: -1 })
+      // Bound the result set — an unfiltered search previously loaded every
+      // matching post into memory.
+      .limit(100);
+
+    res.json(posts);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+exports.getPosts = async (req: any, res: any) => {
+  try {
+    const { podId, category, sort = 'recent', page = 1, limit = 20 } = req.query;
+    const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit as string, 10) || 20));
+    const skip = (pageNum - 1) * limitNum;
+
+    const filter: any = {};
+    if (podId) {
+      if (podId === 'global' || podId === 'none') {
+        filter.podId = null;
+      } else {
+        // Pod-scoped post listing must respect pod visibility. The
+        // global feed (`podId=global`/`none`) stays anonymous-readable;
+        // pod-scoped queries require auth and pass through
+        // `canViewPod` (members + admins + agent-dm §3.7 fan-out).
+        const userId = req.userId || req.user?.id;
+        if (!userId) {
+          return res.status(401).json({ error: 'Authentication required to view pod posts' });
+        }
+        const pod = await Pod.findById(podId).select('_id members type').lean();
+        if (!pod) return res.status(404).json({ error: 'Pod not found' });
+        const canView = await DMService.canViewPod(userId, pod);
+        if (!canView) {
+          return res.status(403).json({ error: 'Not authorized to view posts in this pod' });
+        }
+        filter.podId = podId;
+      }
+    }
+    if (category) {
+      filter.category = category;
+    }
+
+    const populate = (q: any) => q
+      .populate('userId', 'username profilePicture isBot botMetadata')
+      .populate('comments.userId', 'username profilePicture isBot botMetadata')
+      .populate('podId', 'name type')
+      .populate('likedBy', '_id');
+
+    let posts;
+    if (sort === 'hot') {
+      // Score = (likes + comments*3) / (hoursSinceLastReply + 2)^1.2
+      // lastReplyAt = max(createdAt, most recent comment createdAt)
+      // Comments weighted 3x because they represent active conversation
+      const scoredIds = await Post.aggregate([
+        { $match: filter },
+        { $addFields: {
+          likeCount: { $size: { $ifNull: ['$likedBy', []] } },
+          commentCount: { $size: { $ifNull: ['$comments', []] } },
+          lastReplyAt: {
+            $max: [
+              '$createdAt',
+              { $max: { $ifNull: ['$comments.createdAt', []] } },
+            ],
+          },
+        } },
+        { $addFields: {
+          ageHours: { $divide: [{ $subtract: [new Date(), '$lastReplyAt'] }, 3600000] },
+          activityScore: { $add: ['$likeCount', { $multiply: ['$commentCount', 3] }] },
+        } },
+        { $addFields: {
+          heatScore: { $divide: ['$activityScore', { $pow: [{ $add: ['$ageHours', 2] }, 1.2] }] },
+        } },
+        { $sort: { heatScore: -1, createdAt: -1 } },
+        { $skip: skip },
+        { $limit: limitNum },
+        { $project: { _id: 1 } },
+      ]);
+      const idList = scoredIds.map((d: any) => d._id);
+      const byId: any = {};
+      const docs = await populate(Post.find({ _id: { $in: idList } }));
+      docs.forEach((d: any) => { byId[d._id.toString()] = d; });
+      posts = idList.map((id: any) => byId[id.toString()]).filter(Boolean);
+    } else {
+      posts = await populate(Post.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum));
+    }
+
+    const total = await Post.countDocuments(filter);
+    res.json({ posts, hasMore: skip + posts.length < total, total, page: pageNum });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+// New method to get a single post by ID
+exports.getPostById = async (req: any, res: any) => {
+  try {
+    const post = await Post.findById(req.params.id)
+      .populate('userId', 'username profilePicture isBot botMetadata')
+      .populate('comments.userId', 'username profilePicture isBot botMetadata')
+      .populate('podId', 'name type members')
+      .populate('likedBy', '_id');
+    if (!post) return res.status(404).json({ error: 'Post not found' });
+    // If the post is pod-scoped, mirror the same visibility rule as
+    // `getPosts` — global posts (no pod) remain anonymous-readable.
+    if (post.podId) {
+      const userId = req.userId || req.user?.id;
+      if (!userId) {
+        return res.status(401).json({ error: 'Authentication required to view this post' });
+      }
+      const canView = await DMService.canViewPod(userId, post.podId);
+      if (!canView) {
+        return res.status(403).json({ error: 'Not authorized to view this post' });
+      }
+    }
+    res.json(post);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+// Add a comment to a post
+exports.addComment = async (req: any, res: any) => {
+  try {
+    const { text, podId: requestPodId, replyToCommentId } = req.body;
+
+    if (!text) {
+      return res.status(400).json({ error: 'Comment text is required' });
+    }
+
+    const post = await Post.findById(req.params.id);
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    const commentingUser = await User.findById(req.userId).select('_id username').lean();
+
+    // Create the comment object
+    const comment: any = {
+      userId: req.userId,
+      text,
+      replyTo: replyToCommentId || null,
+      createdAt: new Date(),
+    };
+
+    // Add the comment to the post's comments array
+    post.comments.push(comment);
+
+    // Save the updated post
+    await post.save();
+
+    // Populate the user information for the new comment and return it
+    const updatedPost = await Post.findById(post._id)
+      .populate('userId', 'username profilePicture isBot botMetadata')
+      .populate('comments.userId', 'username profilePicture isBot botMetadata');
+
+    // Return only the newly added comment with populated user information
+    const newComment = updatedPost.comments[updatedPost.comments.length - 1];
+
+    // Enqueue agent mentions if applicable (thread context)
+    try {
+      const resolveMentionPod = async () => {
+        const candidate = requestPodId || post.podId;
+        if (candidate) {
+          const pod = await Pod.findById(candidate).select('_id members').lean();
+          const isMember = pod?.members?.some(
+            (memberId: any) => memberId.toString() === req.userId.toString(),
+          );
+          return isMember ? pod._id : null;
+        }
+        const fallback = await Pod.findOne({ members: req.userId }).select('_id').lean();
+        return fallback?._id || null;
+      };
+
+      const mentionPodId = await resolveMentionPod();
+      if (mentionPodId) {
+        let username = req.user?.username || commentingUser?.username;
+        if (!username) {
+          const user = await User.findById(req.userId).select('username').lean();
+          username = user?.username;
+        }
+        await AgentMentionService.enqueueMentions({
+          podId: mentionPodId,
+          message: {
+            _id: comment._id,
+            id: comment._id,
+            content: text,
+            messageType: 'thread',
+            source: 'thread',
+            createdAt: comment.createdAt,
+            thread: {
+              postId: post._id,
+              postContent: post.content,
+              postUserId: post.userId,
+              commentId: comment._id,
+              commentText: text,
+            },
+          },
+          userId: req.userId,
+          username,
+        });
+      }
+    } catch (mentionError: any) {
+      console.warn('Failed to enqueue thread mentions:', mentionError.message);
+    }
+
+    try {
+      const displayPodId = requestPodId || post.podId || null;
+      await Activity.create({
+        type: 'pod_event',
+        actor: {
+          id: req.userId,
+          name: commentingUser?.username || req.user?.username || 'User',
+          type: 'human',
+          verified: false,
+        },
+        action: 'thread_comment',
+        content: `New reply on thread: ${(post.content || '').slice(0, 120)}`,
+        podId: displayPodId || undefined,
+        sourceType: 'event',
+        sourceId: post._id.toString(),
+        visibility: 'pod',
+        target: {
+          title: `Thread reply by @${commentingUser?.username || 'user'}`,
+          description: text.slice(0, 180),
+          url: `/thread/${post._id}`,
+        },
+        involves: [
+          {
+            id: post.userId,
+            name: 'thread-owner',
+            type: 'human',
+          },
+        ],
+      });
+    } catch (activityError: any) {
+      console.warn('Failed to create thread comment activity:', activityError.message);
+    }
+
+    res.status(201).json(newComment);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+// Like a post
+exports.likePost = async (req: any, res: any) => {
+  try {
+    const postId = req.params.id;
+    const { userId } = req;
+
+    const post = await Post.findById(postId);
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    // Check if user has already liked this post
+    const userLikedIndex = post.likedBy ? post.likedBy.indexOf(userId) : -1;
+
+    if (userLikedIndex === -1) {
+      // User hasn't liked the post yet, add like
+      if (!post.likedBy) {
+        post.likedBy = [];
+      }
+      post.likedBy.push(userId);
+      post.likes += 1;
+    } else {
+      // User already liked the post, remove like
+      post.likedBy.splice(userLikedIndex, 1);
+      post.likes = Math.max(0, post.likes - 1);
+    }
+
+    await post.save();
+    res.json({ likes: post.likes, liked: userLikedIndex === -1 });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+// Delete a post
+exports.deletePost = async (req: any, res: any) => {
+  try {
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    // Check if the user is the owner of the post
+    if (post.userId.toString() !== req.userId) {
+      return res
+        .status(403)
+        .json({ error: 'You are not authorized to delete this post' });
+    }
+
+    await Post.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Post deleted successfully' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Delete a comment
+exports.deleteComment = async (req: any, res: any) => {
+  try {
+    const { id, commentId } = req.params;
+
+    const post = await Post.findById(id);
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    // Find the comment index
+    const commentIndex = post.comments.findIndex(
+      (comment: any) => comment._id.toString() === commentId,
+    );
+
+    if (commentIndex === -1) {
+      return res.status(404).json({ error: 'Comment not found' });
+    }
+
+    // Check if the user is the owner of the comment
+    if (post.comments[commentIndex].userId.toString() !== req.userId) {
+      return res
+        .status(403)
+        .json({ error: 'You are not authorized to delete this comment' });
+    }
+
+    // Remove the comment using splice
+    post.comments.splice(commentIndex, 1);
+    await post.save();
+
+    res.json({ message: 'Comment deleted successfully' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.followThread = async (req: any, res: any) => {
+  try {
+    const post = await Post.findById(req.params.id).select('_id content');
+    if (!post) return res.status(404).json({ error: 'Post not found' });
+
+    const user = await User.findById(req.userId).select('_id username followedThreads');
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const alreadyFollowing = (user.followedThreads || []).some(
+      (thread: any) => String(thread.postId) === String(post._id),
+    );
+
+    if (!alreadyFollowing) {
+      user.followedThreads = [
+        ...(user.followedThreads || []),
+        { postId: post._id, followedAt: new Date() },
+      ];
+      await user.save();
+    }
+
+    try {
+      await Activity.create({
+        type: 'pod_event',
+        actor: {
+          id: user._id,
+          name: user.username,
+          type: 'human',
+          verified: false,
+        },
+        action: 'thread_followed',
+        content: `${user.username} followed a thread`,
+        sourceType: 'event',
+        sourceId: post._id.toString(),
+        visibility: 'private',
+        target: {
+          title: 'Followed thread',
+          description: (post.content || '').slice(0, 180),
+          url: `/thread/${post._id}`,
+        },
+        involves: [{ id: user._id, name: user.username, type: 'human' }],
+      });
+    } catch (activityError: any) {
+      console.warn('Failed to create thread follow activity:', activityError.message);
+    }
+
+    return res.json({
+      success: true,
+      followed: true,
+      postId: post._id.toString(),
+      followedThreadsCount: user.followedThreads?.length || 0,
+    });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+};
+
+exports.unfollowThread = async (req: any, res: any) => {
+  try {
+    const post = await Post.findById(req.params.id).select('_id');
+    if (!post) return res.status(404).json({ error: 'Post not found' });
+
+    const user = await User.findById(req.userId).select('_id followedThreads');
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    user.followedThreads = (user.followedThreads || []).filter(
+      (thread: any) => String(thread.postId) !== String(post._id),
+    );
+    await user.save();
+
+    return res.json({
+      success: true,
+      followed: false,
+      postId: post._id.toString(),
+      followedThreadsCount: user.followedThreads?.length || 0,
+    });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+};
+
+exports.toggleAgentComments = async (req: any, res: any) => {
+  try {
+    const post = await Post.findById(req.params.id).select('userId agentCommentsDisabled');
+    if (!post) return res.status(404).json({ error: 'Post not found' });
+    if (post.userId.toString() !== req.userId)
+      return res.status(403).json({ error: 'Not authorized' });
+    post.agentCommentsDisabled = !post.agentCommentsDisabled;
+    await post.save();
+    return res.json({ agentCommentsDisabled: post.agentCommentsDisabled });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+};
+
+exports.getFollowedThreads = async (req: any, res: any) => {
+  try {
+    const user = await User.findById(req.userId).select('followedThreads');
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const followedThreads = user.followedThreads || [];
+    if (!followedThreads.length) {
+      return res.json({ threads: [] });
+    }
+
+    const postIds = followedThreads.map((thread: any) => thread.postId);
+    const followedAtMap = new Map(
+      followedThreads.map((thread: any) => [String(thread.postId), thread.followedAt || null]),
+    );
+
+    const posts = await Post.find({ _id: { $in: postIds } })
+      .populate('userId', 'username profilePicture isBot botMetadata')
+      .populate('comments.userId', 'username profilePicture isBot botMetadata')
+      .populate('podId', 'name type')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const normalized = posts.map((post: any) => ({
+      ...post,
+      followedAt: followedAtMap.get(String(post._id)) || null,
+    }));
+
+    return res.json({ threads: normalized });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
+  }
+};
+
+export {};

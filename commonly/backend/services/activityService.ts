@@ -1,0 +1,1446 @@
+// eslint-disable-next-line global-require
+const Pod = require('../models/Pod');
+// eslint-disable-next-line global-require
+const User = require('../models/User');
+// eslint-disable-next-line global-require
+const Activity = require('../models/Activity');
+// eslint-disable-next-line global-require
+const Summary = require('../models/Summary');
+// eslint-disable-next-line global-require
+const Post = require('../models/Post');
+// eslint-disable-next-line global-require
+const Task = require('../models/Task');
+// eslint-disable-next-line global-require
+const { isListedPodMember } = require('../utils/isPodMember');
+
+let PGMessage: unknown = null;
+try {
+  // eslint-disable-next-line global-require
+  PGMessage = require('../models/pg/Message');
+} catch (e) {
+  PGMessage = null;
+}
+
+let Message: unknown = null;
+try {
+  // eslint-disable-next-line global-require
+  Message = require('../models/Message');
+} catch (e) {
+  Message = null;
+}
+
+interface ActorInfo {
+  id?: string | null;
+  name?: string;
+  type?: string;
+  verified?: boolean;
+  profilePicture?: string;
+}
+
+interface ActivityFlags {
+  isAgentAction: boolean;
+  isMention: boolean;
+  isFollowing: boolean;
+  isThreadUpdate: boolean;
+}
+
+interface ActivityItem {
+  id: string;
+  type: string;
+  actor: ActorInfo;
+  action: string;
+  content?: string;
+  preview?: string;
+  timestamp: Date | string | null;
+  pod?: { id: string; name: string } | null;
+  target?: { title?: string; description?: string; url?: string } | null;
+  approval?: unknown;
+  agentMetadata?: { agentName?: string; sources?: unknown[] };
+  involves?: unknown;
+  reactions: { likes: number; liked: boolean };
+  replyCount: number;
+  replies: unknown[];
+  flags?: ActivityFlags;
+  read?: boolean;
+}
+
+interface UserDoc {
+  _id: unknown;
+  username?: string;
+  following?: unknown[];
+  followers?: unknown[];
+  followedThreads?: Array<{ postId: unknown; followedAt?: Date }>;
+  activityFeed?: { lastViewedAt?: Date | string; readItemIds?: unknown[] };
+}
+
+interface PodDoc {
+  _id: unknown;
+  name: string;
+  type?: string;
+  createdBy?: unknown;
+  members?: unknown[];
+  agentEnsemble?: unknown;
+  updatedAt?: Date;
+  createdAt?: Date;
+}
+
+interface GetFeedOptions {
+  limit?: number;
+  before?: string;
+  filter?: string;
+  mode?: string;
+}
+
+interface GetRecapOptions {
+  window?: 'today' | '7d';
+  podId?: string;
+}
+
+interface ComputeFlagsOptions {
+  actor?: ActorInfo;
+  type?: string;
+  action?: string;
+  content?: string;
+  target?: { description?: string };
+  username?: string;
+  followingIds?: Set<string>;
+}
+
+// System actors whose posts are plumbing, not work. The recap and the feed
+// exist to answer "what did MY agents do" — commonly-bot's task-echo volume
+// (95 updates in one window, TASK-083) drowned every real seat, which is what
+// made the Activity tab read as empty of real agent activity.
+const SYSTEM_BOT_NAMES = new Set(['commonly-bot', 'commonly-ai-agent']);
+
+class ActivityService {
+  /**
+   * Read-side projection for the v2 Activity surface. The source events stay
+   * in their owning stores: messages remain in Postgres and board transitions
+   * remain Task updates in Mongo. This endpoint only groups a member's
+   * existing, authorized data; it does not introduce another activity log.
+   */
+  static async getRecap(
+    userId: unknown,
+    options: GetRecapOptions = {},
+  ): Promise<Record<string, unknown>> {
+    const window = options.window === '7d' ? '7d' : 'today';
+    const since = new Date(Date.now() - (window === '7d' ? 7 : 1) * 24 * 60 * 60 * 1000);
+    // TASK-166: the pod list is built from membership only. `createdBy` says who
+    // made the pod, and `leavePod` keeps it after unlisting them, so reading it
+    // as membership handed a departed creator this pod's recap.
+    // TASK-170: `{ 'members.userId': userId }` sat beside the live term as a
+    // second spelling of membership. No pod has a `members.userId` entry (Vera,
+    // 0 of 424, 2026-09-27), so it selected nothing while teaching that a member
+    // is an object carrying a `userId` — the belief behind the `getPodFeed`
+    // defect TASK-166 fixed. Deleted rather than kept as a fallback.
+    const pods: PodDoc[] = await Pod.find({ members: userId }).select('_id name type').lean();
+
+    const requestedPodId = typeof options.podId === 'string' ? options.podId : '';
+    const scopedPods = requestedPodId
+      ? pods.filter((pod) => String(pod._id) === requestedPodId)
+      : pods;
+    if (requestedPodId && scopedPods.length === 0) {
+      throw new Error('Access denied');
+    }
+    const scopedPodIds = new Set(scopedPods.map((pod) => String(pod._id)));
+    // filter: 'agents' — the recap is about agent WORK. Without it, the
+    // 100-slot feed budget was consumed entirely by `summary` activities
+    // (30/30 measured live), which are newer and more numerous than any
+    // message, so zero agent messages ever reached the grouping below.
+    const feed = await ActivityService.getUserFeed(userId, { limit: 100, filter: 'agents' });
+    const activities = ((feed.activities as ActivityItem[] | undefined) || []).filter((activity) => {
+      const timestamp = activity.timestamp ? new Date(activity.timestamp).getTime() : 0;
+      return timestamp >= since.getTime()
+        && (!requestedPodId || (activity.pod && scopedPodIds.has(activity.pod.id)));
+    });
+    // Needs-you is not derived from this display feed. It is materialized by
+    // its source writers and rechecked against current membership below.
+
+    type AgentRecap = {
+      id: string;
+      name: string;
+      profilePicture?: string;
+      lastActiveAt: Date | string | null;
+      messageCount: number;
+      recap: string;
+      updates: Array<{
+        id: string;
+        podId: string | null;
+        podName: string;
+        content: string;
+        timestamp: Date | string | null;
+      }>;
+    };
+    const agents = new Map<string, AgentRecap>();
+
+    activities
+      .filter((activity) => activity.actor?.type === 'agent' || activity.flags?.isAgentAction)
+      // Defense at the GROUPING layer too: commonly-bot's task echoes arrive
+      // via stored Activity docs as well as messages, so filtering only the
+      // message source left the recap 100% system bot (#1306's live verify).
+      .filter((activity) => !SYSTEM_BOT_NAMES.has(String(activity.actor?.name || '').toLowerCase()))
+      .forEach((activity) => {
+        const actorId = String(activity.actor?.id || activity.actor?.name || 'unknown-agent');
+        const name = activity.actor?.name || 'Agent';
+        const existing = agents.get(actorId) || {
+          id: actorId,
+          name,
+          profilePicture: activity.actor?.profilePicture,
+          lastActiveAt: activity.timestamp,
+          messageCount: 0,
+          recap: '',
+          updates: [],
+        };
+        existing.messageCount += 1;
+        if (new Date(activity.timestamp || 0).getTime() > new Date(existing.lastActiveAt || 0).getTime()) {
+          existing.lastActiveAt = activity.timestamp;
+        }
+        const content = String(activity.preview || activity.content || activity.action || '').replace(/\s+/g, ' ').trim();
+        if (content) {
+          existing.updates.push({
+            id: activity.id,
+            podId: activity.pod?.id || null,
+            podName: activity.pod?.name || 'Direct activity',
+            content: content.slice(0, 180),
+            timestamp: activity.timestamp,
+          });
+        }
+        agents.set(actorId, existing);
+      });
+
+    const agentRecaps = Array.from(agents.values())
+      .map((agent) => {
+        const updates = agent.updates
+          .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
+          .slice(0, 3);
+        const podNames = Array.from(new Set(updates.map((update) => update.podName)));
+        return {
+          ...agent,
+          updates,
+          recap: agent.messageCount === 1
+            ? `Posted an update${podNames[0] ? ` in ${podNames[0]}` : ''}.`
+            : `Posted ${agent.messageCount} updates${podNames[0] ? ` across ${podNames.slice(0, 2).join(' and ')}` : ''}.`,
+        };
+      })
+      .sort((a, b) => new Date(b.lastActiveAt || 0).getTime() - new Date(a.lastActiveAt || 0).getTime());
+
+    // Recipient-owned AttentionItem rows are the only needs-you source.
+    // eslint-disable-next-line global-require
+    const AttentionItemService = require('./attentionItemService');
+    const attention = requestedPodId
+      ? await AttentionItemService.getOpenQueue(userId, { podId: requestedPodId })
+      : await AttentionItemService.getOpenQueue(userId);
+    // Day-zero onboarding is account-level: once any ask has existed for the
+    // recipient, the "until your first ask" card must stay gone even after
+    // every item is handled. AttentionItem rows are durable, so this remains
+    // true across queue resolution and does not depend on the recap window.
+    let hasEverHadAttention: boolean | null = requestedPodId ? false : null;
+    if (!requestedPodId) {
+      try {
+        hasEverHadAttention = await AttentionItemService.hasEverHadAttention(userId);
+      } catch (error) {
+        // Keep the recap readable if the advisory onboarding check is
+        // unavailable; the queue itself remains authoritative below.
+        console.warn('[activity] day-zero attention check failed:', (error as Error).message);
+      }
+    }
+    const needsYou = attention.items
+      .filter((item: any) => !requestedPodId || item.podId === requestedPodId)
+      .map((item: any) => ({
+        ...item,
+        timestamp: item.createdAt || null,
+      }));
+
+    let board: Array<Record<string, unknown>> = [];
+    if (scopedPods.length > 0) {
+      const taskRows: Array<Record<string, unknown>> = await Task.find({
+        podId: { $in: scopedPods.map((pod) => pod._id) },
+        updatedAt: { $gte: since },
+      })
+        .select('podId taskId title status updatedAt updates')
+        .sort({ updatedAt: -1 })
+        .limit(24)
+        .lean();
+      const podNames = new Map(scopedPods.map((pod) => [String(pod._id), pod.name]));
+      board = taskRows.map((task) => {
+        const updates = Array.isArray(task.updates) ? task.updates as Array<Record<string, unknown>> : [];
+        const lastUpdate = updates
+          .slice()
+          .sort((a, b) => new Date(b.createdAt as string || 0).getTime() - new Date(a.createdAt as string || 0).getTime())[0];
+        return {
+          id: String(task._id),
+          taskId: task.taskId,
+          title: task.title,
+          status: task.status,
+          podId: String(task.podId),
+          podName: podNames.get(String(task.podId)) || 'Pod',
+          updatedAt: task.updatedAt,
+          lastUpdate: lastUpdate
+            ? {
+              text: String(lastUpdate.text || '').slice(0, 180),
+              author: String(lastUpdate.author || ''),
+              createdAt: lastUpdate.createdAt,
+            }
+            : null,
+        };
+      });
+    }
+
+    return {
+      window,
+      since: since.toISOString(),
+      generatedAt: new Date().toISOString(),
+      scope: requestedPodId || 'all',
+      pods: pods.map((pod) => ({ id: String(pod._id), name: pod.name })),
+      hasEverHadAttention,
+      needsYou,
+      agents: agentRecaps,
+      board,
+    };
+  }
+
+  static async getUserFeed(
+    userId: unknown,
+    options: GetFeedOptions = {},
+  ): Promise<Record<string, unknown>> {
+    const {
+      limit = 20, before, filter, mode = 'updates',
+    } = options;
+
+    try {
+      const user: UserDoc | null = await User.findById(userId)
+        .select('_id username following followers followedThreads')
+        .lean();
+      if (!user) {
+        return { activities: [], hasMore: false, quick: null };
+      }
+
+      // TASK-170: the dead `members.userId` term is gone here too; see
+      // `getRecap` for the census and the reason.
+      const pods: PodDoc[] = await Pod.find({ members: userId })
+        .select('_id name type')
+        .lean();
+
+      const podMap = new Map(pods.map((p) => [String(p._id), p]));
+      // Rank pods by most-recent message so downstream per-pod fetches (which
+      // are bounded) always cover the rooms where work is actually happening,
+      // not five arbitrary rows of a 40-pod membership (TASK-083 defect 1).
+      const podIds = await ActivityService.rankPodsByRecentActivity(pods.map((p) => p._id));
+
+      const activities = await ActivityService.aggregateActivities(podIds, podMap, user, {
+        limit, before, filter, mode,
+      });
+      const readState = user.activityFeed || {};
+      const withReadState = ActivityService.annotateReadState(activities, readState);
+      const quick = await ActivityService.getQuickOverview(user, pods);
+
+      return {
+        activities: withReadState,
+        hasMore: withReadState.length === limit,
+        quick,
+        unreadCount: withReadState.filter((item) => !item.read).length,
+      };
+    } catch (error) {
+      console.error('Error in getUserFeed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Order podIds by their most recent chat message, newest first. One PG
+   * query for the whole membership; pods with no PG messages (or when PG is
+   * unavailable) keep their original relative order at the tail — degrading
+   * to today's arbitrary order, never to a smaller pod set.
+   */
+  static async rankPodsByRecentActivity(podIds: unknown[]): Promise<unknown[]> {
+    if (!podIds.length) return podIds;
+    try {
+      // eslint-disable-next-line global-require, @typescript-eslint/no-require-imports
+      const { pool } = require('../config/db-pg') as {
+        pool: { query(sql: string, params?: unknown[]): Promise<{ rows: Array<{ pod_id: string }> }> } | null;
+      };
+      if (!pool) return podIds;
+      const ids = podIds.map((id) => String(id));
+      // ::text[] is load-bearing: without the cast Postgres cannot infer the
+      // array's type from `= ANY($1)` and rejects the query — which this
+      // function's catch silently degraded to the OLD arbitrary order, so
+      // the ranking shipped as a no-op (caught live on #1306's verify:
+      // recap still commonly-bot-only because the working pods still never
+      // made the fetch window).
+      const { rows } = await pool.query(
+        'SELECT pod_id, MAX(created_at) AS latest FROM messages WHERE pod_id = ANY($1::text[]) GROUP BY pod_id ORDER BY latest DESC',
+        [ids],
+      );
+      const ranked = rows.map((r) => String(r.pod_id));
+      const rankIndex = new Map(ranked.map((id, i) => [id, i]));
+      return [...podIds].sort((a, b) => {
+        const ia = rankIndex.has(String(a)) ? (rankIndex.get(String(a)) as number) : Number.MAX_SAFE_INTEGER;
+        const ib = rankIndex.has(String(b)) ? (rankIndex.get(String(b)) as number) : Number.MAX_SAFE_INTEGER;
+        return ia - ib;
+      });
+    } catch {
+      return podIds;
+    }
+  }
+
+  static async getDecisionQueue(userId: unknown, options: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    // Recipient-scoped rows are materialized at each source write, then
+    // membership-checked by this indexed reader.
+    // eslint-disable-next-line global-require
+    const AttentionItemService = require('./attentionItemService');
+    return Object.keys(options).length > 0
+      ? AttentionItemService.getOpenQueue(userId, options)
+      : AttentionItemService.getOpenQueue(userId);
+  }
+
+  /**
+   * Read settled DecisionRequest rows for the currently viewed pod. Unlike
+   * the recipient-owned open queue, this projection is pod-scoped because a
+   * ruling is durable workspace history that every current human member can
+   * read after leaving and returning to the room.
+   */
+  static async getDecisionHistory(userId: unknown, options: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    const requestedPodId = typeof options.podId === 'string' ? options.podId.trim() : '';
+    const hasMessageFilter = Array.isArray(options.messageIds);
+    const messageIds = hasMessageFilter
+      ? [...new Set((options.messageIds as unknown[]).map((id) => String(id).trim()).filter(Boolean))]
+      : [];
+    const limit = Number.isInteger(options.limit) ? Math.min(Math.max(options.limit as number, 1), 50) : 50;
+    const offset = Number.isInteger(options.offset) ? Math.max(options.offset as number, 0) : 0;
+    // TASK-170: `members._id` and `members.userId` were the other two spellings
+    // of the same belief (a member is an object with a key) and matched nothing —
+    // no pod carries either shape. The live term is the one below it.
+    const membership = { members: userId };
+    const podQuery = requestedPodId ? { _id: requestedPodId, ...membership } : membership;
+    const pods: PodDoc[] = await Pod.find(podQuery).select('_id name members').lean();
+    if (requestedPodId && pods.length === 0) throw new Error('Access denied');
+    // TASK-170: the post-filter's `member?.userId` arm is the same dead shape as
+    // the query terms above. With the query narrowed, an object-shaped member
+    // can no longer reach this line, so leaving the arm would be a reader that
+    // admits what the selector does not select.
+    const allowedPods = pods.filter((pod) => (
+      (pod.members || []).some((member: any) => String(member?._id || member) === String(userId))
+    ));
+    if (requestedPodId && allowedPods.length === 0) throw new Error('Access denied');
+    const podIds = allowedPods.map((pod) => String(pod._id));
+    if (!podIds.length) {
+      return { items: [], count: 0, offset, limit, remaining: 0, hasMore: false };
+    }
+
+    // eslint-disable-next-line global-require
+    const DecisionRequest = require('../models/DecisionRequest');
+    const historyQuery = {
+      podId: { $in: podIds },
+      status: 'ruled',
+      ...(hasMessageFilter
+        ? { messageId: { $in: messageIds } }
+        : { messageId: { $exists: true } }),
+    };
+    const [count, rows] = await Promise.all([
+      DecisionRequest.countDocuments(historyQuery),
+      DecisionRequest.find(historyQuery)
+        .sort({ updatedAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .lean(),
+    ]);
+    const podNames = new Map(allowedPods.map((pod) => [String(pod._id), pod.name]));
+    const items = rows.map((row: any) => ({
+      id: String(row._id),
+      kind: 'decision',
+      podId: String(row.podId),
+      podName: podNames.get(String(row.podId)) || 'Pod',
+      messageId: row.messageId,
+      threadRootId: row.threadRootId,
+      actorName: row.agentName,
+      title: row.title,
+      detail: row.question,
+      options: row.options || [],
+      status: row.status,
+      ruling: row.ruling ? {
+        value: row.ruling.value,
+        by: row.ruling.byUsername,
+        at: row.ruling.at,
+        messageId: row.ruling.messageId,
+      } : null,
+      createdAt: row.createdAt,
+    }));
+    const remaining = Math.max(count - offset - items.length, 0);
+    return {
+      items,
+      count,
+      offset,
+      limit,
+      remaining,
+      hasMore: remaining > 0,
+    };
+  }
+
+  static async getPodFeed(
+    podId: unknown,
+    userId: unknown,
+    options: GetFeedOptions = {},
+  ): Promise<Record<string, unknown>> {
+    const {
+      limit = 20, before, filter, mode = 'updates',
+    } = options;
+
+    try {
+      const user: UserDoc | null = await User.findById(userId)
+        .select('_id username following followers followedThreads')
+        .lean();
+      if (!user) {
+        throw new Error('Access denied');
+      }
+
+      const pod: PodDoc | null = await Pod.findById(podId).lean();
+      if (!pod) {
+        throw new Error('Pod not found');
+      }
+
+      // The shared rule, not a third hand-rolled copy of it. The local form
+      // this replaces read `String(member.userId) || String(m)` — and
+      // `String(undefined)` is the non-empty string 'undefined', so the
+      // fallback to `String(m)` was unreachable and the predicate admitted
+      // nobody whose membership is a plain ObjectId. In production only the
+      // `createdBy` term it sat beside ever matched (0 of 424 pods carry a
+      // `members.userId` entry), so narrowing that term without this fix would
+      // have refused every caller, members included. The control arm below is
+      // what caught it.
+      if (!isListedPodMember(pod, userId)) {
+        throw new Error('Access denied');
+      }
+
+      const podMap = new Map([[String(podId), pod]]);
+      const activities = await ActivityService.aggregateActivities([podId], podMap, user, {
+        limit, before, filter, mode,
+      });
+      const withReadState = ActivityService.annotateReadState(activities, user.activityFeed || {});
+
+      return {
+        activities: withReadState,
+        hasMore: withReadState.length === limit,
+      };
+    } catch (error) {
+      console.error('Error in getPodFeed:', error);
+      throw error;
+    }
+  }
+
+  static async aggregateActivities(
+    podIds: unknown[],
+    podMap: Map<string, PodDoc>,
+    user: UserDoc,
+    options: GetFeedOptions = {},
+  ): Promise<ActivityItem[]> {
+    const {
+      limit = 20, before, filter, mode = 'updates',
+    } = options;
+    const allActivities: ActivityItem[] = [];
+
+    try {
+      const followingIds = new Set((user.following || []).map((id) => String(id)));
+      const username = user.username || '';
+
+      const storedActivities = await ActivityService.getStoredActivities(podIds, podMap, user, {
+        limit, before, filter,
+      });
+      allActivities.push(...storedActivities);
+
+      if (!filter || filter === 'all' || filter === 'humans' || filter === 'agents') {
+        const messages = await ActivityService.getMessageActivities(podIds, podMap, {
+          limit, before, filter, username, followingIds,
+        });
+        allActivities.push(...messages);
+      }
+
+      if (!filter || filter === 'all' || filter === 'skills') {
+        const summaries = await ActivityService.getSummaryActivities(podIds, podMap, {
+          limit, before,
+        });
+        allActivities.push(...summaries);
+      }
+
+      if (!filter || ['all', 'threads', 'following', 'mentions'].includes(filter)) {
+        const threadUpdates = await ActivityService.getFollowedThreadActivities(user, {
+          limit, before, podMap, followingIds, username,
+        });
+        allActivities.push(...threadUpdates);
+      }
+
+      const seen = new Set<string>();
+      const uniqueActivities = allActivities.filter((a) => {
+        if (seen.has(a.id)) return false;
+        seen.add(a.id);
+        return true;
+      });
+
+      uniqueActivities.sort(
+        (a, b) => new Date(b.timestamp as string).getTime() - new Date(a.timestamp as string).getTime(),
+      );
+      const filtered = uniqueActivities.filter((activity) => ActivityService.matchesModeAndFilter(activity, {
+        mode,
+        filter,
+      }));
+
+      return filtered.slice(0, limit);
+    } catch (error) {
+      console.error('Error aggregating activities:', error);
+      return [];
+    }
+  }
+
+  static async getStoredActivities(
+    podIds: unknown[],
+    podMap: Map<string, PodDoc>,
+    user: UserDoc,
+    options: GetFeedOptions = {},
+  ): Promise<ActivityItem[]> {
+    const { limit = 20, before, filter } = options;
+    const activities: ActivityItem[] = [];
+
+    try {
+      const query: Record<string, unknown> = { deleted: { $ne: true } };
+      const scopeFilters: unknown[] = [];
+      if (podIds.length > 0) {
+        scopeFilters.push({ podId: { $in: podIds } });
+      }
+      scopeFilters.push({
+        visibility: 'private',
+        $or: [
+          { 'actor.id': user._id },
+          { 'involves.id': user._id },
+        ],
+      });
+      query.$or = scopeFilters;
+
+      if (before) {
+        query.createdAt = { $lt: new Date(before) };
+      }
+
+      if (filter === 'humans') {
+        query['actor.type'] = 'human';
+      } else if (filter === 'agents') {
+        query['actor.type'] = { $in: ['agent', 'system'] };
+      } else if (filter === 'skills') {
+        query.type = 'skill_created';
+      }
+
+      const stored: Array<Record<string, unknown>> = await Activity.find(query)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean();
+
+      stored.forEach((activity) => {
+        const pod = podMap.get(String(activity.podId));
+        const actor = activity.actor as ActorInfo;
+        const followingIds = new Set((user.following || []).map((id) => String(id)));
+        const replies = (activity.replies as Array<Record<string, unknown>> || []);
+
+        activities.push({
+          id: String(activity._id),
+          type: activity.type as string,
+          actor,
+          action: activity.action as string,
+          content: activity.content as string | undefined,
+          preview: (activity.content as string | undefined)?.substring(0, 200),
+          timestamp: activity.createdAt as Date,
+          pod: pod ? { id: String(pod._id), name: pod.name } : null,
+          target: activity.target as ActivityItem['target'],
+          approval: activity.approval,
+          agentMetadata: activity.agentMetadata as ActivityItem['agentMetadata'],
+          involves: activity.involves,
+          reactions: {
+            likes: (activity.reactions as { likes?: number })?.likes || 0,
+            liked: false,
+          },
+          replyCount: (activity.replyCount as number) || 0,
+          replies: replies.slice(0, 3).map((r) => ({
+            actor: {
+              id: String(r.actorId),
+              name: r.actorName,
+              type: r.actorType,
+            },
+            content: r.content,
+            timestamp: r.createdAt,
+          })),
+          flags: ActivityService.computeFlags({
+            actor,
+            type: activity.type as string,
+            action: activity.action as string,
+            content: activity.content as string,
+            target: activity.target as { description?: string },
+            username: user.username,
+            followingIds,
+          }),
+        });
+      });
+    } catch (error) {
+      console.error('Error getting stored activities:', error);
+    }
+
+    return activities;
+  }
+
+  static async getMessageActivities(
+    podIds: unknown[],
+    podMap: Map<string, PodDoc>,
+    options: GetFeedOptions & {
+      username?: string;
+      followingIds?: Set<string>;
+    } = {},
+  ): Promise<ActivityItem[]> {
+    const {
+      limit = 20, before, filter, username = '', followingIds = new Set(),
+    } = options;
+    const activities: ActivityItem[] = [];
+
+    try {
+      let messages: Array<Record<string, unknown>> = [];
+
+      if (PGMessage) {
+        try {
+          // TASK-083 defect 1's root cause lived here: `.slice(0, 5)` over
+          // podIds in ARBITRARY Mongo order meant a member of ~40 pods got
+          // messages from five random rooms — the working pods never made
+          // the cut and the feed read as empty of real agent activity. The
+          // caller (getUserFeed) now ranks podIds by recent message time
+          // before this runs; the slice widens to the ranked top 12, which
+          // bounds the fan-out while guaranteeing the ACTIVE rooms are in.
+          // String(podId) is the WHOLE fix for a bug older than this file's
+          // v2 rework: callers pass Mongo ObjectId OBJECTS, and pg serializes
+          // an object into something that matches no VARCHAR pod_id — zero
+          // rows, silently, for every pod, forever. Message activities have
+          // been empty since this path shipped; the summary flood and bot
+          // noise the earlier TASK-083 fixes removed were just what grew in
+          // the vacuum. (Verified live: findByPodId(oid) -> 0 rows,
+          // findByPodId(String(oid)) -> rows.)
+          const podMessagesList = await Promise.all(
+            podIds.slice(0, 12).map((podId) => (PGMessage as { findByPodId(id: unknown, limit: number): Promise<unknown[]> }).findByPodId(String(podId), limit)),
+          );
+          messages = podMessagesList.flat() as Array<Record<string, unknown>>;
+        } catch (e) {
+          console.warn('PG message fetch failed, trying MongoDB');
+        }
+      }
+
+      if (messages.length === 0 && Message) {
+        const query: Record<string, unknown> = { podId: { $in: podIds } };
+        if (before) {
+          query.createdAt = { $lt: new Date(before) };
+        }
+
+        messages = await (Message as { find(q: unknown): { sort(s: unknown): { limit(n: number): { populate(f: string, s: string): { lean(): Promise<Array<Record<string, unknown>>> } } } } })
+          .find(query)
+          .sort({ createdAt: -1 })
+          .limit(limit)
+          .populate('userId', 'username profilePicture')
+          .lean();
+      }
+
+      messages.forEach((msg) => {
+        const userId = msg.userId as Record<string, unknown> | undefined;
+        const authorName = (msg.username as string) || (userId?.username as string) || 'Unknown';
+        // PG rows carry `is_bot` as a COLUMN; only Mongo rows populate the
+        // userId object. Checking only `userId?.isBot` classified every
+        // PG-authored agent message as human, and the agent-only recap
+        // dropped all of them (#1307's live verify: recap empty).
+        const isAgent = msg.is_bot === true
+          || userId?.isBot === true
+          || ActivityService.isAgentUsername(authorName);
+
+        // System plumbing is not activity (TASK-083 defect 2).
+        if (SYSTEM_BOT_NAMES.has(authorName.toLowerCase())) return;
+        if (filter === 'humans' && isAgent) return;
+        if (filter === 'agents' && !isAgent) return;
+
+        const pod = podMap.get(String(msg.podId || msg.pod_id || ''));
+
+        activities.push({
+          id: `msg_${msg._id || msg.id}`,
+          type: 'message',
+          actor: {
+            id: String(userId?._id || msg.user_id),
+            name: authorName,
+            type: isAgent ? 'agent' : 'human',
+            verified: authorName === 'commonly-ai-agent' || authorName === 'commonly-bot',
+            profilePicture: (msg.profile_picture as string) || (userId?.profilePicture as string),
+          },
+          action: 'message',
+          content: (msg.content || msg.text) as string | undefined,
+          preview: String(msg.content || msg.text || '').substring(0, 200),
+          timestamp: (msg.createdAt || msg.created_at) as Date,
+          pod: pod ? { id: String(pod._id), name: pod.name } : null,
+          reactions: { likes: 0, liked: false },
+          replyCount: 0,
+          replies: [],
+          flags: ActivityService.computeFlags({
+            actor: {
+              id: String(userId?._id || msg.user_id),
+              type: isAgent ? 'agent' : 'human',
+            },
+            type: 'message',
+            action: 'message',
+            content: String(msg.content || msg.text || ''),
+            username,
+            followingIds,
+          }),
+        });
+      });
+    } catch (error) {
+      console.error('Error getting message activities:', error);
+    }
+
+    return activities;
+  }
+
+  static async getSummaryActivities(
+    podIds: unknown[],
+    podMap: Map<string, PodDoc>,
+    options: { limit?: number; before?: string } = {},
+  ): Promise<ActivityItem[]> {
+    const { limit = 10, before } = options;
+    const activities: ActivityItem[] = [];
+
+    try {
+      const query: Record<string, unknown> = {
+        podId: { $in: podIds },
+        type: { $in: ['skills', 'chats', 'daily-digest'] },
+      };
+      if (before) {
+        query.createdAt = { $lt: new Date(before) };
+      }
+
+      const summaries: Array<Record<string, unknown>> = await Summary.find(query)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean();
+
+      summaries.forEach((summary) => {
+        const pod = podMap.get(String(summary.podId));
+        const isSkill = summary.type === 'skills';
+
+        activities.push({
+          id: `sum_${summary._id}`,
+          type: isSkill ? 'skill_created' : 'summary',
+          actor: {
+            id: 'system',
+            name: 'commonly-bot',
+            type: 'agent',
+            verified: true,
+          },
+          action: isSkill ? 'skill_created' : 'message',
+          content: summary.content as string | undefined,
+          preview: (summary.content as string | undefined)?.substring(0, 200),
+          timestamp: summary.createdAt as Date,
+          pod: pod ? { id: String(pod._id), name: pod.name } : null,
+          target: isSkill
+            ? {
+              title: `${pod?.name || 'Pod'} Skills`,
+              description: (summary.content as string | undefined)?.substring(0, 100),
+            }
+            : null,
+          reactions: { likes: 0, liked: false },
+          replyCount: 0,
+          agentMetadata: {
+            sources: (summary.metadata as { sources?: unknown[] })?.sources || [],
+          },
+          replies: [],
+          flags: {
+            isAgentAction: true,
+            isMention: false,
+            isFollowing: false,
+            isThreadUpdate: false,
+          },
+        });
+      });
+    } catch (error) {
+      console.error('Error getting summary activities:', error);
+    }
+
+    return activities;
+  }
+
+  static computeFlags(options: ComputeFlagsOptions): ActivityFlags {
+    const {
+      actor, type, action, content, target, username, followingIds = new Set(),
+    } = options;
+    const actorId = actor?.id ? String(actor.id) : '';
+    const lowerContent = `${content || ''} ${target?.description || ''}`.toLowerCase();
+    const lowerUsername = (username || '').toLowerCase();
+    const mentionNeedle = lowerUsername ? `@${lowerUsername}` : '';
+
+    return {
+      isAgentAction: actor?.type === 'agent' || actor?.type === 'system' || type === 'agent_action',
+      isMention: Boolean(mentionNeedle && lowerContent.includes(mentionNeedle)),
+      isFollowing: Boolean(actorId && followingIds.has(actorId)),
+      isThreadUpdate: action === 'thread_comment' || action === 'thread_followed' || type === 'thread_update',
+    };
+  }
+
+  static annotateReadState(
+    activities: ActivityItem[] = [],
+    readState: UserDoc['activityFeed'] = {},
+  ): ActivityItem[] {
+    const lastViewedAt = readState?.lastViewedAt ? new Date(readState.lastViewedAt as string) : new Date(0);
+    const readItemIds = new Set((readState?.readItemIds || []).map((id) => String(id)));
+    return activities.map((activity) => {
+      const activityTime = activity?.timestamp ? new Date(activity.timestamp as string) : new Date(0);
+      const isExplicitlyRead = readItemIds.has(String(activity.id));
+      const read = isExplicitlyRead || activityTime <= lastViewedAt;
+      return { ...activity, read };
+    });
+  }
+
+  static async markRead(userId: unknown, options: { activityId?: string | null; all?: boolean } = {}): Promise<Record<string, unknown>> {
+    const { activityId = null, all = false } = options;
+    const user = await User.findById(userId).select('_id activityFeed');
+    if (!user) return { success: false, error: 'User not found' };
+
+    if (!user.activityFeed) {
+      user.activityFeed = { lastViewedAt: new Date(0), readItemIds: [] };
+    }
+
+    if (all) {
+      user.activityFeed.lastViewedAt = new Date();
+      user.activityFeed.readItemIds = [];
+    } else if (activityId) {
+      const next = new Set((user.activityFeed.readItemIds || []).map((id: unknown) => String(id)));
+      next.add(String(activityId));
+      user.activityFeed.readItemIds = Array.from(next).slice(-500);
+    }
+
+    await user.save();
+    return {
+      success: true,
+      lastViewedAt: user.activityFeed.lastViewedAt,
+      readItemIds: user.activityFeed.readItemIds || [],
+    };
+  }
+
+  static async acknowledgeMention(userId: unknown, activityId: string): Promise<Record<string, unknown>> {
+    // eslint-disable-next-line global-require
+    const AttentionItemService = require('./attentionItemService');
+    return AttentionItemService.acknowledgeAttention(userId, activityId);
+  }
+
+  static async getUnreadCount(userId: unknown, options: GetFeedOptions = {}): Promise<{ unreadCount: number }> {
+    const activitiesResult = await ActivityService.getUserFeed(userId, {
+      ...options,
+      limit: 100,
+    });
+    const unreadCount = (activitiesResult.activities as ActivityItem[] || []).filter((item) => !item.read).length;
+    return { unreadCount };
+  }
+
+  static matchesModeAndFilter(
+    activity: ActivityItem,
+    options: { mode?: string; filter?: string } = {},
+  ): boolean {
+    const { mode = 'updates', filter = 'all' } = options;
+    const flags = activity.flags || {} as ActivityFlags;
+    const isAgent = flags.isAgentAction || activity.actor?.type === 'agent' || activity.actor?.type === 'system';
+
+    if (mode === 'actions') {
+      if (filter === 'agents') return isAgent;
+      if (filter === 'humans') return !isAgent;
+      if (filter === 'skills') return activity.type === 'skill_created' || activity.type === 'summary';
+      return isAgent || activity.type === 'agent_action' || activity.type === 'skill_created';
+    }
+
+    if (filter === 'mentions') return flags.isMention;
+    if (filter === 'following') return flags.isFollowing || activity.action === 'user_followed';
+    if (filter === 'threads') return flags.isThreadUpdate;
+    if (filter === 'pods') return Boolean(activity.pod?.id);
+    if (filter === 'humans') return !isAgent;
+    if (filter === 'agents') return isAgent;
+    return true;
+  }
+
+  static async getFollowedThreadActivities(
+    user: UserDoc,
+    options: {
+      before?: string;
+      podMap?: Map<string, PodDoc>;
+      followingIds?: Set<string>;
+      username?: string;
+      limit?: number;
+    } = {},
+  ): Promise<ActivityItem[]> {
+    const {
+      before, podMap = new Map(), followingIds = new Set(), username, limit = 20,
+    } = options;
+
+    const followedThreads = Array.isArray(user.followedThreads) ? user.followedThreads : [];
+    if (!followedThreads.length) return [];
+
+    const threadMap = new Map(
+      followedThreads.map((thread) => [String(thread.postId), thread.followedAt || new Date(0)]),
+    );
+    const postIds = Array.from(threadMap.keys());
+
+    const posts: Array<Record<string, unknown>> = await Post.find({ _id: { $in: postIds } })
+      .select('_id podId userId content comments createdAt')
+      .populate('userId', 'username profilePicture')
+      .populate('podId', 'name type')
+      .populate('comments.userId', 'username profilePicture')
+      .lean();
+
+    const activities: ActivityItem[] = [];
+    posts.forEach((post) => {
+      const followedAt = threadMap.get(String(post._id)) || new Date(0);
+      const comments = post.comments as Array<Record<string, unknown>> || [];
+
+      const relevantComments = comments
+        .filter((comment) => {
+          const createdAt = comment.createdAt ? new Date(comment.createdAt as string) : null;
+          if (!createdAt) return false;
+          if (before && createdAt >= new Date(before)) return false;
+          if (createdAt <= followedAt) return false;
+          const commentUserId = comment.userId as Record<string, unknown> | undefined;
+          return String(commentUserId?._id || comment.userId) !== String(user._id);
+        })
+        .sort((a, b) => new Date(b.createdAt as string).getTime() - new Date(a.createdAt as string).getTime());
+
+      if (!relevantComments.length) return;
+
+      const latest = relevantComments[0];
+      const postPodId = post.podId as Record<string, unknown> | null;
+      const pod: { id: string; name: string } | PodDoc | undefined = postPodId?._id
+        ? { id: String(postPodId._id), name: postPodId.name as string }
+        : podMap.get(String(post.podId));
+
+      const latestUserId = latest.userId as Record<string, unknown> | undefined;
+      const actor: ActorInfo = {
+        id: String(latestUserId?._id || latestUserId || 'unknown'),
+        name: (latestUserId?.username as string) || 'User',
+        type: ActivityService.isAgentUsername(latestUserId?.username as string) ? 'agent' : 'human',
+        verified: ActivityService.isAgentUsername(latestUserId?.username as string),
+        profilePicture: latestUserId?.profilePicture as string | undefined,
+      };
+
+      activities.push({
+        id: `thread_${post._id}_${latest._id || latest.createdAt}`,
+        type: 'thread_update',
+        actor,
+        action: 'thread_comment',
+        content: latest.text as string | undefined,
+        preview: (latest.text as string | undefined)?.substring(0, 200),
+        timestamp: latest.createdAt as Date,
+        pod: pod ? { id: String((pod as PodDoc)._id || (pod as { id: string }).id), name: (pod as PodDoc).name || (pod as { name: string }).name } : null,
+        target: {
+          title: `Thread update: ${String(post.content || '').slice(0, 80)}`,
+          description:
+            `${relevantComments.length} new repl${relevantComments.length === 1 ? 'y' : 'ies'} `
+            + 'since you followed',
+          url: `/thread/${post._id}`,
+        },
+        reactions: { likes: 0, liked: false },
+        replyCount: 0,
+        replies: [],
+        flags: ActivityService.computeFlags({
+          actor,
+          type: 'thread_update',
+          action: 'thread_comment',
+          content: latest.text as string,
+          target: { description: post.content as string },
+          username,
+          followingIds,
+        }),
+      });
+    });
+
+    activities.sort(
+      (a, b) => new Date(b.timestamp as string).getTime() - new Date(a.timestamp as string).getTime(),
+    );
+    return activities.slice(0, limit);
+  }
+
+  static async getQuickOverview(user: UserDoc, pods: PodDoc[] = []): Promise<Record<string, unknown>> {
+    const recentPods = (pods || [])
+      .slice()
+      .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime())
+      .slice(0, 6)
+      .map((pod) => ({
+        id: String(pod._id),
+        name: pod.name,
+        type: pod.type,
+        updatedAt: pod.updatedAt || pod.createdAt,
+        membersCount: Array.isArray(pod.members) ? pod.members.length : 0,
+      }));
+
+    const followedThreads = Array.isArray(user.followedThreads) ? user.followedThreads : [];
+    const followedIds = followedThreads.map((thread) => thread.postId).filter(Boolean);
+    let followedThreadItems: unknown[] = [];
+    if (followedIds.length > 0) {
+      const followedAtMap = new Map(
+        followedThreads.map((thread) => [String(thread.postId), thread.followedAt || new Date(0)]),
+      );
+      const posts: Array<Record<string, unknown>> = await Post.find({ _id: { $in: followedIds } })
+        .select('_id content comments createdAt')
+        .sort({ createdAt: -1 })
+        .lean();
+
+      followedThreadItems = posts.slice(0, 6).map((post) => {
+        const followedAt = followedAtMap.get(String(post._id)) || new Date(0);
+        const comments = post.comments as Array<Record<string, unknown>> || [];
+        const newReplies = comments.filter((comment) => (
+          comment.createdAt && new Date(comment.createdAt as string) > followedAt
+          && String(comment.userId) !== String(user._id)
+        )).length;
+        return {
+          postId: String(post._id),
+          preview: String(post.content || '').slice(0, 120),
+          followedAt,
+          newReplies,
+          url: `/thread/${post._id}`,
+        };
+      });
+    }
+
+    return {
+      social: {
+        followers: Array.isArray(user.followers) ? user.followers.length : 0,
+        following: Array.isArray(user.following) ? user.following.length : 0,
+      },
+      recentPods,
+      followedThreads: followedThreadItems,
+    };
+  }
+
+  static isAgentUsername(username: string | undefined | null): boolean {
+    if (!username) return false;
+    const lower = username.toLowerCase();
+    return (
+      lower.includes('-bot')
+      || lower.includes('_bot')
+      || lower.endsWith('bot')
+      || lower === 'moltbot'
+      || lower === 'commonly-bot'
+      || lower === 'commonly-ai-agent'
+    );
+  }
+
+  static async createMessageActivity(
+    message: unknown,
+    podId: unknown,
+    user: unknown,
+  ): Promise<unknown> {
+    try {
+      const pod = await Pod.findById(podId).select('_id name').lean();
+      if (!pod) return null;
+      return Activity.createFromMessage(message, pod, user);
+    } catch (error) {
+      console.error('Error creating message activity:', error);
+      return null;
+    }
+  }
+
+  static async createSkillActivity(summary: unknown, podId: unknown): Promise<unknown> {
+    try {
+      const pod = await Pod.findById(podId).select('_id name').lean();
+      if (!pod) return null;
+      return Activity.createSkillActivity(summary, pod);
+    } catch (error) {
+      console.error('Error creating skill activity:', error);
+      return null;
+    }
+  }
+
+  static async createApprovalRequest(options: unknown): Promise<unknown> {
+    try {
+      return Activity.createApprovalRequest(options);
+    } catch (error) {
+      console.error('Error creating approval request:', error);
+      return null;
+    }
+  }
+
+  static async toggleLike(activityId: string, userId: unknown): Promise<Record<string, unknown>> {
+    try {
+      if (activityId.startsWith('msg_') || activityId.startsWith('sum_')) {
+        return { success: true, liked: true };
+      }
+
+      const activity = await Activity.findById(activityId);
+      if (!activity) {
+        return { success: false, error: 'Activity not found' };
+      }
+
+      const liked = await activity.toggleLike(userId);
+      return { success: true, liked, likes: activity.reactions.likes };
+    } catch (error) {
+      const err = error as { message?: string };
+      console.error('Error toggling like:', error);
+      return { success: false, error: err.message };
+    }
+  }
+
+  static async addReply(activityId: string, userId: unknown, content: string): Promise<Record<string, unknown>> {
+    try {
+      const user = await User.findById(userId).select('username').lean() as { username?: string } | null;
+      const userName = user?.username || 'User';
+      const isAgent = ActivityService.isAgentUsername(userName);
+
+      if (activityId.startsWith('msg_') || activityId.startsWith('sum_')) {
+        return {
+          success: true,
+          reply: {
+            id: `reply_${Date.now()}`,
+            actor: {
+              id: String(userId),
+              name: userName,
+              type: isAgent ? 'agent' : 'human',
+            },
+            content,
+            timestamp: new Date().toISOString(),
+          },
+        };
+      }
+
+      const activity = await Activity.findById(activityId);
+      if (!activity) {
+        return { success: false, error: 'Activity not found' };
+      }
+
+      await activity.addReply(userId, userName, content, isAgent);
+
+      return {
+        success: true,
+        reply: {
+          id: activity.replies[activity.replies.length - 1]._id.toString(),
+          actor: {
+            id: String(userId),
+            name: userName,
+            type: isAgent ? 'agent' : 'human',
+          },
+          content,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    } catch (error) {
+      const err = error as { message?: string };
+      console.error('Error adding reply:', error);
+      return { success: false, error: err.message };
+    }
+  }
+
+  static async approveActivity(activityId: string, userId: unknown, notes: string): Promise<Record<string, unknown>> {
+    try {
+      const activity = await Activity.findById(activityId);
+      if (!activity) {
+        return { success: false, error: 'Activity not found' };
+      }
+
+      if (activity.type !== 'approval_needed') {
+        return { success: false, error: 'Activity is not an approval request' };
+      }
+
+      const membershipError = await ActivityService.requireActivityApprovalMember(activity, userId);
+      if (membershipError) return membershipError;
+
+      await activity.approve(userId, notes);
+      // eslint-disable-next-line global-require
+      const { resolve } = require('./attentionItemService');
+      await resolve('approval', activity._id);
+      return { success: true, status: 'approved' };
+    } catch (error) {
+      const err = error as { message?: string };
+      console.error('Error approving activity:', error);
+      return { success: false, error: err.message };
+    }
+  }
+
+  static async rejectActivity(activityId: string, userId: unknown, notes: string): Promise<Record<string, unknown>> {
+    try {
+      const activity = await Activity.findById(activityId);
+      if (!activity) {
+        return { success: false, error: 'Activity not found' };
+      }
+
+      if (activity.type !== 'approval_needed') {
+        return { success: false, error: 'Activity is not an approval request' };
+      }
+
+      const membershipError = await ActivityService.requireActivityApprovalMember(activity, userId);
+      if (membershipError) return membershipError;
+
+      await activity.reject(userId, notes);
+      // eslint-disable-next-line global-require
+      const { resolve } = require('./attentionItemService');
+      await resolve('approval', activity._id);
+      return { success: true, status: 'rejected' };
+    } catch (error) {
+      const err = error as { message?: string };
+      console.error('Error rejecting activity:', error);
+      return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Legacy Activity approval rows predate ApprovalAction.ownerUserId. Their
+   * read rule is pod membership, so write authorization uses the identical
+   * predicate — `isListedPodMember`. TASK-166 removed the creator fallback on
+   * both sides at once: it stood in for rows created before creators were added
+   * to `members` on save, but a creator who has left is not a member, and
+   * `leavePod` keeps `createdBy` while removing the listing. Do this at write
+   * time: a stale or forged client must not turn an Activity id into broad
+   * authenticated approval authority.
+   */
+  private static async requireActivityApprovalMember(
+    activity: { podId?: unknown },
+    userId: unknown,
+  ): Promise<Record<string, unknown> | null> {
+    const rawPodId = activity.podId as { _id?: unknown } | undefined;
+    const podId = rawPodId?._id || activity.podId;
+    const pod = await Pod.findById(podId).select('members').lean();
+    if (!pod) return { success: false, status: 404, error: 'Approval pod not found' };
+    if (!isListedPodMember(pod, userId)) {
+      return { success: false, status: 403, error: 'Only pod members can decide this' };
+    }
+    return null;
+  }
+
+  static async getPendingApprovals(userId: unknown): Promise<unknown[]> {
+    try {
+      const pods: Array<{ _id: unknown }> = await Pod.find({
+        // Pending approvals belong to every pod member. `members` is an
+        // ObjectId[] (not a role-bearing object), so querying
+        // `members.userId` or `members.role` silently excludes members.
+        //
+        // TASK-166: no `createdBy` term. It used to stand in for legacy rows
+        // created before creators were added to `members` on save, but a
+        // creator who leaves is not a member — and `leavePod` keeps the field.
+        // A pod whose creator is unlisted is now absent from their queue here,
+        // which is the same rule the write gate above applies.
+        $or: [
+          { members: userId },
+        ],
+      })
+        .select('_id')
+        .lean();
+
+      const podIds = pods.map((p) => p._id);
+      return Activity.getPendingApprovals(podIds);
+    } catch (error) {
+      console.error('Error getting pending approvals:', error);
+      return [];
+    }
+  }
+
+  static async seedPodActivities(podId: unknown, userId: unknown): Promise<Record<string, unknown>> {
+    try {
+      const pod = await Pod.findById(podId).lean();
+      if (!pod) return { success: false, error: 'Pod not found' };
+
+      const user = await User.findById(userId).lean() as { username?: string } | null;
+      if (!user) return { success: false, error: 'User not found' };
+
+      const activities: unknown[] = [];
+
+      activities.push(
+        await Activity.create({
+          type: 'message',
+          actor: {
+            id: userId,
+            name: user.username,
+            type: 'human',
+            verified: false,
+          },
+          action: 'message',
+          content: 'Just pushed the new authentication flow. Can someone review the PR?',
+          podId,
+          reactions: { likes: 3 },
+          replyCount: 1,
+          replies: [
+            {
+              actorId: null,
+              actorName: 'Code Reviewer',
+              actorType: 'agent',
+              content: "I've analyzed the PR. Found 2 potential issues with the token refresh logic.",
+              createdAt: new Date(Date.now() - 4 * 60 * 1000),
+            },
+          ],
+        }),
+      );
+
+      activities.push(
+        await Activity.create({
+          type: 'skill_created',
+          actor: {
+            id: null,
+            name: 'Moltbot',
+            type: 'agent',
+            verified: true,
+          },
+          action: 'skill_created',
+          content: 'Created a new skill from recent discussions',
+          podId,
+          target: {
+            title: 'API Rate Limiting Best Practices',
+            description: 'Guidelines for implementing rate limiting in REST APIs',
+          },
+          agentMetadata: {
+            agentName: 'moltbot',
+            sources: [{ title: 'Backend discussion' }, { title: 'API design doc' }],
+          },
+          reactions: { likes: 7 },
+        }),
+      );
+
+      activities.push(
+        await Activity.create({
+          type: 'approval_needed',
+          actor: {
+            id: null,
+            name: 'commonly-bot',
+            type: 'system',
+            verified: true,
+          },
+          action: 'approval_needed',
+          content: 'An agent is requesting access to the Production pod',
+          podId,
+          approval: {
+            status: 'pending',
+            requestedBy: userId,
+            requestedScopes: ['context:read', 'memory:write'],
+          },
+          agentMetadata: {
+            agentName: 'analytics-bot',
+          },
+        }),
+      );
+
+      activities.push(
+        await Activity.create({
+          type: 'message',
+          actor: {
+            id: null,
+            name: 'Meeting Notes',
+            type: 'agent',
+            verified: false,
+          },
+          action: 'message',
+          content:
+            'Sprint Planning Summary\n\n- 12 stories planned for this sprint\n'
+            + '- Focus areas: Authentication, API performance\n'
+            + '- Blockers discussed: CI/CD pipeline issues\n\n'
+            + 'Action items assigned to 5 team members.',
+          podId,
+          reactions: { likes: 12 },
+          replyCount: 3,
+        }),
+      );
+
+      return { success: true, count: activities.length };
+    } catch (error) {
+      const err = error as { message?: string };
+      console.error('Error seeding activities:', error);
+      return { success: false, error: err.message };
+    }
+  }
+}
+
+module.exports = ActivityService;
+
+export {};

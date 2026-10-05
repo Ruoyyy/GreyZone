@@ -1,0 +1,319 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, v1.0.x ]
+  # No branches filter on pull_request: stacked PRs (base = another feature
+  # branch) previously got ZERO test runs — every number on them was
+  # single-sourced to the author's local sweep, and the 2026-08-22 threading
+  # train shipped two real failures that only surfaced once CI was dispatched
+  # by hand. Merge-to-main guards (base-freshness, version-guard) stay scoped
+  # to main; the test tiers run for every PR regardless of base.
+  pull_request:
+  # The merge queue on main runs the required check (Test & Coverage) on the
+  # queue's own commit, which is main plus the PRs ahead of it. Without this
+  # trigger a queued PR never gets that check and the queue stalls. The
+  # concurrency group below already falls back to github.sha for this event,
+  # so each queue commit gets its own group.
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The push fallback is github.sha, NOT github.ref. On a push event `github.ref`
+# is the *branch*, so every commit merged to main shared one concurrency group
+# and each merge cancelled the previous commit's still-running verification.
+# Measured across 39 Tests runs on main (2026-08-04 → 08-06): 18 cancelled.
+#
+# The loss is ordered by job depth, not random, which is what makes it worth
+# fixing rather than tolerating:
+#
+#   Chart Lint        no needs,  ~8s      survived 12 of 14
+#   Test & Coverage   no needs,  ~5.5min  survived  3 of 14
+#   Service Tests     needs:test, starts ~5.5min in   survived 0 of 14
+#
+# Service Tests is the ADR-009 Tier 1 real-DB tier — the deepest job, and the
+# only one that never once completed in a cancelled run. So the tier main was
+# silently skipping is the tier hardest to reproduce anywhere else.
+#
+# Per-SHA grouping lets every commit finish; PR runs still supersede correctly
+# because pull_request.number short-circuits before the fallback is read.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test & Coverage
+    runs-on: ubuntu-latest
+
+    env:
+      JWT_SECRET: test-jwt-secret
+      SENDGRID_API_KEY: fake-api-key
+      SENDGRID_FROM_EMAIL: test@example.com
+      FRONTEND_URL: http://localhost:3000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Install dependencies
+        run: |
+          npm ci --include=dev
+          cd backend
+          npm ci --include=dev
+          cd ../frontend
+          npm install --legacy-peer-deps
+          cd ../commonly-mcp
+          npm ci --include=dev
+          cd ../cli
+          npm ci --include=dev
+          cd ../workers/agent-runtime
+          npm ci --include=dev
+          cd ../..
+
+      - name: Verify moltbot tool contract
+        run: npm run verify:moltbot-tools
+
+      # Executes the litellm boot block's patch runner against a two-tree fixture,
+      # so the 79-hour SEV class (patcher and proxy resolving `import litellm` to
+      # different copies) fails here instead of in a crash-looping pod. Needs a
+      # python3 on PATH — ubuntu-latest ships one; if that ever stops being true
+      # the guard says so by name rather than passing quietly.
+      - name: Verify litellm patch runner
+        run: npm run verify:litellm-patch-runner
+
+      - name: Backend TypeScript check
+        run: |
+          cd backend
+          npm run tsc:check
+
+      - name: Frontend TypeScript check
+        run: |
+          cd frontend
+          npm run typecheck
+
+      # packages/types has zero dependencies and zero external imports, so it
+      # needs no install of its own — it typechecks with the compiler the
+      # backend step already installed. Gated now because it is green now;
+      # that is the only moment a gate is free.
+      #
+      # packages/commonly-apps is deliberately NOT gated here. It defines the
+      # same tsc:check script and is equally uninvoked, but it needs @types/node
+      # and is not npm ci'd by this job, so adding it means adding an install.
+      # Its actual state is unknown, not assumed green. Separate change.
+      - name: Shared types TypeScript check
+        run: |
+          cd packages/types
+          ../../backend/node_modules/.bin/tsc --noEmit -p tsconfig.json
+
+      - name: Run backend tests with coverage
+        run: |
+          cd backend
+          npx jest --coverage --forceExit
+
+      - name: Run frontend tests with coverage
+        run: |
+          cd frontend
+          npx jest --coverage --watchAll=false --forceExit
+          node --test scripts/generate-seo-pages.test.mjs scripts/nginx-routing.test.mjs
+
+      - name: Run commonly-mcp tests
+        run: |
+          cd commonly-mcp
+          npm test
+
+      # Backend `.ts` lint. TASK-024 measured this reaching 0 of 286 files:
+      # `npm run lint` was scoped `--ext .js`, every backend `lint-staged` glob
+      # had gone stale to zero as its files were converted, and no CI job ran
+      # backend lint at all.
+      #
+      # Deliberately `lint:ts`, NOT `npm run lint`. The backend `.js` corpus is
+      # 2,279 errors across 282 files (277 of them under `__tests__`) and has
+      # been red on main for some time — wiring the existing script in would
+      # fail on the first run. That half is in the burn-down task, not here.
+      - name: Backend TypeScript lint
+        run: |
+          cd backend
+          npm run lint:ts
+
+      - name: Run CLI lint
+        run: |
+          cd cli
+          npm run lint
+
+      - name: Run CLI tests
+        run: |
+          cd cli
+          npm test
+
+      - name: Run hosted-runtime tests (ADR-023 W2)
+        run: |
+          cd workers/agent-runtime
+          npm run typecheck
+          npm test
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: backend/coverage/
+
+  service-test:
+    name: Service Tests (Tier 1 — real DBs)
+    runs-on: ubuntu-latest
+    needs: test
+
+    services:
+      mongo:
+        image: mongo:7
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand(\"ping\").ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      postgres:
+        image: postgres:16
+        ports: ["5432:5432"]
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: commonly-test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      JWT_SECRET: test-jwt-secret
+      SENDGRID_API_KEY: fake-api-key
+      SENDGRID_FROM_EMAIL: test@example.com
+      FRONTEND_URL: http://localhost:3000
+      INTEGRATION_TEST: "true"
+      MONGO_URI: mongodb://localhost:27017/commonly-test
+      PG_HOST: localhost
+      PG_PORT: "5432"
+      PG_DATABASE: commonly-test
+      PG_USER: postgres
+      PG_PASSWORD: postgres
+      PG_SSL_ENABLED: "false"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Install backend dependencies
+        run: cd backend && npm ci --include=dev
+
+      - name: Run service tests (Tier 1)
+        run: |
+          cd backend
+          npx jest --testPathPattern="__tests__/service" --forceExit --runInBand
+
+  chart-lint:
+    name: Chart Lint (Tier 1.5)
+    runs-on: ubuntu-latest
+
+    env:
+      # Pin CRD schemas to a known commit to avoid drift.
+      # Update manually by running: gh api /repos/datreeio/CRDs-catalog/commits/main --jq .sha
+      CRDS_CATALOG_SHA: 15e9b72701ce617b0ac15da611a7fb2e54b980dd
+      KUBECONFORM_VERSION: v0.7.0
+      YQ_VERSION: v4.44.3
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" -o kc.tgz
+          sudo tar -xzf kc.tgz -C /usr/local/bin/ kubeconform
+          kubeconform -v
+
+      - name: Install yq
+        run: |
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -o yq
+          chmod +x yq
+          sudo mv yq /usr/local/bin/yq
+          yq --version
+
+      - name: Render dev chart
+        run: |
+          helm template commonly-dev k8s/helm/commonly \
+            -f k8s/helm/commonly/values.yaml \
+            -f k8s/helm/commonly/values-dev.yaml \
+            > /tmp/dev-rendered.yaml
+
+      - name: Lint rendered dev chart
+        run: |
+          kubeconform --strict --summary -output text \
+            --schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRDS_CATALOG_SHA}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+            --schema-location default \
+            /tmp/dev-rendered.yaml
+
+      - name: Assert reliability rollout and scheduling invariants
+        run: |
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "backend") | .spec.strategy.type' /tmp/dev-rendered.yaml)" = "RollingUpdate"
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "backend") | .spec.strategy.rollingUpdate.maxUnavailable' /tmp/dev-rendered.yaml)" = "0"
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "backend") | .spec.strategy.rollingUpdate.maxSurge' /tmp/dev-rendered.yaml)" = "1"
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "backend") | .spec.template.spec.volumes | map(select(has("persistentVolumeClaim"))) | length' /tmp/dev-rendered.yaml)" = "0"
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "redis") | .spec.template.spec.nodeSelector.pool' /tmp/dev-rendered.yaml)" = "dev"
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "redis") | .spec.template.spec.tolerations | map(select(.key == "workload-tier")) | length' /tmp/dev-rendered.yaml)" = "0"
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "redis") | .spec.template.spec.tolerations | map(select(.key == "pool" and .value == "dev" and .effect == "NoSchedule")) | length' /tmp/dev-rendered.yaml)" = "1"
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "backend") | .spec.minReadySeconds' /tmp/dev-rendered.yaml)" = "10"
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "backend") | .spec.template.spec.terminationGracePeriodSeconds' /tmp/dev-rendered.yaml)" = "30"
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "backend") | .spec.template.spec.containers[] | select(.name == "backend") | .readinessProbe.httpGet.path' /tmp/dev-rendered.yaml)" = "/api/health/ready"
+          test "$(yq 'select(.kind == "Deployment" and .metadata.name == "backend") | .spec.template.spec.containers[] | select(.name == "backend") | .lifecycle.preStop.exec.command[2]' /tmp/dev-rendered.yaml)" = "sleep 10"
+
+      - name: Render Slack OAuth secret wiring
+        run: |
+          helm template commonly-slack k8s/helm/commonly \
+            -f k8s/helm/commonly/values.yaml \
+            -f k8s/helm/commonly/values-dev.yaml \
+            --set slack.oauth.enabled=true \
+            > /tmp/slack-rendered.yaml
+          for key in slack-client-id slack-client-secret slack-signing-secret connector-secret-keys connector-secret-active-key; do
+            test "$(yq 'select(.kind == "ExternalSecret" and .metadata.name == "api-keys") | .spec.data[].secretKey' /tmp/slack-rendered.yaml | grep -Fx "$key")" = "$key"
+          done
+          for name in SLACK_CLIENT_ID SLACK_CLIENT_SECRET SLACK_SIGNING_SECRET CONNECTOR_SECRET_KEYS CONNECTOR_SECRET_ACTIVE_KEY; do
+            test "$(yq 'select(.kind == "Deployment" and .metadata.name == "backend") | .spec.template.spec.containers[] | select(.name == "backend") | .env[].name' /tmp/slack-rendered.yaml | grep -Fx "$name")" = "$name"
+          done
+
+      - name: Render and lint prod chart (if values-prod.yaml exists)
+        run: |
+          if [ -f k8s/helm/commonly/values-prod.yaml ]; then
+            helm template commonly-prod k8s/helm/commonly \
+              -f k8s/helm/commonly/values.yaml \
+              -f k8s/helm/commonly/values-prod.yaml \
+            | kubeconform --strict --summary -output text \
+                --schema-location "https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRDS_CATALOG_SHA}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+                --schema-location default
+          else
+            echo "values-prod.yaml not present yet (lands in ADR-009 Phase 5); skipping prod lint."
+          fi

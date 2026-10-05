@@ -1,0 +1,875 @@
+// eslint-disable-next-line global-require
+const express = require('express');
+// eslint-disable-next-line global-require
+const axios = require('axios');
+// eslint-disable-next-line global-require
+const { resolveDiscordBotToken } = require('../utils/discordBotToken');
+// eslint-disable-next-line global-require
+const auth = require('../middleware/auth');
+// eslint-disable-next-line global-require
+const adminAuth = require('../middleware/adminAuth');
+// eslint-disable-next-line global-require
+const hostedMcpConnectRoutes = require('./hostedMcpConnect');
+// eslint-disable-next-line global-require
+const Integration = require('../models/Integration');
+// eslint-disable-next-line global-require
+const DiscordIntegration = require('../models/DiscordIntegration');
+// eslint-disable-next-line global-require
+const DiscordService = require('../services/discordService');
+// eslint-disable-next-line global-require
+const connectorSecrets = require('../services/connectorSecrets');
+// eslint-disable-next-line global-require
+const { DISCORD_WEBHOOK_URL } = require('../services/connectorSecretKinds');
+// eslint-disable-next-line global-require
+const Pod = require('../models/Pod');
+// eslint-disable-next-line global-require
+const User = require('../models/User');
+// eslint-disable-next-line global-require
+const { buildCatalogEntries } = require('../integrations/catalog');
+// eslint-disable-next-line global-require
+const { manifests } = require('../integrations/manifests');
+// eslint-disable-next-line global-require
+const registry = require('../integrations');
+// eslint-disable-next-line global-require
+const { normalizeBufferMessage } = require('../integrations/normalizeBufferMessage');
+// eslint-disable-next-line global-require
+const { hash, randomSecret } = require('../utils/secret');
+// eslint-disable-next-line global-require
+const { mintConnectCode } = require('../services/telegramConnectCode');
+// eslint-disable-next-line global-require
+const {
+  isConnectorTargetPod,
+  isListedPodMember,
+} = require('../services/connectorRelayPolicy');
+// eslint-disable-next-line global-require
+const { projectIntegrationForViewer, withoutConnectCode } = require('../models/integrationPublicConfig');
+// eslint-disable-next-line global-require
+const { revokeConnectionGrants } = require('../services/roomGrantService');
+// eslint-disable-next-line global-require
+const { removeConnection, HOSTED_MCP_TYPE } = require('../services/connectionRemovalService');
+import { Types } from 'mongoose';
+import {
+  invalidDiscordIdError, isSupplied, malformedDiscordBindingField, serverOwnedConfigError,
+} from '../utils/discordBinding';
+// Keep this as an ESM import: static analysis recognizes the rate limiter at
+// the route sink, while the middleware owns the shared token/IP bucket.
+import {
+  writeIntegrationsRateLimit,
+  listIntegrationsRateLimit,
+} from '../middleware/integrationRateLimit';
+
+// The list lives in `utils/serverOwnedConfigKeys.ts` so the manifest contract
+// and this strip read the same one (TASK-140).
+// eslint-disable-next-line global-require
+const { SERVER_OWNED_CONFIG_KEYS } = require('../utils/serverOwnedConfigKeys');
+const stripServerOwnedConfig = (config: Record<string, unknown>): Record<string, unknown> => {
+  const next = { ...config };
+  SERVER_OWNED_CONFIG_KEYS.forEach((k: string) => { delete next[k]; });
+  return next;
+};
+
+// liveRelay / relayAllAgentMessages are declared Boolean paths, so Mongoose
+// casts on the way in while the guards below compare strictly (=== true).
+// Mongoose's truth table is wider than 'true'/'false': 1, '1' and 'yes' are
+// all stored as true. Anything that would be stored as a boolean but is not
+// one the guards recognise must be refused at the edge, or the value skips
+// the linkedUserId stamp and the group refusal (#1293 through a different
+// literal). Accepted: true/false and the legacy string forms 'true'/'false';
+// everything else is a 400, never a silent cast.
+const RELAY_FLAG_KEYS = ['liveRelay', 'relayAllAgentMessages'];
+// Gate names become Mongo subdocument keys. They are accepted only in the
+// canonical ObjectId form before a request can turn one into a dotted update
+// path; this also gives every caller the same bounded membership-check cost.
+const MAX_GATES_PER_WRITE = 100;
+const isObjectIdKey = (value: string): boolean => /^[a-f\d]{24}$/i.test(value);
+const readRelayFlags = (config: Record<string, unknown>): { next: Record<string, unknown>; invalid?: string } => {
+  const next = { ...config };
+  for (const k of RELAY_FLAG_KEYS) {
+    const v = next[k];
+    if (v === undefined) continue;
+    if (v === true || v === 'true') next[k] = true;
+    else if (v === false || v === 'false') next[k] = false;
+    else return { next, invalid: k };
+  }
+  return { next };
+};
+const relayFlagError = (key: string) => ({ message: `${key} must be true or false` });
+
+interface AuthReq {
+  user?: { id: string; role?: string };
+  integrationAuth?: boolean;
+  integration?: Record<string, unknown>;
+  params?: Record<string, string>;
+  query?: Record<string, string>;
+  body?: Record<string, unknown>;
+  header?: (name: string) => string | undefined;
+}
+interface Res {
+  status: (n: number) => Res;
+  json: (d: unknown) => void;
+}
+
+let validateRequiredConfig: (config: unknown, manifest: unknown) => void;
+try {
+  // eslint-disable-next-line global-require, import/no-unresolved, import/extensions
+  ({ validateRequiredConfig } = require('../../packages/integration-sdk/src/manifest'));
+} catch (_err) {
+  validateRequiredConfig = (config: unknown, manifest: unknown) => {
+    const m = manifest as { requiredConfig?: string[] };
+    const required = m?.requiredConfig || [];
+    const missing = required.filter((field) => {
+      const c = config as Record<string, unknown>;
+      const value = c?.[field];
+      return value === undefined || value === null || value === '';
+    });
+    if (missing.length) {
+      const error = Object.assign(new Error(`Missing fields: ${missing.join(', ')}`), { missing });
+      throw error;
+    }
+  };
+}
+
+const router: ReturnType<typeof express.Router> = express.Router();
+
+// hosted-MCP intake (§4) is public where it must be: an authorization server
+// reads the client metadata document before anyone has consented, and its
+// callback arrives with no bearer. Mounted before `/:podId` so the deeper path
+// owns its own space.
+router.use('/connect/hosted-mcp', hostedMcpConnectRoutes);
+
+const resolveEffectiveConfig = (type: string, config: Record<string, unknown> = {}) => {
+  if (type !== 'discord') return config;
+  // env-first for every read, including this validation one (TASK-124).
+  return { ...config, botToken: resolveDiscordBotToken(config.botToken) };
+};
+
+const getMissingRequiredFields = (type: string, config: unknown): string[] => {
+  const manifest = (manifests as Record<string, { requiredConfig?: string[] }>)[type];
+  if (!manifest?.requiredConfig?.length) return [];
+  const effectiveConfig = resolveEffectiveConfig(type, config as Record<string, unknown>);
+  return manifest.requiredConfig.filter((field) => {
+    const value = (effectiveConfig as Record<string, unknown>)?.[field];
+    return value === undefined || value === null || value === '';
+  });
+};
+
+const isManifestComplete = (type: string, config: unknown) => getMissingRequiredFields(type, config).length === 0;
+
+const validateManifestIfComplete = (type: string, config: unknown) => {
+  const manifest = (manifests as Record<string, unknown>)[type];
+  if (!manifest || !isManifestComplete(type, config)) return;
+  validateRequiredConfig(resolveEffectiveConfig(type, config as Record<string, unknown>), manifest);
+};
+
+// TASK-168: `createdBy` records who made the pod and survives `leavePod`, so a
+// pod-creator arm that reads the field alone admits someone who has left — to act
+// on a pod whose channel they can no longer read. Every pod-creator arm in this
+// file therefore also requires listed membership, the strict rule this file
+// already imports from the connector policy (line 38). The admin and
+// integration-creator arms are untouched: neither ever claimed pod membership.
+async function canDeleteIntegration(integration: { createdBy?: { toString: () => string }; podId?: unknown } | null, userId: string): Promise<boolean> {
+  const user = await User.findById(userId) as { role?: string } | null;
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  const pod = await Pod.findById(integration?.podId) as { createdBy?: { toString: () => string } } | null;
+  if (pod && pod.createdBy?.toString() === userId && isListedPodMember(pod, userId)) return true;
+  if (integration?.createdBy?.toString() === userId) return true;
+  return false;
+}
+
+// Who may see a connector's routing state: the connector's creator and an
+// instance administrator. Every response that echoes a connector row to a pod
+// member resolves its viewer here — `canDeleteIntegration` is the WRITE gate and
+// it also admits the POD's creator, who may not have created this connector, so
+// an echo that skips the projection hands that member back the very fields the
+// pod read redacts (#1731 review). The projection itself lives with the rest of
+// the Integration JSON contract in models/integrationPublicConfig; this is only
+// the database read that supplies it.
+type ConnectorViewer = { isAdmin: boolean; requesterId: string };
+
+async function resolveConnectorViewer(viewerId?: unknown): Promise<ConnectorViewer> {
+  // middleware/auth sets req.user.role only on the JWT branch, so an admin
+  // caller is resolved from the database rather than from the request.
+  const requester = await User.findById(viewerId) as { role?: string } | null;
+  return { isAdmin: requester?.role === 'admin', requesterId: String(viewerId || '') };
+}
+
+const extractToken = (req: AuthReq) => {
+  const authHeader = req.header?.('Authorization');
+  if (authHeader && authHeader.startsWith('Bearer ')) return authHeader.replace('Bearer ', '').trim();
+  return req.header?.('x-commonly-integration-token');
+};
+
+const ingestAuth = async (req: AuthReq, res: Res, next: () => void) => {
+  const token = extractToken(req);
+  if (token && token.startsWith('cm_int_')) {
+    const tokenHash = hash(token);
+    const integration = await Integration.findOne({ 'ingestTokens.tokenHash': tokenHash }) as Record<string, unknown> | null;
+    if (!integration) return res.status(401).json({ message: 'Invalid integration token' });
+    try {
+      await Integration.updateOne({ _id: integration._id, 'ingestTokens.tokenHash': tokenHash }, { $set: { 'ingestTokens.$.lastUsedAt': new Date() } });
+    } catch (err) {
+      console.warn('Failed to update integration token usage:', (err as Error).message);
+    }
+    req.integrationAuth = true;
+    req.integration = integration;
+    return next();
+  }
+  return auth(req, res, next);
+};
+
+router.get('/catalog', auth, async (req: AuthReq, res: Res) => {
+  try {
+    const entries = await buildCatalogEntries({ userId: req.user?.id });
+    res.json({ entries });
+  } catch (error) {
+    console.error('Error fetching integration catalog:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// GitHub App installations are administrator-owned user-scope connections.
+// They intentionally do not pass through the pod-member connector route: a
+// member must never be able to bind the broker to Commonly's App credential.
+router.post('/github-app', writeIntegrationsRateLimit, auth, adminAuth, async (req: AuthReq, res: Res) => {
+  try {
+    const body = (req.body || {}) as { installationId?: unknown; owner?: unknown; repo?: unknown };
+    const installationId = String(body.installationId || '').trim();
+    const owner = String(body.owner || '').trim();
+    const repo = String(body.repo || '').trim();
+    if (!installationId || !owner || !repo) {
+      return res.status(400).json({ message: 'installationId, owner, and repo are required' });
+    }
+    const existing = await Integration.findOne({ type: 'github-app', installationId });
+    if (existing) {
+      const current = existing.config || {};
+      if (String(current.owner || '') !== owner || String(current.repo || '') !== repo) {
+        return res.status(409).json({ message: 'installationId is already bound to a different repository' });
+      }
+      // Connection rows are immutable in this cut. In particular, do not
+      // reassign createdBy or revive/retarget grants on a repeated POST.
+      return res.json({ integration: existing });
+    }
+    const integration = new Integration({
+      installationId,
+      type: 'github-app',
+      scope: 'user',
+      status: 'connected',
+      config: { installationId, owner, repo },
+      createdBy: req.user?.id,
+      isActive: true,
+    });
+    await integration.save();
+    return res.status(201).json({ integration });
+  } catch (error) {
+    console.error('Error creating GitHub App integration:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/ingest', ingestAuth, async (req: AuthReq, res: Res) => {
+  try {
+    const { provider, integrationId, event, messages } = (req.body || {}) as { provider?: string; integrationId?: string; event?: unknown; messages?: unknown[] };
+    const { integration: tokenIntegration } = req;
+    let integration = tokenIntegration as Record<string, unknown> | null | undefined;
+    if (!integrationId && !integration) return res.status(400).json({ message: 'integrationId is required' });
+    if (!integration) integration = await Integration.findById(integrationId).lean();
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    if (integrationId && (integration._id as { toString: () => string }).toString() !== integrationId.toString()) return res.status(400).json({ message: 'integrationId does not match token' });
+    const providerName = provider || (integration.type as string);
+    if (providerName !== integration.type) return res.status(400).json({ message: 'Provider does not match integration type' });
+    let normalizedMessages: unknown[] = [];
+    if (Array.isArray(messages) && messages.length > 0) {
+      normalizedMessages = messages;
+    } else if (event) {
+      let providerInstance: { ingestEvent: (e: unknown) => Promise<unknown[]> };
+      try { providerInstance = registry.get(providerName, integration); }
+      catch (_err) { return res.status(400).json({ message: 'Provider not registered' }); }
+      normalizedMessages = await providerInstance.ingestEvent(event);
+    } else {
+      return res.status(400).json({ message: 'event or messages is required' });
+    }
+    const bufferMessages = (normalizedMessages || []).map(normalizeBufferMessage).filter(Boolean);
+    if (bufferMessages.length === 0) return res.json({ success: true, count: 0 });
+    const maxBufferSize = (integration.config as { maxBufferSize?: number })?.maxBufferSize || 1000;
+    await Integration.findByIdAndUpdate(integration._id, { $push: { 'config.messageBuffer': { $each: bufferMessages, $slice: -1 * maxBufferSize } } });
+    res.json({ success: true, count: bufferMessages.length });
+  } catch (error) {
+    console.error('Error ingesting integration event:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/:id/ingest-tokens', auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id } = req.params || {};
+    const { label } = (req.body || {}) as { label?: string };
+    const integration = await Integration.findById(id) as { _id: unknown; createdBy?: { toString: () => string }; podId?: unknown; ingestTokens?: Array<unknown>; save: () => Promise<void> } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    const canUpdate = await canDeleteIntegration(integration, req.user?.id || '');
+    if (!canUpdate) return res.status(403).json({ message: 'Not authorized' });
+    const token = `cm_int_${randomSecret(16)}`;
+    const tokenHash = hash(token);
+    integration.ingestTokens = integration.ingestTokens || [];
+    integration.ingestTokens.push({ tokenHash, label: label || '', createdBy: req.user?.id, createdAt: new Date() });
+    await integration.save();
+    res.json({ token });
+  } catch (error) {
+    console.error('Error issuing ingest token:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.get('/:id/ingest-tokens', auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id } = req.params || {};
+    const integration = await Integration.findById(id) as { createdBy?: { toString: () => string }; podId?: unknown; ingestTokens?: Array<{ _id: { toString: () => string }; label?: string; createdAt?: Date; lastUsedAt?: Date; createdBy?: unknown }> } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    const canUpdate = await canDeleteIntegration(integration, req.user?.id || '');
+    if (!canUpdate) return res.status(403).json({ message: 'Not authorized' });
+    const tokens = (integration.ingestTokens || []).map((token) => ({ id: token._id.toString(), label: token.label, createdAt: token.createdAt, lastUsedAt: token.lastUsedAt, createdBy: token.createdBy }));
+    res.json({ tokens });
+  } catch (error) {
+    console.error('Error listing ingest tokens:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.delete('/:id/ingest-tokens/:tokenId', auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id, tokenId } = req.params || {};
+    const integration = await Integration.findById(id) as { createdBy?: { toString: () => string }; podId?: unknown; ingestTokens?: Array<{ _id: { toString: () => string } }>; save: () => Promise<void> } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    const canUpdate = await canDeleteIntegration(integration, req.user?.id || '');
+    if (!canUpdate) return res.status(403).json({ message: 'Not authorized' });
+    const before = integration.ingestTokens?.length || 0;
+    integration.ingestTokens = (integration.ingestTokens || []).filter((token) => token._id.toString() !== tokenId);
+    if ((integration.ingestTokens || []).length === before) return res.status(404).json({ message: 'Token not found' });
+    await integration.save();
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error revoking ingest token:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Same read bucket as /user/all: token-hash/IP keyed, ahead of auth, so the
+// membership lookup below cannot be driven unmetered (CodeQL
+// js/missing-rate-limiting on the gated route).
+router.get('/:podId', listIntegrationsRateLimit, auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { podId } = req.params || {};
+    // Pod-scoped content: canViewPod decides (members, admins, the agent-dm
+    // fan-out), the same gate every other pod-scoped read uses. Until #1673
+    // any signed-in user could list any pod's rows.
+    const pod = await Pod.findById(podId);
+    if (!pod) return res.status(404).json({ message: 'Pod not found' });
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
+    const DMService = require('../services/dmService');
+    if (!await DMService.canViewPod(req.user?.id, pod)) return res.status(403).json({ message: 'Access denied' });
+    const integrations = await Integration.find({ podId, isActive: true }).populate('createdBy', 'username email').populate('platformIntegration');
+    // Routing state is the connector's, not the pod's: a member who did not
+    // create this connector sees that it is linked (config.linked) and to
+    // which chat (config.chatTitle), never the external chat id, the identity
+    // inbound messages are authored as, or the reply/digest tables. The
+    // connector's creator and an instance administrator see the row whole.
+    // canViewPod admits every pod member, so the projection is what keeps a
+    // shared pod's other connectors from being readable here.
+    const viewer = await resolveConnectorViewer(req.user?.id);
+    return res.json(integrations.map((integration: unknown) => projectIntegrationForViewer(integration, viewer)));
+  } catch (error) {
+    console.error('Error fetching integrations:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/', writeIntegrationsRateLimit, auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { podId, type, config } = (req.body || {}) as { podId?: string; type?: string; config?: Record<string, unknown> };
+    if (!podId || !type || !config) return res.status(400).json({ message: 'Missing required fields' });
+    if (type === 'github-app') return res.status(400).json({ message: 'github-app connections require the administrator route' });
+    // `hosted-mcp` is refused by NAME for the reason the type exists (TASK-172,
+    // scope §2): a connected row may only be written by the entry's OAuth
+    // callback, so `createdBy` is always the person who consented. The manifest
+    // lookup below already answers 400 for a type it does not know, but that
+    // refusal would disappear the day a manifest is added, and it does not say
+    // why. A row that named its own `entryId`, `grantedScope` or
+    // `credentialRef` from a body would be a consent nobody gave.
+    if (type === 'hosted-mcp') {
+      return res.status(400).json({
+        message: 'hosted-mcp connections are created by the vendor consent flow: '
+          + 'GET /api/integrations/connect/hosted-mcp/:entryId/start',
+      });
+    }
+    // This block refuses an id in a shape Discord would not accept, and a
+    // supplied `botToken` rather than stripping it, because a 200 for a write we
+    // ignored reports a binding that does not exist. Both refusals run before
+    // the row is saved and before the webhook is created.
+    if (type === 'discord') {
+      const malformed = malformedDiscordBindingField(config);
+      if (malformed) return res.status(400).json(invalidDiscordIdError(malformed));
+      if (isSupplied(config.botToken)) return res.status(400).json(serverOwnedConfigError('botToken'));
+    }
+    const manifest = (manifests as Record<string, unknown>)[type];
+    if (!manifest) return res.status(400).json({ message: 'Unsupported integration type' });
+    if ('linkedUserId' in config && String(config.linkedUserId) !== String(req.user?.id)) {
+      return res.status(400).json({ message: 'linkedUserId is derived from the authenticated caller and cannot be set' });
+    }
+    // Membership gate: an integration relays a pod's content outward and
+    // authors content into it — a WRITE, so it takes the strict predicate the
+    // pod's own write path runs: `pod.members` alone, no creator bypass and no
+    // admin read-bypass (TASK-161; DMService.canViewPod's admin clause exists
+    // for read observability, and would make "only members can write here"
+    // untrue). Plain findById: unit mocks resolve a bare doc.
+    const targetPod = await Pod.findById(String(podId));
+    // The target predicate, not membership alone: a created connector makes this
+    // pod a relay target, and the pod types the default listing hides have no
+    // gate UI, so a connector pointed at one is invisible from the page that
+    // would show it (TASK-171).
+    if (!targetPod || !isConnectorTargetPod(targetPod, req.user?.id)) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+    const relay = readRelayFlags(stripServerOwnedConfig(config));
+    if (relay.invalid) return res.status(400).json(relayFlagError(relay.invalid));
+    const nextConfig: Record<string, unknown> = relay.next;
+    if (type === 'telegram') Object.assign(nextConfig, mintConnectCode());
+    // First-run default: mirror. A fresh connector has no leadAgentUsername
+    // and its agents use no escalation markers, so attention mode relays
+    // NOTHING — a new user's first experience of the bridge would be silence.
+    // Mirror shows everything; the Connected message teaches /mode attention.
+    if (type === 'telegram' && nextConfig.relayAllAgentMessages === undefined) {
+      nextConfig.relayAllAgentMessages = true;
+      if (nextConfig.liveRelay === undefined) nextConfig.liveRelay = true;
+    }
+    // Ordering is load-bearing: the default above may have just switched
+    // liveRelay on, and a live relay with no linkedUserId authors nothing
+    // inbound (the bridge fails closed on a missing linked user) while still
+    // streaming outbound. The creator IS the authenticated caller, so the
+    // defaulted case is stamped exactly like an explicit liveRelay:true.
+    if (nextConfig.liveRelay === true) nextConfig.linkedUserId = req.user?.id;
+    const missingRequired = getMissingRequiredFields(type, nextConfig);
+    if (type === 'discord' && missingRequired.length) return res.status(400).json({ message: `Missing required fields: ${missingRequired.join(', ')}`, missing: missingRequired });
+    if (missingRequired.length && (req.body as { status?: string })?.status === 'connected') return res.status(400).json({ message: `Missing required fields: ${missingRequired.join(', ')}`, missing: missingRequired });
+    validateManifestIfComplete(type, nextConfig);
+    const integration = new Integration({ podId, type, config: nextConfig, createdBy: req.user?.id, status: 'pending' });
+    await integration.save();
+    let platformIntegration = null;
+    if (type === 'discord') {
+      const webhookResponse = await axios.post(`https://discord.com/api/channels/${config.channelId}/webhooks`, { name: 'Commonly Bot', avatar: null }, { headers: { Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' } });
+      const webhook = webhookResponse.data as { id: string; token: string };
+      // The webhook URL is a bearer credential (it embeds the token), so it goes
+      // into the connector-secret envelope and the row keeps only the ref — the
+      // shape the Slack bind already uses for its bot token. `webhookId` is not a
+      // secret and stays on the platform document. No botToken copy either: that
+      // token is instance-wide and read from the environment on every use, and
+      // storing it is what made a rotation miss integrations that already existed
+      // (TASK-124).
+      const webhookUrlRef = await connectorSecrets.put(
+        String(integration._id),
+        DISCORD_WEBHOOK_URL,
+        `https://discord.com/api/webhooks/${webhook.id}/${webhook.token}`,
+      );
+      await Integration.findByIdAndUpdate(integration._id, { $set: { 'config.webhookUrlRef': webhookUrlRef } });
+      platformIntegration = new DiscordIntegration({ integrationId: integration._id, serverId: config.serverId, serverName: config.serverName, channelId: config.channelId, channelName: config.channelName, webhookId: webhook.id, permissions: config.permissions || ['read_messages', 'send_messages'] });
+      await platformIntegration.save();
+    } else if (['slack', 'groupme', 'telegram', 'messenger', 'whatsapp', 'x', 'instagram'].includes(type)) {
+      integration.status = isManifestComplete(type, nextConfig) ? 'connected' : 'pending';
+      await integration.save();
+    } else {
+      return res.status(400).json({ message: 'Unsupported integration type' });
+    }
+    if (type === 'discord') {
+      const service = new DiscordService(integration._id);
+      const initialized = await service.initialize();
+      if (!initialized) return res.status(500).json({ message: 'Failed to initialize integration' });
+      const connected = await service.connect();
+      if (!connected) console.warn('Integration initialized but failed to connect');
+    }
+    res.status(201).json({ integration, platformIntegration });
+  } catch (error) {
+    console.error('Error creating integration:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/:id/connect', auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id } = req.params || {};
+    const integration = await Integration.findById(id) as { type?: string; podId?: unknown } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    const pod = await Pod.findById(integration.podId) as { createdBy?: { toString: () => string } } | null;
+    if (!pod || pod.createdBy?.toString() !== req.user?.id
+      || !isListedPodMember(pod, req.user?.id)) return res.status(403).json({ message: 'Access denied' });
+    let service: { connect: () => Promise<boolean> } | null = null;
+    if (integration.type === 'discord') service = new DiscordService(id);
+    else if (integration.type !== 'slack') return res.status(400).json({ message: 'Unsupported integration type' });
+    const connected = service ? await service.connect() : true;
+    if (connected) res.json({ message: 'Integration connected successfully' });
+    else res.status(500).json({ message: 'Failed to connect integration' });
+  } catch (error) {
+    console.error('Error connecting integration:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/:id/disconnect', auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id } = req.params || {};
+    const integration = await Integration.findById(id) as { type?: string; podId?: unknown } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    const pod = await Pod.findById(integration.podId) as { createdBy?: { toString: () => string } } | null;
+    if (!pod || pod.createdBy?.toString() !== req.user?.id
+      || !isListedPodMember(pod, req.user?.id)) return res.status(403).json({ message: 'Access denied' });
+    if (integration.type !== 'discord') return res.status(400).json({ message: 'Unsupported integration type' });
+    const service = new DiscordService(id);
+    const disconnected = await service.disconnect();
+    if (disconnected) res.json({ message: 'Integration disconnected successfully' });
+    else res.status(500).json({ message: 'Failed to disconnect integration' });
+  } catch (error) {
+    console.error('Error disconnecting integration:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.get('/:id/stats', auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id } = req.params || {};
+    const integration = await Integration.findById(id) as { type?: string; podId?: unknown } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    const pod = await Pod.findById(integration.podId) as { createdBy?: { toString: () => string } } | null;
+    if (!pod || pod.createdBy?.toString() !== req.user?.id
+      || !isListedPodMember(pod, req.user?.id)) return res.status(403).json({ message: 'Access denied' });
+    let service: { getStats: () => Promise<unknown> } | null = null;
+    if (integration.type === 'discord') service = new DiscordService(id);
+    else if (integration.type !== 'slack') return res.status(400).json({ message: 'Unsupported integration type' });
+    const stats = service ? await service.getStats() : { connected: true };
+    res.json(stats);
+  } catch (error) {
+    console.error('Error getting integration stats:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.get('/:id/messages', auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id } = req.params || {};
+    const { limit, before } = req.query || {};
+    const integration = await Integration.findById(id) as { type?: string; podId?: unknown } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    const pod = await Pod.findById(integration.podId) as { createdBy?: { toString: () => string } } | null;
+    if (!pod || pod.createdBy?.toString() !== req.user?.id
+      || !isListedPodMember(pod, req.user?.id)) return res.status(403).json({ message: 'Access denied' });
+    if (integration.type === 'discord') {
+      const service = new DiscordService(id);
+      const messages = await service.fetchMessages({ limit, before });
+      return res.json(messages);
+    }
+    if (integration.type === 'slack') return res.json({ messages: [] });
+    return res.status(400).json({ message: 'Unsupported integration type' });
+  } catch (error) {
+    console.error('Error fetching integration messages:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/:id/send', auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id } = req.params || {};
+    const { message } = (req.body || {}) as { message?: string };
+    const integration = await Integration.findById(id) as { type?: string; podId?: unknown } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    const pod = await Pod.findById(integration.podId) as { createdBy?: { toString: () => string } } | null;
+    if (!pod || pod.createdBy?.toString() !== req.user?.id
+      || !isListedPodMember(pod, req.user?.id)) return res.status(403).json({ message: 'Access denied' });
+    if (integration.type === 'discord') {
+      const service = new DiscordService(id);
+      const result = await service.sendMessage(message);
+      return res.json({ success: true, result });
+    }
+    if (integration.type === 'slack') return res.json({ success: true, result: 'not-implemented' });
+    return res.status(400).json({ message: 'Unsupported integration type' });
+  } catch (error) {
+    console.error('Error sending message through integration:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.get('/admin/all', auth, adminAuth, async (_req: AuthReq, res: Res) => {
+  try {
+    const integrations = await Integration.find({ isActive: true }).populate('podId', 'name type createdBy').populate('createdBy', 'username email').populate('platformIntegration').sort({ createdAt: -1 });
+    // The connect code is a member's one-time enable code; the admin list has no reader for it.
+    res.json(integrations.map((integration: { toJSON: () => Record<string, unknown> }) => withoutConnectCode(integration.toJSON())));
+  } catch (error) {
+    console.error('Error fetching all integrations:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.get('/user/all', listIntegrationsRateLimit, auth, async (req: AuthReq, res: Res) => {
+  try {
+    const integrations = await Integration.find({ createdBy: req.user?.id, isActive: true }).populate('podId', 'name type').sort({ createdAt: -1 });
+    res.json(integrations);
+  } catch (error) {
+    console.error('Error fetching user integrations:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Re-mint the one-time enable code (codes expire after 10 minutes). Only
+// while the chat is still unbound — a connected integration has no code.
+router.post('/:id/connect-code', writeIntegrationsRateLimit, auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id } = req.params || {};
+    const integration = await Integration.findById(id) as { type?: string; createdBy?: { toString: () => string }; podId?: unknown; config?: { chatId?: string } } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    if (integration.type !== 'telegram') return res.status(400).json({ message: 'Connect codes are telegram-only' });
+    if (!(await canDeleteIntegration(integration, req.user?.id || ''))) return res.status(403).json({ message: 'Access denied' });
+    if (integration.config?.chatId) return res.status(409).json({ message: 'Already linked to a chat' });
+    const minted = mintConnectCode();
+    const updated = await Integration.findByIdAndUpdate(id, {
+      $set: { 'config.connectCode': minted.connectCode, 'config.connectCodeExpiresAt': minted.connectCodeExpiresAt },
+    }, { new: true });
+    // Same gate as above admits the pod's creator: project the echo too (the
+    // code itself is not routing state and is what the caller came for).
+    return res.json(projectIntegrationForViewer(updated, await resolveConnectorViewer(req.user?.id)));
+  } catch (error) {
+    console.error('Error minting connect code:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.patch('/:id', writeIntegrationsRateLimit, auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id } = req.params || {};
+    if (typeof id !== 'string' || !Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid integration id' });
+    }
+    // Parse the route segment exactly once. Subsequent reads and writes use
+    // this canonical BSON value rather than carrying the request string into
+    // a database selector.
+    const integrationId = new Types.ObjectId(id);
+    const { config, status, isActive, podId } = (req.body || {}) as {
+      config?: Record<string, unknown>;
+      status?: string;
+      isActive?: boolean;
+      podId?: unknown;
+    };
+    const integration = await Integration.findById(integrationId) as {
+      _id?: unknown;
+      type?: string;
+      scope?: string;
+      createdBy?: { toString: () => string };
+      podId?: unknown;
+      config?: { toObject?: () => Record<string, unknown> };
+    } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    const currentConfig = integration.config?.toObject ? integration.config.toObject() : (integration.config || {}) as Record<string, unknown>;
+    const requesterId = req.user?.id || '';
+    // A hosted-mcp row has no PATCH surface: `entryId`, the granted scope and
+    // the credential references are written by the entry's OAuth callback, and
+    // the row is removed by DELETE, the one path that revokes the grants and the
+    // vendor token in the order `connectionRemovalService` owns. Such a row is
+    // already refused here, but only INCIDENTALLY — the branch below requires a
+    // `config.linkedUserId` equal to the requester, and a hosted row never gets
+    // one. That is a comparison the row cannot satisfy by accident of a field
+    // another writer owns, so it stops being a guard the day anyone links one.
+    // The rule is stated by the row's own kind instead, and the CODE is what a
+    // caller can act on: the incidental refusal answers the same 403 (with the
+    // same body) a wrong-owner PATCH gets, so "not yours" and "not patchable"
+    // were indistinguishable from outside.
+    if (integration.type === HOSTED_MCP_TYPE) {
+      return res.status(409).json({
+        code: 'hosted_mcp_managed_by_consent_flow',
+        message: 'hosted-mcp connections are managed by the vendor consent flow; '
+          + 'DELETE /api/integrations/:id removes the connection',
+      });
+    }
+    if (integration.scope === 'user') {
+      // A user-scoped connector is a private attention surface. A pod creator
+      // or instance admin must not turn on a gate (or live relay) for someone
+      // else, so its entire PATCH surface belongs to its linked owner alone.
+      if (
+        integration.createdBy?.toString() !== requesterId
+        || String(currentConfig.linkedUserId || '') !== requesterId
+      ) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+      if (config && Object.prototype.hasOwnProperty.call(config, 'adminPause')) {
+        return res.status(400).json({ message: 'adminPause is managed by an administrator' });
+      }
+      // A user connector has one active inbound destination. Selecting it is
+      // an owner action, and it must be a pod that owner can still write to —
+      // the same strict membership `createMessage` checks, so a creator who
+      // left cannot aim private inbound messages at a pod that refuses them.
+      if (podId !== undefined) {
+        if (typeof podId !== 'string' || !isObjectIdKey(podId)) {
+          return res.status(400).json({ message: 'podId must be a valid pod id' });
+        }
+        const activePod = await Pod.findById(podId);
+        // The active pod is a target too: bridges relay its content without a
+        // gate, so the same type rule applies as to any other target (TASK-171).
+        if (!activePod || !isConnectorTargetPod(activePod, requesterId)) {
+          return res.status(403).json({ message: 'Access denied' });
+        }
+      }
+      const requestedGates = config?.gates;
+      if (requestedGates !== undefined) {
+        if (!requestedGates || Array.isArray(requestedGates) || typeof requestedGates !== 'object') {
+          return res.status(400).json({ message: 'gates must be an object keyed by pod id' });
+        }
+        const gatePodIds = Object.keys(requestedGates as Record<string, unknown>);
+        if (gatePodIds.length > MAX_GATES_PER_WRITE) {
+          return res.status(400).json({ message: `gates may contain at most ${MAX_GATES_PER_WRITE} pod ids` });
+        }
+        // Validate every key before it is interpolated into `config.gates.*`
+        // or reaches the membership lookup. A Mongo key is syntax, not data:
+        // dots and dollar prefixes have different semantics from a bad value.
+        if (gatePodIds.some((gatePodId) => !isObjectIdKey(gatePodId))) {
+          return res.status(400).json({ message: 'every gate key must be a valid pod id' });
+        }
+        // Check every requested key before constructing the update. This keeps
+        // a mixed valid/invalid PATCH atomic: no valid gate is written first.
+        for (const gatePodId of gatePodIds) {
+          const gatePod = await Pod.findById(gatePodId);
+          // This is the site the row was opened for: the gate-key check had no
+          // type rule, so a listed owner could switch a gate on for a pod the
+          // Connectors page never offers (TASK-171).
+          if (!gatePod || !isConnectorTargetPod(gatePod, requesterId)) {
+            return res.status(403).json({ message: 'Access denied' });
+          }
+        }
+      }
+    } else {
+      // A pod-scoped integration is anchored by its installation. Only a
+      // user-scoped connector exposes a movable personal inbound destination.
+      if (podId !== undefined) {
+        return res.status(400).json({ message: 'podId is only managed on user-scoped connectors' });
+      }
+      const canUpdate = await canDeleteIntegration(integration, requesterId);
+      if (!canUpdate) return res.status(403).json({ message: 'Access denied' });
+    }
+    // Bridge attribution guard: config.linkedUserId is the identity every
+    // inbound live-relay message is AUTHORED as (pod row, socket payload,
+    // agent wake). It is derived from the authenticated caller when liveRelay
+    // flips on — never accepted from the body, where it would let any caller
+    // who passes canDeleteIntegration name someone else as the bridge author.
+    if (config && 'linkedUserId' in config && String(config.linkedUserId) !== String(req.user?.id)) {
+      return res.status(400).json({ message: 'linkedUserId is derived from the authenticated caller and cannot be set' });
+    }
+    // Same two refusals as the create path, for the reason this route is the
+    // other half of the defect: a PATCH retargets an existing row's guild and
+    // channel while keeping its stored listener state. Only fields the request
+    // actually supplies are examined, so a PATCH that does not touch the binding
+    // is unaffected.
+    if (integration.type === 'discord' && config) {
+      const malformed = malformedDiscordBindingField(config);
+      if (malformed) return res.status(400).json(invalidDiscordIdError(malformed));
+      if (isSupplied(config.botToken)) return res.status(400).json(serverOwnedConfigError('botToken'));
+    }
+    const relay = config ? readRelayFlags(stripServerOwnedConfig(config)) : null;
+    if (relay?.invalid) return res.status(400).json(relayFlagError(relay.invalid));
+    const incoming = relay ? relay.next : null;
+    if (incoming && Object.keys(incoming).some((key) => key.includes('.') || key.startsWith('$'))) {
+      return res.status(400).json({ message: 'config keys must be field names, not update paths' });
+    }
+    const nextConfig = incoming ? { ...currentConfig, ...incoming } : currentConfig;
+    if (incoming && incoming.liveRelay === true) {
+      // Relay authors inbound as linkedUserId and streams outbound to chatId;
+      // both are only honest in a 1:1 private chat (#1289 inbound, F2 outbound).
+      if (nextConfig.chatId && nextConfig.chatType !== 'private') {
+        return res.status(400).json({ message: 'Live relay requires a private chat with the bot; this connector is bound to a group' });
+      }
+      nextConfig.linkedUserId = req.user?.id;
+    }
+    const missingRequired = getMissingRequiredFields(integration.type || '', nextConfig);
+    if (missingRequired.length && status === 'connected') return res.status(400).json({ message: `Missing required fields: ${missingRequired.join(', ')}`, missing: missingRequired });
+    validateManifestIfComplete(integration.type || '', nextConfig);
+    const update: Record<string, unknown> = {};
+    // Do not replace a snapshot of config: cards/relayMap may have been
+    // appended (or closed) since the read above. Only write the requested
+    // top-level fields; a gates map still replaces that one field as before.
+    if (incoming) {
+      Object.keys(incoming).forEach((key) => { update[`config.${key}`] = nextConfig[key]; });
+      if (incoming.liveRelay === true) update['config.linkedUserId'] = req.user?.id;
+    }
+    if (podId !== undefined) update.podId = podId;
+    if (typeof status === 'string') update.status = status;
+    if (typeof isActive === 'boolean') update.isActive = isActive;
+    const autoStatusTypes = ['groupme', 'telegram', 'slack', 'x', 'instagram'];
+    if (autoStatusTypes.includes(integration.type || '') && config) {
+      update.status = (update.status as string | undefined) || (isManifestComplete(integration.type || '', nextConfig) ? 'connected' : 'pending');
+    }
+    // The selector is the canonical ObjectId parsed at the route boundary;
+    // the access check above authorises that exact document before this write.
+    const updated = await Integration.findByIdAndUpdate(integrationId, update, { new: true });
+    // The write gate is not the read gate: canDeleteIntegration admits the pod
+    // creator, so an unprojected echo here would return the routing state the
+    // pod read withholds (chatId, linkedUserId, relayMap, messageBuffer).
+    return res.json(projectIntegrationForViewer(updated, await resolveConnectorViewer(req.user?.id)));
+  } catch (error) {
+    console.error('Error updating integration:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.delete('/:id', writeIntegrationsRateLimit, auth, async (req: AuthReq, res: Res) => {
+  try {
+    const { id } = req.params || {};
+    const deletedBy = String(req.user?.id || '').trim();
+    // Fail closed on the identity rather than skipping the grants step and
+    // deleting anyway, which would reinstate the orphan this route was fixed to
+    // stop creating (Vera 74462). `auth` always sets a non-empty id, so this is
+    // unreachable today; it is here so it cannot become reachable in silence.
+    if (!deletedBy) return res.status(401).json({ message: 'Unauthorized' });
+    const integration = await Integration.findById(id) as {
+      type?: string;
+      createdBy?: { toString: () => string };
+      podId?: unknown;
+      installationId?: unknown;
+      config?: { installationId?: unknown };
+    } | null;
+    if (!integration) return res.status(404).json({ message: 'Integration not found' });
+    const canDelete = await canDeleteIntegration(integration, deletedBy);
+    if (!canDelete) return res.status(403).json({ message: 'Access denied' });
+    // A hosted row takes the whole §10.5 sequence, because it is the only type
+    // whose removal has a provider step to run: it holds a refresh token to
+    // revoke at the entry's endpoint before the material goes. The order is the
+    // control (services/connectionRemovalService.ts), and a failed provider
+    // revoke answers 502 with the row left `disconnected` and its references
+    // intact, so the retry from the page can finish it.
+    if (integration.type === HOSTED_MCP_TYPE) {
+      const result = await removeConnection({
+        connection: integration,
+        removedBy: deletedBy,
+        revokeGrants: revokeConnectionGrants,
+      });
+      if (!result.removed) {
+        return res.status(502).json({
+          code: result.code,
+          message: result.message,
+          ...(result.revokeAt ? { revokeAt: result.revokeAt } : {}),
+        });
+      }
+      return res.json({
+        message: 'Integration deleted successfully',
+        ...(result.revokeAt ? { revokeAt: result.revokeAt } : {}),
+      });
+    }
+    // §10.5's grants step, and it has to run here: the deletion below removes
+    // the row, and the granter's own revoke route resolves ownership through
+    // `findConnection` (routes/grants.ts:421) — after the row is gone every
+    // grant on this connection answers 403 `access_denied`, so the removal
+    // would orphan them un-revoked (TASK-145).
+    await revokeConnectionGrants({ connection: integration, revokedBy: deletedBy });
+    const service = integration.type === 'discord' ? new DiscordService(id) : null;
+    try { if (service) await service.disconnect(); } catch (error) { console.warn('Error disconnecting service during deletion:', error); }
+    if (integration.type === 'discord') await DiscordIntegration.findOneAndDelete({ integrationId: id });
+    await Integration.findByIdAndDelete(id);
+    res.json({ message: 'Integration deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting integration:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+module.exports = router;

@@ -1,0 +1,117 @@
+/**
+ * Event poller — polls GET /api/agents/runtime/events and forwards
+ * each event to a local handler (webhook server or callback).
+ *
+ * Used by `commonly agent connect` when running against any instance,
+ * since localhost webhooks can't receive inbound calls from remote GKE.
+ */
+
+import { createClient } from './api.js';
+
+// Delivery failures that must stop a consumer rather than fall through to the
+// normal at-least-once retry path. A stale delivery belongs to a replacement
+// runner; a missing required nonce means this runner is misconfigured. Neither
+// can become healthy by immediately fetching and retrying more work.
+export const terminalDeliveryAckError = (ackErr, eventId, runner = 'poller') => {
+  if (ackErr?.status === 409 && ackErr?.body?.code === 'stale_delivery') {
+    return Object.assign(
+      new Error(`Delivery ${eventId} was superseded — stopping ${runner}.`),
+      { code: 'stale_delivery' },
+    );
+  }
+  if (ackErr?.status === 400 && ackErr?.body?.code === 'delivery_id_required') {
+    return Object.assign(
+      new Error(`Delivery ${eventId} requires deliveryId — stopping ${runner}; update its configuration.`),
+      { code: 'delivery_id_required' },
+    );
+  }
+  return null;
+};
+
+export const startPoller = ({
+  instanceUrl,
+  token,
+  agentName,
+  instanceId = 'default',
+  intervalMs = 5000,
+  onEvent,          // async (event) => { outcome, content? }
+  onError,          // (err) => void
+}) => {
+  const client = createClient({ instance: instanceUrl, token });
+  let running = true;
+  let consecutiveErrors = 0;
+  // Stop-after-N-auth-failures: without this, a revoked token leaves the
+  // poller hammering 401s forever at 60s backoff, invisible to the user.
+  // 3 is deliberate — 1 would churn on a token-rotation race during
+  // reprovision-all; 5+ wastes rate-limit budget after the real-revoke case.
+  let consecutiveAuthErrors = 0;
+  const MAX_AUTH_ERRORS = 3;
+
+  const poll = async () => {
+    if (!running) return;
+
+    try {
+      const { events = [] } = await client.get('/api/agents/runtime/events', {
+        agentName,
+        instanceId,
+        limit: 10,
+      });
+
+      for (const event of events) {
+        let result = { outcome: 'no_action' };
+        try {
+          result = (await onEvent(event)) || { outcome: 'no_action' };
+        } catch (handlerErr) {
+          result = { outcome: 'error', reason: handlerErr.message };
+        }
+
+        // Acknowledge the event
+        try {
+          const deliveryId = event.payload?.deliveryId;
+          await client.post(`/api/agents/runtime/events/${event._id}/ack`, {
+            result,
+            ...(typeof deliveryId === 'string' && deliveryId ? { deliveryId } : {}),
+          });
+        } catch (ackErr) {
+          const terminalError = terminalDeliveryAckError(ackErr, event._id);
+          if (terminalError) {
+            running = false;
+            onError?.(terminalError);
+            return;
+          }
+          // Non-fatal — event will be retried
+          onError?.(new Error(`Ack failed for ${event._id}: ${ackErr.message}`));
+        }
+      }
+
+      consecutiveErrors = 0;
+      consecutiveAuthErrors = 0;
+    } catch (err) {
+      if (err?.status === 401 || err?.status === 403) {
+        consecutiveAuthErrors += 1;
+        if (consecutiveAuthErrors >= MAX_AUTH_ERRORS) {
+          onError?.(new Error(
+            `Runtime token rejected ${consecutiveAuthErrors} times in a row — stopping poller. `
+            + `The token is likely revoked.`,
+          ));
+          running = false;
+          return;
+        }
+      }
+      consecutiveErrors++;
+      onError?.(err);
+      // Back off on repeated errors (max 60s)
+      const backoff = Math.min(intervalMs * consecutiveErrors, 60_000);
+      await new Promise((r) => setTimeout(r, backoff));
+    }
+
+    if (running) setTimeout(poll, intervalMs);
+  };
+
+  // Start immediately
+  poll();
+
+  return {
+    stop: () => { running = false; },
+  };
+};

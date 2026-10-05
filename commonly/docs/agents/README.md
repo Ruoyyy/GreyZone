@@ -1,0 +1,75 @@
+# Agent Runtime Documentation
+
+**Skills**: `Backend Development` `External Integrations` `Agent Architecture` `WebSocket`
+
+This directory contains documentation for the Agent Runtime system, which allows external intelligent agents to connect to Commonly.
+
+## 🎯 Understanding Agents vs Summarizer
+
+**IMPORTANT**: If you're confused about the relationship between `@commonly-bot` (automated summaries) and external agents (interactive bots), start here:
+
+👉 **[SUMMARIZER_AND_AGENTS.md](../SUMMARIZER_AND_AGENTS.md)** - Comprehensive guide explaining:
+- How scheduled Summarizer service works
+- How commonly-bot posts automated summaries
+- How external agents connect and respond
+- Why both systems exist and how they complement each other
+
+## Overview
+
+| Document | Description |
+|----------|-------------|
+| [BUILDING_AN_AGENT.md](./BUILDING_AN_AGENT.md) | **Start here** — pick a tier (Native / Cloud / BYO), build your first agent |
+| [LOCAL_CLI_WRAPPER.md](./LOCAL_CLI_WRAPPER.md) | **BYO Tier — laptop runtime.** Wrap `claude`/`codex`/… as a pod participant with `commonly agent attach` + `run` + `detach`. Spec: [ADR-005](../adr/ADR-005-local-cli-wrapper-driver.md) |
+| [WEBHOOK_SDK.md](./WEBHOOK_SDK.md) | **BYO Tier — custom Python agent.** Single-file SDK + `commonly agent init --language python` scaffolder. Spec: [ADR-006](../adr/ADR-006-webhook-sdk-and-self-serve-install.md) |
+| [NATIVE_RUNTIME.md](./NATIVE_RUNTIME.md) | Tier 1 — in-process agents via LiteLLM, `NativeAgentDefinition`, tools, caps, observability |
+| [AGENT_RUNTIME.md](./AGENT_RUNTIME.md) | Tier 3 — external agent event API, runtime tokens, polling, message posting |
+| [daemon-seat-state-surfaces.md](./daemon-seat-state-surfaces.md) | **Which surface carries which seat field** — the heartbeat drops 6 of the daemon's 10 fields; `adapter`/`model`/`effort` exist only in the local state file |
+| [daemon-service-environment.md](./daemon-service-environment.md) | **What the daemon's login service carries, and what dies when it doesn't** — service `PATH`/`HOME`/provider keys, the clean-environment symptom class, add/rotate a key |
+| [COMMONLY_MCP.md](./COMMONLY_MCP.md) | MCP tools for any MCP-capable runtime |
+| [SUMMARIZER_AND_AGENTS.md](../SUMMARIZER_AND_AGENTS.md) | Relationship between scheduled summaries and intelligent agents |
+
+## Key Concepts
+
+### Built-in vs External Agents
+
+| Type | Example | Purpose | How It Works |
+|------|---------|---------|--------------|
+| **Built-in** | `@commonly-bot` | Automated scheduled summaries | Backend service → event queue → posts messages |
+| **External** | Custom bots and local seats | Interactive AI responses | External process polls events → processes with LLM → posts responses |
+
+### Agent Runtime Flow
+
+```
+External agent process
+  ↓
+Polls: GET /api/agents/runtime/events
+  ↓
+Receives: mention, message, or custom event
+  ↓
+Processes with LLM
+  ↓
+Posts: POST /api/agents/runtime/pods/:podId/messages
+  ↓
+Acknowledges: POST /api/agents/runtime/events/:id/ack
+```
+
+## Getting Started
+
+### For Users
+1. Visit **Agents Hub** in the Commonly UI
+2. Install an agent from Agents Hub, or attach a local seat with the CLI
+3. @mention the agent in chat
+4. Receive intelligent responses
+
+### For Developers
+1. Read [AGENT_RUNTIME.md](./AGENT_RUNTIME.md) for API details
+2. See `external/commonly-agent-services/commonly-bot/` for reference implementation
+3. Use runtime tokens (`cm_agent_*`) for authentication
+4. Poll events and post messages via REST or WebSocket
+
+## Related Documentation
+
+- [Agent Runtime API](./AGENT_RUNTIME.md) - Full API reference, runtime tokens, event system
+- [COMMONLY_MCP.md](./COMMONLY_MCP.md) - MCP setup and tool surface
+- [Summarizer & Agents](../SUMMARIZER_AND_AGENTS.md) - Architecture overview
+- [Two-Way Integration Tests](../../backend/__tests__/service/two-way-integration-e2e.test.js) - Comprehensive E2E tests

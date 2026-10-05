@@ -1,0 +1,525 @@
+jest.mock('../../../middleware/auth', () => (req, res, next) => next());
+jest.mock('../../../middleware/adminAuth', () => (req, res, next) => next());
+
+jest.mock('../../../models/Integration', () => ({
+  findOne: jest.fn(),
+  create: jest.fn(),
+}));
+jest.mock('../../../models/OAuthState', () => ({
+  create: jest.fn(),
+  findOneAndUpdate: jest.fn(),
+}));
+
+jest.mock('../../../models/Pod', () => ({
+  findOne: jest.fn(),
+  create: jest.fn(),
+  updateOne: jest.fn(),
+  findById: jest.fn(),
+}));
+
+jest.mock('../../../integrations', () => ({
+  get: jest.fn(),
+}));
+
+jest.mock('../../../services/socialPolicyService', () => ({
+  getPolicy: jest.fn(),
+  setPolicy: jest.fn(),
+}));
+jest.mock('../../../services/globalModelConfigService', () => ({
+  getConfig: jest.fn(),
+  isSupportedLlmServiceProvider: jest.fn(),
+  setConfig: jest.fn(),
+}));
+jest.mock('../../../services/externalFeedService', () => ({
+  syncExternalFeeds: jest.fn(),
+}));
+jest.mock('axios', () => ({
+  get: jest.fn(),
+}));
+
+const axios = require('axios');
+const Integration = require('../../../models/Integration');
+const OAuthState = require('../../../models/OAuthState');
+const Pod = require('../../../models/Pod');
+const registry = require('../../../integrations');
+const externalFeedService = require('../../../services/externalFeedService');
+const GlobalModelConfigService = require('../../../services/globalModelConfigService');
+const router = require('../../../routes/admin/globalIntegrations');
+
+function getRouteHandler(path, method) {
+  const layer = router.stack.find(
+    (entry) => entry.route && entry.route.path === path && entry.route.methods[method],
+  );
+  return layer.route.stack[layer.route.stack.length - 1].handle;
+}
+
+function createRes() {
+  const res = {};
+  res.status = jest.fn().mockReturnValue(res);
+  res.json = jest.fn().mockReturnValue(res);
+  return res;
+}
+
+describe('admin global integrations route', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    Pod.findOne.mockResolvedValue({
+      _id: 'pod-global',
+      name: 'Global Social Feed',
+      members: ['admin-1'],
+    });
+    Pod.updateOne.mockResolvedValue({});
+    Pod.findById.mockResolvedValue({
+      _id: 'pod-global',
+      name: 'Global Social Feed',
+      members: ['admin-1', 'admin-2'],
+    });
+    GlobalModelConfigService.getConfig.mockResolvedValue({
+      llmService: {
+        provider: 'auto',
+        model: 'gemini-2.5-flash',
+        openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '' },
+      },
+      openclaw: {
+        provider: 'google',
+        model: 'google/gemini-2.5-flash',
+        fallbackModels: ['google/gemini-2.5-flash-lite', 'google/gemini-2.0-flash'],
+      },
+    });
+    GlobalModelConfigService.isSupportedLlmServiceProvider.mockReturnValue(true);
+  });
+
+  it('uses follows.read in default OAuth scopes for X OAuth start', async () => {
+    const handler = getRouteHandler('/x/oauth/start', 'post');
+    const originalClientId = process.env.X_OAUTH_CLIENT_ID;
+    process.env.X_OAUTH_CLIENT_ID = 'test-client-id';
+    OAuthState.create.mockResolvedValueOnce({});
+
+    const req = {
+      userId: 'admin-1',
+      body: {},
+    };
+    const res = createRes();
+
+    await handler(req, res);
+
+    expect(OAuthState.create).toHaveBeenCalledTimes(1);
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.success).toBe(true);
+    const authorizeUrl = new URL(payload.authorizeUrl);
+    const scopeParam = authorizeUrl.searchParams.get('scope');
+    expect(scopeParam).toEqual(expect.stringContaining('follows.read'));
+
+    if (originalClientId === undefined) {
+      delete process.env.X_OAUTH_CLIENT_ID;
+    } else {
+      process.env.X_OAUTH_CLIENT_ID = originalClientId;
+    }
+  });
+
+  it('tests X integration via registry.get(type, integration)', async () => {
+    const handler = getRouteHandler('/x/test', 'post');
+    const xIntegration = { _id: 'int-x', type: 'x', config: { accessToken: 'token' } };
+    const provider = {
+      validateConfig: jest.fn().mockResolvedValue(true),
+      health: jest.fn().mockResolvedValue({ ok: true }),
+    };
+    const req = { userId: 'admin-1' };
+    const res = createRes();
+
+    Integration.findOne.mockResolvedValue(xIntegration);
+    registry.get.mockReturnValue(provider);
+
+    await handler(req, res);
+
+    expect(res.status).not.toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ success: true, message: 'X connection successful' });
+    expect(registry.get).toHaveBeenCalledWith('x', xIntegration);
+    expect(provider.validateConfig).toHaveBeenCalledTimes(1);
+    expect(provider.health).toHaveBeenCalledTimes(1);
+  });
+
+  it('tests Instagram integration via registry.get(type, integration)', async () => {
+    const handler = getRouteHandler('/instagram/test', 'post');
+    const instagramIntegration = { _id: 'int-ig', type: 'instagram', config: { accessToken: 'token' } };
+    const provider = { validateConfig: jest.fn().mockResolvedValue(true) };
+    const req = { userId: 'admin-1' };
+    const res = createRes();
+
+    Integration.findOne.mockResolvedValue(instagramIntegration);
+    registry.get.mockReturnValue(provider);
+
+    await handler(req, res);
+
+    expect(res.status).not.toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ success: true, message: 'Instagram connection successful' });
+    expect(registry.get).toHaveBeenCalledWith('instagram', instagramIntegration);
+    expect(provider.validateConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('enables agent/global agent access flags when saving X integration', async () => {
+    const handler = getRouteHandler('/x', 'post');
+    const req = {
+      userId: 'admin-1',
+      body: {
+        enabled: true,
+        accessToken: 'x-token',
+        username: 'commonly',
+        userId: 'x-user-id',
+        followUsernames: '@openai, @github',
+        followUserIds: '1,2',
+        followFromAuthenticatedUser: true,
+        followingWhitelistUserIds: '3,4',
+        followingMaxUsers: 12,
+      },
+    };
+    const res = createRes();
+    const created = {
+      _id: 'x-int-1',
+      type: 'x',
+      status: 'connected',
+      config: {},
+    };
+
+    Integration.findOne.mockResolvedValueOnce(null);
+    Integration.create.mockResolvedValueOnce(created);
+
+    await handler(req, res);
+
+    expect(Integration.create).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'x',
+      config: expect.objectContaining({
+        accessToken: 'x-token',
+        agentAccessEnabled: true,
+        globalAgentAccess: true,
+        followFromAuthenticatedUser: true,
+        followingWhitelistUserIds: ['3', '4'],
+        followingMaxUsers: 12,
+      }),
+    }));
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      integration: created,
+    });
+  });
+
+  it('the admin X save keeps the stored token when the body omits it', async () => {
+    const handler = getRouteHandler('/x', 'post');
+    const req = {
+      userId: 'admin-1',
+      body: {
+        enabled: true,
+        username: 'commonly',
+        userId: 'x-user-id',
+      },
+    };
+    const res = createRes();
+    const stored = {
+      _id: 'x-int-1',
+      type: 'x',
+      status: 'connected',
+      config: { accessToken: 'stored-x-token', refreshToken: 'stored-refresh', username: 'old' },
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+
+    Integration.findOne.mockResolvedValueOnce(stored);
+
+    await handler(req, res);
+
+    expect(Integration.findOne).toHaveBeenCalledTimes(1);
+    expect(Integration.create).not.toHaveBeenCalled();
+    expect(stored.save).toHaveBeenCalled();
+    expect(stored.config.accessToken).toBe('stored-x-token');
+    expect(stored.config.refreshToken).toBe('stored-refresh');
+    expect(stored.config.username).toBe('commonly');
+    expect(res.status).not.toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ success: true, integration: stored });
+  });
+
+  it('the admin X save replaces the stored token when a new one is typed', async () => {
+    const handler = getRouteHandler('/x', 'post');
+    const req = {
+      userId: 'admin-1',
+      body: { enabled: true, accessToken: 'fresh-x-token', username: 'commonly', userId: 'x-user-id' },
+    };
+    const res = createRes();
+    const stored = {
+      _id: 'x-int-1',
+      type: 'x',
+      status: 'connected',
+      config: { accessToken: 'stored-x-token' },
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+
+    Integration.findOne.mockResolvedValueOnce(stored);
+
+    await handler(req, res);
+
+    expect(stored.config.accessToken).toBe('fresh-x-token');
+    expect(res.json).toHaveBeenCalledWith({ success: true, integration: stored });
+  });
+
+  it('a new admin X integration still needs a token', async () => {
+    const handler = getRouteHandler('/x', 'post');
+    const req = {
+      userId: 'admin-1',
+      body: { enabled: true, username: 'commonly', userId: 'x-user-id' },
+    };
+    const res = createRes();
+
+    Integration.findOne.mockResolvedValueOnce(null);
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(Integration.create).not.toHaveBeenCalled();
+  });
+
+  it('lists a second admin in the global pod before their first sync (TASK-164)', async () => {
+    const handler = getRouteHandler('/x', 'post');
+    const req = {
+      userId: 'admin-2',
+      body: {
+        enabled: true,
+        accessToken: 'x-token',
+        username: 'commonly',
+        userId: 'x-user-id',
+      },
+    };
+    const res = createRes();
+    Integration.findOne.mockResolvedValueOnce(null);
+    Integration.create.mockResolvedValueOnce({
+      _id: 'x-int-2',
+      type: 'x',
+      status: 'connected',
+      config: {},
+    });
+
+    await handler(req, res);
+
+    // Only the first requester became a Mongo member (at pod creation), so a
+    // second admin's feed would pause on its first sync without this write.
+    expect(Pod.updateOne).toHaveBeenCalledWith(
+      { _id: 'pod-global' },
+      { $addToSet: { members: 'admin-2' } },
+    );
+    // The pod handed on is the refetched one, so its members match the write.
+    expect(Pod.findById).toHaveBeenCalledWith('pod-global');
+    expect(Integration.create).toHaveBeenCalledWith(expect.objectContaining({
+      createdBy: 'admin-2',
+      podId: 'pod-global',
+    }));
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      integration: expect.objectContaining({ _id: 'x-int-2' }),
+    });
+  });
+
+  it('does not re-add an admin the global pod already lists (control)', async () => {
+    const handler = getRouteHandler('/x', 'post');
+    const req = {
+      userId: 'admin-1',
+      body: {
+        enabled: true,
+        accessToken: 'x-token',
+        username: 'commonly',
+        userId: 'x-user-id',
+      },
+    };
+    const res = createRes();
+    Integration.findOne.mockResolvedValueOnce(null);
+    Integration.create.mockResolvedValueOnce({
+      _id: 'x-int-3',
+      type: 'x',
+      status: 'connected',
+      config: {},
+    });
+
+    await handler(req, res);
+
+    expect(Pod.updateOne).not.toHaveBeenCalled();
+    expect(Pod.findById).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      integration: expect.objectContaining({ _id: 'x-int-3' }),
+    });
+  });
+
+  it('the admin Instagram save keeps the stored token when the body omits it', async () => {
+    const handler = getRouteHandler('/instagram', 'post');
+    const req = {
+      userId: 'admin-1',
+      body: { enabled: true, username: 'commonly', igUserId: 'ig-1' },
+    };
+    const res = createRes();
+    const stored = {
+      _id: 'ig-int-1',
+      type: 'instagram',
+      status: 'connected',
+      config: { accessToken: 'stored-ig-token', username: 'old' },
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+
+    Integration.findOne.mockResolvedValueOnce(stored);
+
+    await handler(req, res);
+
+    expect(stored.save).toHaveBeenCalled();
+    expect(stored.config.accessToken).toBe('stored-ig-token');
+    expect(stored.config.username).toBe('commonly');
+    expect(res.status).not.toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ success: true, integration: stored });
+  });
+
+  it('a new admin Instagram integration still needs a token', async () => {
+    const handler = getRouteHandler('/instagram', 'post');
+    const req = {
+      userId: 'admin-1',
+      body: { enabled: true, username: 'commonly', igUserId: 'ig-1' },
+    };
+    const res = createRes();
+
+    Integration.findOne.mockResolvedValueOnce(null);
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(Integration.create).not.toHaveBeenCalled();
+  });
+
+  it('lists OAuth following accounts for connected global X integration', async () => {
+    const handler = getRouteHandler('/x/following', 'get');
+    const req = { userId: 'admin-1', query: { limit: '2' } };
+    const res = createRes();
+    const xIntegration = {
+      _id: 'int-x',
+      type: 'x',
+      status: 'connected',
+      isActive: true,
+      config: { accessToken: 'x-token', userId: 'x-user-1' },
+    };
+
+    Integration.findOne.mockResolvedValueOnce(xIntegration);
+    axios.get.mockResolvedValueOnce({
+      data: {
+        data: [
+          { id: '11', username: 'openai', name: 'OpenAI' },
+          { id: '22', username: 'github', name: 'GitHub' },
+        ],
+      },
+    });
+
+    await handler(req, res);
+
+    expect(axios.get).toHaveBeenCalledWith(
+      expect.stringContaining('/users/x-user-1/following'),
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer x-token' },
+        params: expect.objectContaining({ max_results: 2 }),
+      }),
+    );
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      count: 2,
+      users: [
+        { id: '11', username: 'openai', name: 'OpenAI' },
+        { id: '22', username: 'github', name: 'GitHub' },
+      ],
+    });
+  });
+
+  it('triggers external feed sync from admin endpoint', async () => {
+    const handler = getRouteHandler('/sync', 'post');
+    const req = { userId: 'admin-1' };
+    const res = createRes();
+    const syncResults = [
+      {
+        integrationId: 'x-1',
+        success: true,
+        messageCount: 3,
+        createdPosts: 3,
+      },
+    ];
+    externalFeedService.syncExternalFeeds.mockResolvedValueOnce(syncResults);
+
+    await handler(req, res);
+
+    expect(externalFeedService.syncExternalFeeds).toHaveBeenCalledTimes(1);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      count: 1,
+      results: syncResults,
+    });
+  });
+
+  it('saves global model policy', async () => {
+    const handler = getRouteHandler('/model-policy', 'post');
+    const req = {
+      userId: 'admin-1',
+      body: {
+        llmService: {
+          provider: 'openrouter',
+          model: 'openai/gpt-4.1-mini',
+          openrouter: {
+            apiKey: 'sk-or-test',
+          },
+        },
+        openclaw: {
+          provider: 'openrouter',
+          model: 'openai/gpt-4.1-mini',
+          fallbackModels: ['google/gemini-2.5-flash-lite'],
+        },
+      },
+    };
+    const res = createRes();
+    GlobalModelConfigService.setConfig.mockResolvedValueOnce({
+      llmService: {
+        provider: 'openrouter',
+        model: 'openai/gpt-4.1-mini',
+        openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '' },
+      },
+      openclaw: {
+        provider: 'openrouter',
+        model: 'openai/gpt-4.1-mini',
+        fallbackModels: ['google/gemini-2.5-flash-lite'],
+      },
+    });
+
+    await handler(req, res);
+
+    expect(GlobalModelConfigService.setConfig).toHaveBeenCalledWith(req.body, 'admin-1');
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      modelPolicy: {
+        llmService: {
+          provider: 'openrouter',
+          model: 'openai/gpt-4.1-mini',
+          openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '' },
+        },
+        openclaw: {
+          provider: 'openrouter',
+          model: 'openai/gpt-4.1-mini',
+          fallbackModels: ['google/gemini-2.5-flash-lite'],
+        },
+      },
+    });
+  });
+
+  it('rejects a backend provider that the LLM service cannot execute', async () => {
+    const handler = getRouteHandler('/model-policy', 'post');
+    const req = {
+      userId: 'admin-1',
+      body: { llmService: { provider: 'anthropic' } },
+    };
+    const res = createRes();
+    GlobalModelConfigService.isSupportedLlmServiceProvider.mockReturnValueOnce(false);
+
+    await handler(req, res);
+
+    expect(GlobalModelConfigService.setConfig).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({
+      error: 'Unsupported backend LLM provider. Use auto, gemini, litellm, or openrouter.',
+    });
+  });
+});

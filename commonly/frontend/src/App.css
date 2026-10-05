@@ -1,0 +1,339 @@
+/* frontend/src/App.css */
+
+/* Global Styles */
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+  width: 100vw;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* These legacy V1 element styles must never cross into the light v2 canvas.
+   V2App stamps body.v2-canvas before the page renders; keeping the boundary
+   here means new bare controls do not inherit the V1 dark/blue chrome. */
+body.modern-ui:not(.v2-canvas) img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* No dark default on bare body: it painted EVERY page load dark for the
+   beat before React mounts — including v2, whose canvas is light — and
+   that flash read as "a dark background hidden behind" (Sam, 2026-08-24).
+   The V1 dark palette lives under body.modern-ui below, which App.tsx
+   stamps at mount; v2 out-ranks it with body.v2-canvas (v2.css). The
+   pre-mount canvas matches v2's --v2-page-bg because v2 is the front
+   door — / routes there. */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  background-color: #f8f8fb;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  width: 100vw;
+  min-height: 100vh;
+}
+
+:root {
+  --app-bg: radial-gradient(circle at top, rgba(46, 64, 110, 0.18), transparent 55%),
+    linear-gradient(135deg, #0f172a 0%, #111827 45%, #0b1220 100%);
+  --surface-1: rgba(15, 23, 42, 0.92);
+  --surface-2: rgba(30, 41, 59, 0.88);
+  --surface-3: rgba(148, 163, 184, 0.12);
+  --border-subtle: rgba(148, 163, 184, 0.18);
+  --text-muted: #94a3b8;
+  --accent: #60a5fa;
+}
+
+body.modern-ui {
+  background: var(--app-bg);
+  background-color: #0b1220; /* the old bare-body dark, now V1-scoped */
+  color: #e2e8f0;
+}
+
+/* Public guides live outside V2's component tree but use its light shell.
+   The compound selector also overrides the legacy body.modern-ui gradient. */
+body.guide-canvas,
+body.modern-ui.guide-canvas {
+  background: #f8f8fb;
+  color: #111827;
+}
+
+body.modern-ui ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+body.modern-ui ::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.5);
+}
+
+body.modern-ui ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.65), rgba(15, 23, 42, 0.9));
+  border-radius: 999px;
+  border: 2px solid rgba(15, 23, 42, 0.65);
+}
+
+body.modern-ui {
+  scrollbar-color: rgba(59, 130, 246, 0.7) rgba(15, 23, 42, 0.5);
+  scrollbar-width: thin;
+}
+
+body.modern-ui .MuiPaper-root,
+body.modern-ui .MuiCard-root,
+body.modern-ui .MuiAccordion-root {
+  background-color: var(--surface-1);
+  color: #e2e8f0;
+  border: 1px solid var(--border-subtle);
+}
+
+body.modern-ui .MuiDivider-root {
+  border-color: var(--border-subtle);
+}
+
+body.modern-ui .MuiAlert-root {
+  background-color: var(--surface-2);
+  color: #e2e8f0;
+  border: 1px solid var(--border-subtle);
+}
+
+body.modern-ui .MuiChip-root {
+  background-color: rgba(30, 41, 59, 0.8);
+  color: #e2e8f0;
+  border-color: var(--border-subtle);
+}
+
+/* Force re-render on navigation */
+.navigation-occurred * {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* Center App Content */
+.App {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Styling for V1 Forms */
+body.modern-ui:not(.v2-canvas) form {
+  background: #111827;
+  padding: 20px;
+  max-width: 400px;
+  margin: auto;
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(8, 12, 24, 0.45);
+}
+
+.auth-form {
+  background: transparent;
+  padding: 0;
+  max-width: none;
+  margin: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+body.modern-ui:not(.v2-canvas) input {
+  width: 100%;
+  padding: 12px;
+  margin: 10px 0;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 8px;
+  font-size: 16px;
+  background-color: rgba(15, 23, 42, 0.75);
+  color: #e2e8f0;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+body.modern-ui:not(.v2-canvas) input:focus {
+  outline: none;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.25);
+}
+
+body.modern-ui:not(.v2-canvas) button {
+  background-color: #2563eb;
+  color: #f8fafc;
+  padding: 12px 20px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 600;
+  transition: background-color 0.2s, transform 0.1s;
+}
+
+body.modern-ui:not(.v2-canvas) button:hover {
+  background-color: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+body.modern-ui:not(.v2-canvas) button:active {
+  transform: translateY(1px);
+}
+
+/* Post Feed */
+.post {
+  background: rgba(15, 23, 42, 0.92);
+  padding: 20px;
+  margin: 15px auto;
+  max-width: 600px;
+  border-radius: 12px;
+  box-shadow: 0 12px 24px rgba(8, 12, 24, 0.35);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.post:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+.post h3 {
+  margin: 0 0 10px 0;
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.post p {
+  font-size: 15px;
+  color: #cbd5f5;
+  margin-bottom: 15px;
+}
+
+/* Layout container */
+.layout-container {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* Content container */
+.content-container {
+  padding: 20px;
+  flex: 1;
+}
+
+/* Override MUI styles */
+.MuiButton-root {
+  text-transform: none !important;
+  font-weight: 600 !important;
+}
+
+.MuiPaper-root {
+  border-radius: 12px !important;
+}
+
+/* Fix for flex layout issues */
+.flex {
+  display: flex;
+}
+
+/* Fix for pod container */
+.pod-container {
+  padding-top: 0 !important;
+  background-color: transparent !important;
+}
+
+/* Fix for chat room container */
+.chat-room-container {
+  padding-top: 0 !important;
+}
+
+/* Override for search form */
+.search-bar form {
+  background: transparent;
+  padding: 0;
+  max-width: none;
+  margin: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.search-container {
+  box-shadow: none;
+}
+
+/* Override for chat input form */
+.message-input-container.MuiPaper-root {
+  box-shadow: 0 -2px 8px rgba(15, 23, 42, 0.06) !important;
+}
+
+/* Global styles for emoji picker with collapsed dashboard */
+body.dashboard-collapsed .emoji-picker-wrapper {
+  left: calc(50% + 30px) !important;
+  margin-left: -285px !important;
+}
+
+/* Existing dashboard collapsed styles */
+body.dashboard-collapsed .main-content {
+  width: 100% !important;
+  margin-left: 60px !important;
+}
+
+body.dashboard-collapsed .chat-room-container {
+  width: 100% !important;
+  margin-left: 0 !important;
+}
+
+@media (max-width: 1200px) {
+  body.dashboard-collapsed .emoji-picker-wrapper {
+    margin-left: -265px !important;
+  }
+}
+
+@media (max-width: 768px) {
+  body.dashboard-collapsed .main-content,
+  body.dashboard-collapsed .chat-room-container {
+    width: 100% !important;
+    margin-left: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+  }
+  
+  body.dashboard-collapsed .emoji-picker-wrapper {
+    left: 50% !important;
+    margin-left: -200px !important;
+  }
+}
+
+/* Global styles to override emoji picker scaling */
+.emoji-picker-react {
+  transform: none !important;
+  transform-origin: unset !important;
+  scale: 1 !important;
+  font-size: 16px !important;
+}
+
+.emoji-picker-react * {
+  transform: none !important;
+  transform-origin: unset !important;
+  scale: 1 !important;
+}
+
+.emoji-picker-react .emoji-group > span {
+  font-size: 24px !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 32px !important;
+  min-height: 32px !important;
+}
+
+/* Fix for mobile emoji sizing */
+@media (max-width: 768px) {
+  .emoji-picker-react .emoji-group > span {
+    font-size: 22px !important;
+    min-width: 28px !important;
+    min-height: 28px !important;
+  }
+}
+  

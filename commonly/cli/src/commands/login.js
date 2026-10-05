@@ -1,0 +1,193 @@
+/**
+ * commonly login [--instance <url>] [--key <name>]
+ *
+ * Authenticates and stores the token in ~/.commonly/config.json.
+ * Supports multiple named instances.
+ */
+
+import { createInterface } from 'readline';
+import { hostname } from 'os';
+import { createClient, login as apiLogin } from '../lib/api.js';
+import { DEFAULT_URL, resolveInstance, saveInstance } from '../lib/config.js';
+import {
+  DeviceLoginCancelledError,
+  DeviceLoginDeniedError,
+  DeviceLoginExpiredError,
+  waitForDeviceAuthorization,
+} from '../lib/device-login.js';
+
+const prompt = (rl, question) => new Promise((resolve) => rl.question(question, resolve));
+
+const promptSecret = (question) => new Promise((resolve) => {
+  process.stdout.write(question);
+  const { stdin } = process;
+  stdin.setRawMode?.(true);
+  stdin.resume();
+  stdin.setEncoding('utf8');
+
+  let password = '';
+  const onData = (ch) => {
+    if (ch === '\n' || ch === '\r' || ch === '\u0003') {
+      stdin.setRawMode?.(false);
+      stdin.pause();
+      stdin.removeListener('data', onData);
+      process.stdout.write('\n');
+      resolve(password);
+    } else if (ch === '\u007f') {
+      password = password.slice(0, -1);
+    } else {
+      password += ch;
+    }
+  };
+  stdin.on('data', onData);
+});
+
+/**
+ * Resolve the login target before making the request or writing config.
+ *
+ * `--instance` accepts either a URL or a saved profile key. The API client
+ * resolves keys internally, but persisting the raw argument would write a key
+ * (for example, "default") into the URL field and break every later command.
+ */
+export const resolveLoginTarget = ({ instanceArg, keyArg }) => {
+  // A missing --instance means "the active profile", just like the other
+  // config helpers. Resolve it before choosing the key so a login without
+  // flags refreshes that profile instead of silently forking `default`.
+  const resolved = resolveInstance(instanceArg);
+  const isUrl = /^https?:\/\//i.test(instanceArg || '');
+  const instanceUrl = (resolved?.url || (isUrl ? instanceArg : DEFAULT_URL)).replace(/\/$/, '');
+  const isLocal = instanceUrl.includes('localhost') || instanceUrl.includes('127.0.0.1');
+  const isKey = instanceArg && !isUrl;
+  // A URL may resolve back to an existing named profile too. Prefer that key
+  // regardless of input shape, or a URL login can fork a second profile onto
+  // the same endpoint and leave the original token stale.
+  const configKey = keyArg || resolved?.key || (isKey ? instanceArg : (isLocal ? 'local' : 'default'));
+
+  return { instanceUrl, configKey };
+};
+
+export const registerLogin = (program) => {
+  program
+    .command('login')
+    .description('Authenticate to a Commonly instance')
+    .option('--instance <url-or-key>', 'Instance URL or saved profile key (default: active profile; production on first run)')
+    .option('--key <name>', 'Config key to save as (default: active profile key; otherwise derived from the instance)')
+    .option('--password', 'Use the legacy email/password prompt instead of device authorization')
+    .addHelpText('after', `
+Examples:
+  $ commonly login                                                   # active profile (production on first run)
+  $ commonly login --instance https://api.commonly.me --key dev  # named profile
+  $ commonly login --instance http://localhost:5000                  # saved as "local"
+
+Tokens are stored in ~/.commonly/config.json. Other commands take
+--instance <url-or-key> to target the right profile.
+`)
+    .action(async (opts) => {
+      const { instanceUrl, configKey } = resolveLoginTarget({
+        instanceArg: opts.instance,
+        keyArg: opts.key,
+      });
+
+      try {
+        if (!opts.password) {
+          const client = createClient({ instance: instanceUrl, token: null });
+          const started = await client.post('/api/auth/device/start', {
+            clientName: 'commonly-cli',
+            clientVersion: program.version(),
+            hostname: hostname(),
+          });
+          const minutes = Math.ceil(started.expiresIn / 60);
+          console.log(`Logging in to ${instanceUrl} as a new device.\n`);
+          console.log(`  Open   ${started.verifyUrl}`);
+          console.log(`  Code   ${started.userCode}`);
+          console.log(`\nWaiting for approval… (expires in ${minutes}:00)  press o to open the browser, q to cancel`);
+          const data = await waitForDeviceAuthorization({
+            client,
+            deviceCode: started.deviceCode,
+            userCode: started.userCode,
+            verifyUrl: started.verifyUrl,
+            interval: started.interval,
+            expiresIn: started.expiresIn,
+            onStatus: (message) => console.log(message),
+          });
+
+          saveInstance({
+            key: configKey,
+            url: instanceUrl,
+            token: data.token,
+            userId: data.userId,
+            username: data.username,
+            tokenType: 'device',
+          });
+          const devicesUrl = new URL('/settings/devices', started.verifyUrl).toString();
+          console.log(`\n✓ Authorized as @${data.username} on ${configKey} (${instanceUrl})`);
+          console.log(`  Token saved to ~/.commonly/config.json · manage devices at ${devicesUrl}`);
+          return;
+        }
+
+        console.log(`Logging in to ${instanceUrl}`);
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const email = await prompt(rl, 'Email: ');
+        rl.close();
+        const password = await promptSecret('Password: ');
+        const data = await apiLogin(instanceUrl, email.trim(), password);
+        const token = data.token;
+        const userId = data.user?._id || data.user?.id;
+        const username = data.user?.username;
+
+        saveInstance({ key: configKey, url: instanceUrl, token, userId, username, tokenType: 'jwt' });
+
+        console.log(`\nLogged in as ${username} (${configKey})`);
+        console.log(`Token saved to ~/.commonly/config.json`);
+      } catch (err) {
+        const message = err instanceof DeviceLoginExpiredError
+          ? `Code expired after 10 minutes. Run commonly login --instance ${configKey} for a new code.`
+          : err instanceof DeviceLoginCancelledError || err instanceof DeviceLoginDeniedError
+            ? err.message
+            : `Login failed: ${err.message}`;
+        console.error(message);
+        process.exit(1);
+      }
+    });
+};
+
+export const registerWhoami = (program) => {
+  program
+    .command('whoami')
+    .description('Show current auth state')
+    .option('--instance <url>', 'Target instance')
+    .action(async () => {
+      const { listInstances } = await import('../lib/config.js');
+      const instances = listInstances();
+
+      if (instances.length === 0) {
+        console.log('Not logged in. Run: commonly login');
+        return;
+      }
+
+      instances.forEach(({ key, url, username, active, token, tokenType }) => {
+        const marker = active ? '→' : ' ';
+        console.log(`${marker} ${key}  ${username || '?'}@${url}  (${formatTokenStatus(token, tokenType, Date.now(), key)})`);
+      });
+    });
+};
+
+const decodeJwtExpiry = (token) => {
+  if (typeof token !== 'string' || token.split('.').length !== 3) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+};
+
+export const formatTokenStatus = (token, tokenType, now = Date.now(), instanceKey = 'default') => {
+  if (tokenType === 'device' || String(token || '').startsWith('cm_')) return 'device token · no expiry';
+  const expiresAt = decodeJwtExpiry(token);
+  if (!expiresAt) return 'session token · expiry unknown';
+  const diff = expiresAt - now;
+  if (diff <= 0) return `expired — commonly login --instance ${instanceKey}`;
+  const hours = Math.max(1, Math.ceil(diff / (60 * 60 * 1000)));
+  return `expires in ${hours}h`;
+};

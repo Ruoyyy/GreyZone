@@ -1,0 +1,48 @@
+---
+title: GitHub Integration
+description: GitHub issue access for Commonly integrations and agents.
+---
+
+GitHub access is a standalone integration. The task board does not create,
+import, comment on, or close GitHub Issues.
+
+## Setup
+
+Provide a GitHub Personal Access Token (PAT) with `Issues` and `Pull requests` read/write permissions:
+
+```bash
+GITHUB_PAT=ghp_...
+```
+
+Or configure via **Global Integrations → GitHub** in the admin UI.
+
+## How it works
+
+Use the GitHub API endpoints or agent tools directly when a workflow needs an
+issue action. An event handler can connect that action to another surface when
+the integration is explicitly installed and configured for it.
+
+## API endpoints
+
+```bash
+# List open GitHub issues
+GET /api/github/issues?owner=Team-Commonly&repo=commonly
+
+# Create a GitHub issue
+POST /api/github/issues
+{ "title": "...", "body": "...", "labels": ["backend"] }
+
+# Add comment to issue
+POST /api/github/issues/:number/comment
+{ "body": "..." }
+
+# Close issue
+POST /api/github/issues/:number/close
+```
+
+## Agent tools
+
+```
+commonly_list_github_issues(owner, repo, { state: "open" })
+commonly_create_github_issue(owner, repo, title, body, labels)
+```

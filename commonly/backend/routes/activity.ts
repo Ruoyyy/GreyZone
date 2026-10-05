@@ -1,0 +1,425 @@
+// ESM import so CodeQL recognises the limiter on this database-backed read
+// route; it runs before auth and the recap aggregation.
+import rateLimit from 'express-rate-limit';
+import type { Request } from 'express';
+import { cloudflareIpRateLimitKeyGenerator } from '../middleware/ipRateLimit';
+
+// eslint-disable-next-line global-require
+const express = require('express');
+// eslint-disable-next-line global-require
+const auth = require('../middleware/auth');
+// eslint-disable-next-line global-require
+const Activity = require('../models/Activity');
+// eslint-disable-next-line global-require
+const User = require('../models/User');
+// eslint-disable-next-line global-require
+const ActivityService = require('../services/activityService');
+// eslint-disable-next-line global-require
+const DecisionRequestService = require('../services/decisionRequestService');
+// eslint-disable-next-line global-require
+const getAuthenticatedUserId = require('../utils/getAuthenticatedUserId');
+// eslint-disable-next-line global-require
+const Pod = require('../models/Pod');
+// eslint-disable-next-line global-require
+// TASK-166: the strict predicate. These two routes used the permissive default,
+// which admits a pod's creator after `leavePod` has unlisted them.
+const { isListedPodMember } = require('../utils/isPodMember');
+
+interface Req {
+  query?: Record<string, string>;
+  params?: Record<string, string>;
+  body?: Record<string, unknown>;
+}
+interface Res {
+  status: (n: number) => Res;
+  json: (d: unknown) => void;
+}
+
+const router: ReturnType<typeof express.Router> = express.Router();
+const MAX_MESSAGE_IDS_PER_REQUEST = 200;
+
+// The forms a `since` bound may take: a date, or a date-time WITH a zone.
+// A date-time without a zone is refused rather than parsed, because `Date.parse`
+// reads it in the SERVER's local zone (`'2026-09-28T04:00:00'` -> 11:00Z on this
+// host, 04:00Z on a UTC one) while `createdAt` is stored UTC, so the same request
+// means a different instant per host. A shifted bound silently hides rows; a
+// refusal is visible. Date-only is unambiguous (ISO reads it as UTC).
+const ISO_SINCE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/i;
+
+// Activity queries and actions fan out to multiple projections. Sixty per
+// minute leaves room for normal use without an unbounded hot loop.
+const activityRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'test',
+  keyGenerator: (req: Request) => cloudflareIpRateLimitKeyGenerator(req),
+  handler: (_req: unknown, res: Res) => res.status(429).json({ code: 'rate_limited' }),
+});
+
+router.use(activityRateLimit);
+
+router.get('/feed', auth, async (req: Req, res: Res) => {
+  try {
+    const { limit = '20', before, filter, mode = 'updates' } = req.query || {};
+    const userId = getAuthenticatedUserId(req);
+    const result = await ActivityService.getUserFeed(userId, { limit: parseInt(limit, 10), before, filter, mode });
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching activity feed:', error);
+    res.status(500).json({ error: 'Failed to fetch activity feed' });
+  }
+});
+
+router.get('/recap', auth, async (req: Req, res: Res) => {
+  try {
+    const window = req.query?.window;
+    const podId = req.query?.podId;
+    if (window !== undefined && window !== 'today' && window !== '7d') {
+      return res.status(400).json({ error: 'window must be today or 7d' });
+    }
+    if (podId !== undefined && typeof podId !== 'string') {
+      return res.status(400).json({ error: 'podId must be a string' });
+    }
+    const userId = getAuthenticatedUserId(req);
+    const result = await ActivityService.getRecap(userId, {
+      window: window === '7d' ? '7d' : 'today',
+      podId,
+    });
+    return res.json(result);
+  } catch (error) {
+    const e = error as { message?: string };
+    if (e.message === 'Access denied') return res.status(403).json({ error: 'Access denied' });
+    console.error('Error fetching activity recap:', error);
+    return res.status(500).json({ error: 'Failed to fetch activity recap' });
+  }
+});
+
+router.get('/pods/:podId', auth, async (req: Req, res: Res) => {
+  try {
+    const { podId } = req.params || {};
+    const { limit = '20', before, filter, mode = 'updates' } = req.query || {};
+    const userId = getAuthenticatedUserId(req);
+    const result = await ActivityService.getPodFeed(podId, userId, { limit: parseInt(limit, 10), before, filter, mode });
+    res.json(result);
+  } catch (error) {
+    const e = error as { message?: string };
+    console.error('Error fetching pod activity:', error);
+    if (e.message === 'Access denied') return res.status(403).json({ error: 'Access denied' });
+    res.status(500).json({ error: 'Failed to fetch pod activity' });
+  }
+});
+
+// Everything concretely waiting on this human: approvals + unacked mentions +
+// board decision/handoff rows. TASK-083: the queue reads FACTS that exist,
+// never name-matching heuristics (TASK-070b stays a design decision).
+router.get('/decision-queue', auth, async (req: Req, res: Res) => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+    const podId = req.query?.podId;
+    const rawMessageIds = req.query?.messageIds;
+    const rawLimit = req.query?.limit;
+    const rawOffset = req.query?.offset;
+    const rawSince = req.query?.since;
+    if (podId !== undefined && typeof podId !== 'string') {
+      return res.status(400).json({ error: 'podId must be a string' });
+    }
+    if (rawMessageIds !== undefined && typeof rawMessageIds !== 'string') {
+      return res.status(400).json({ error: 'messageIds must be a comma-separated string' });
+    }
+    const messageIds = rawMessageIds === undefined
+      ? undefined
+      : [...new Set(rawMessageIds.split(',').map((id) => id.trim()).filter(Boolean))];
+    if (messageIds && messageIds.length > MAX_MESSAGE_IDS_PER_REQUEST) {
+      return res.status(400).json({ error: `messageIds must contain at most ${MAX_MESSAGE_IDS_PER_REQUEST} ids` });
+    }
+    const limit = rawLimit === undefined ? undefined : Number(rawLimit);
+    const offset = rawOffset === undefined ? undefined : Number(rawOffset);
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
+      return res.status(400).json({ error: 'limit must be an integer between 1 and 50' });
+    }
+    if (offset !== undefined && (!Number.isInteger(offset) || offset < 0)) {
+      return res.status(400).json({ error: 'offset must be a non-negative integer' });
+    }
+    // `since` opens a window on the queue and is what makes a watcher tick one
+    // request instead of paging the whole thing: `/api/activity` is 60 requests a
+    // minute keyed on the client IP, shared with every other session on this host
+    // AND with the person's own Activity page, so paging a 550-item queue eleven
+    // times per tick draws on somebody else's budget.
+    //
+    // INCLUSIVE (`createdAt >= since`), pinned here because it is the difference
+    // between a row being re-delivered and a row being lost: a caller's cursor is
+    // a bare timestamp, and one sitting at millisecond T cannot know about a row
+    // INSERTED at T after it was written. An exclusive bound drops that row from
+    // that read and from every later read.
+    //
+    // The residual is bounded, not closed: a caller resuming from `nextSince - W`
+    // (the window the CLI uses) misses an arrival more than W behind a cursor it
+    // has already passed. `createdAt` is stamped before the write commits AND the
+    // stamp comes from the writer's clock, so W must exceed write-commit latency
+    // plus the writer's clock offset: a lagging clock stamps a new row behind a
+    // cursor the caller has already advanced past. Over-covering re-prints (the
+    // client dedupes on `attentionItemId`); a miss loses the row.
+    //
+    // An unusable value is refused rather than quietly dropped: a caller that
+    // asked to narrow and silently received the whole queue cannot tell.
+    //
+    // Three separate checks, because they catch three different callers: the
+    // TYPE check catches a repeated parameter (an array of one parses fine once
+    // stringified), the SHAPE check catches `Date.parse`'s tolerance for
+    // non-ISO forms (`'Sep 28 2026'`, `'2026'`) and for zone-less date-times it
+    // would read in local time, and the VALUE check catches an in-shape but
+    // impossible instant (`'2026-13-45T00:00:00Z'`).
+    const since = rawSince === undefined ? undefined : Date.parse(String(rawSince));
+    if (rawSince !== undefined
+      && (typeof rawSince !== 'string' || !ISO_SINCE.test(rawSince) || !Number.isFinite(since))) {
+      return res.status(400).json({ error: 'since must be an ISO-8601 timestamp' });
+    }
+    const options = {
+      ...(podId ? { podId } : {}),
+      ...(messageIds ? { messageIds } : rawMessageIds !== undefined ? { messageIds: [] } : {}),
+      ...(limit === undefined ? {} : { limit }),
+      ...(offset === undefined ? {} : { offset }),
+      ...(since === undefined ? {} : { since: new Date(since) }),
+    };
+    return res.json(await ActivityService.getDecisionQueue(userId, options));
+  } catch (error) {
+    console.error('Error fetching decision queue:', error);
+    return res.status(500).json({ error: 'Failed to fetch decision queue' });
+  }
+});
+
+// Settled decision cards are durable pod history, not recipient-owned open
+// attention. Keep this read separate so the Activity queue remains an honest
+// count of unresolved work while a room can restore its settled card after a
+// hard reload or leave/return navigation.
+router.get('/decision-history', auth, async (req: Req, res: Res) => {
+  try {
+    const podId = req.query?.podId;
+    const rawMessageIds = req.query?.messageIds;
+    const rawLimit = req.query?.limit;
+    const rawOffset = req.query?.offset;
+    if (podId !== undefined && typeof podId !== 'string') {
+      return res.status(400).json({ error: 'podId must be a string' });
+    }
+    if (rawMessageIds !== undefined && typeof rawMessageIds !== 'string') {
+      return res.status(400).json({ error: 'messageIds must be a comma-separated string' });
+    }
+    const messageIds = rawMessageIds === undefined
+      ? undefined
+      : [...new Set(rawMessageIds.split(',').map((id) => id.trim()).filter(Boolean))];
+    if (messageIds && messageIds.length > MAX_MESSAGE_IDS_PER_REQUEST) {
+      return res.status(400).json({ error: `messageIds must contain at most ${MAX_MESSAGE_IDS_PER_REQUEST} ids` });
+    }
+    const limit = rawLimit === undefined ? undefined : Number(rawLimit);
+    const offset = rawOffset === undefined ? undefined : Number(rawOffset);
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
+      return res.status(400).json({ error: 'limit must be an integer between 1 and 50' });
+    }
+    if (offset !== undefined && (!Number.isInteger(offset) || offset < 0)) {
+      return res.status(400).json({ error: 'offset must be a non-negative integer' });
+    }
+    const userId = getAuthenticatedUserId(req);
+    const options = {
+      ...(podId ? { podId } : {}),
+      ...(messageIds ? { messageIds } : rawMessageIds !== undefined ? { messageIds: [] } : {}),
+      ...(limit === undefined ? {} : { limit }),
+      ...(offset === undefined ? {} : { offset }),
+    };
+    return res.json(await ActivityService.getDecisionHistory(userId, options));
+  } catch (error) {
+    const e = error as { message?: string };
+    if (e.message === 'Access denied') return res.status(403).json({ error: 'Access denied' });
+    console.error('Error fetching decision history:', error);
+    return res.status(500).json({ error: 'Failed to fetch decision history' });
+  }
+});
+
+// Human-only by construction: this route uses `auth`, not dual auth. The
+// service repeats the isBot + pod-membership checks so a future middleware
+// change cannot turn an agent token into a decision authority.
+router.post('/decisions/:decisionId/choose', auth, async (req: Req, res: Res) => {
+  try {
+    const decisionId = String(req.params?.decisionId || '');
+    const value = (req.body || {}).value;
+    const userId = getAuthenticatedUserId(req);
+    const result = await DecisionRequestService.chooseDecision({
+      decisionId,
+      callerUserId: String(userId || ''),
+      value,
+      // Origin is server-owned. A browser can choose from the workspace only;
+      // never accept provider/integration identifiers from the request body.
+      origin: { via: 'workspace' },
+    });
+    return res.status(result.status).json(result.body);
+  } catch (error: any) {
+    if (error instanceof DecisionRequestService.DecisionRequestError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
+    console.error('Error choosing a decision:', error);
+    return res.status(500).json({ error: 'Failed to choose a decision' });
+  }
+});
+
+router.get('/approvals', auth, async (req: Req, res: Res) => {
+  try {
+    const userId = getAuthenticatedUserId(req);
+    const approvals = await ActivityService.getPendingApprovals(userId) as Array<{
+      _id: { toString: () => string };
+      content?: string;
+      agentMetadata?: { agentName?: string };
+      approval?: { requestedScopes?: unknown[] };
+      podId?: { toString: () => string };
+      createdAt?: Date;
+    }>;
+    res.json({ approvals: approvals.map((a) => ({ id: a._id.toString(), content: a.content, agentName: a.agentMetadata?.agentName, scopes: a.approval?.requestedScopes || [], podId: a.podId?.toString(), createdAt: a.createdAt })), count: approvals.length });
+  } catch (error) {
+    console.error('Error fetching approvals:', error);
+    res.status(500).json({ error: 'Failed to fetch approvals' });
+  }
+});
+
+router.get('/unread-count', auth, async (req: Req, res: Res) => {
+  try {
+    const { filter, mode = 'updates' } = req.query || {};
+    const userId = getAuthenticatedUserId(req);
+    const result = await ActivityService.getUnreadCount(userId, { filter, mode });
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching unread activity count:', error);
+    res.status(500).json({ error: 'Failed to fetch unread count' });
+  }
+});
+
+router.post('/mark-read', auth, async (req: Req, res: Res) => {
+  try {
+    const { activityId, all = false } = (req.body || {}) as { activityId?: string; all?: boolean };
+    const userId = getAuthenticatedUserId(req);
+    if (!all && !activityId) return res.status(400).json({ error: 'activityId is required when all=false' });
+    const result = await ActivityService.markRead(userId, { activityId: activityId ? String(activityId) : null, all: Boolean(all) });
+    if (!(result as { success?: boolean }).success) return res.status(400).json({ error: (result as { error?: string }).error || 'Failed to mark read' });
+    return res.json(result);
+  } catch (error) {
+    console.error('Error marking activity as read:', error);
+    return res.status(500).json({ error: 'Failed to mark activity as read' });
+  }
+});
+
+router.post('/:activityId/acknowledge', auth, async (req: Req, res: Res) => {
+  try {
+    const { activityId } = req.params || {};
+    const userId = getAuthenticatedUserId(req);
+    const result = await ActivityService.acknowledgeMention(userId, String(activityId)) as { success?: boolean; error?: string };
+    if (!result.success) return res.status(400).json({ error: result.error || 'Failed to acknowledge attention' });
+    return res.json(result);
+  } catch (error) {
+    console.error('Error acknowledging activity attention:', error);
+    return res.status(500).json({ error: 'Failed to acknowledge attention' });
+  }
+});
+
+router.post('/:activityId/like', auth, async (req: Req, res: Res) => {
+  try {
+    const { activityId } = req.params || {};
+    const userId = getAuthenticatedUserId(req);
+    const result = await ActivityService.toggleLike(activityId, userId);
+    res.json(result);
+  } catch (error) {
+    console.error('Error liking activity:', error);
+    res.status(500).json({ error: 'Failed to like activity' });
+  }
+});
+
+router.post('/:activityId/reply', auth, async (req: Req, res: Res) => {
+  try {
+    const { activityId } = req.params || {};
+    const { content } = (req.body || {}) as { content?: string };
+    const userId = getAuthenticatedUserId(req);
+    if (!content) return res.status(400).json({ error: 'Content is required' });
+    const result = await ActivityService.addReply(activityId, userId, content);
+    return res.json(result);
+  } catch (error) {
+    console.error('Error replying to activity:', error);
+    return res.status(500).json({ error: 'Failed to reply' });
+  }
+});
+
+router.post('/:activityId/approve', auth, async (req: Req, res: Res) => {
+  try {
+    const { activityId } = req.params || {};
+    const { notes } = (req.body || {}) as { notes?: string };
+    const userId = getAuthenticatedUserId(req);
+    const result = await ActivityService.approveActivity(activityId, userId, notes) as { success?: boolean; error?: string; status?: number };
+    if (!result.success) return res.status(result.status || 400).json({ error: result.error });
+    return res.json(result);
+  } catch (error) {
+    console.error('Error approving activity:', error);
+    return res.status(500).json({ error: 'Failed to approve' });
+  }
+});
+
+router.post('/:activityId/reject', auth, async (req: Req, res: Res) => {
+  try {
+    const { activityId } = req.params || {};
+    const { notes } = (req.body || {}) as { notes?: string };
+    const userId = getAuthenticatedUserId(req);
+    const result = await ActivityService.rejectActivity(activityId, userId, notes) as { success?: boolean; error?: string; status?: number };
+    if (!result.success) return res.status(result.status || 400).json({ error: result.error });
+    return res.json(result);
+  } catch (error) {
+    console.error('Error rejecting activity:', error);
+    return res.status(500).json({ error: 'Failed to reject' });
+  }
+});
+
+router.post('/seed/:podId', auth, async (req: Req, res: Res) => {
+  try {
+    const { podId } = req.params || {};
+    const userId = getAuthenticatedUserId(req);
+    const pod = await Pod.findById(String(podId)).select('members createdBy').lean();
+    if (!pod) return res.status(404).json({ error: 'Pod not found' });
+    if (!isListedPodMember(pod, userId)) return res.status(403).json({ error: 'Only pod members can seed activities' });
+    const result = await ActivityService.seedPodActivities(podId, userId) as { success?: boolean; error?: string };
+    if (!result.success) return res.status(400).json({ error: result.error });
+    return res.json(result);
+  } catch (error) {
+    console.error('Error seeding activities:', error);
+    return res.status(500).json({ error: 'Failed to seed activities' });
+  }
+});
+
+router.post('/create', auth, async (req: Req, res: Res) => {
+  try {
+    const { type, action, content, podId, target, agentMetadata } = (req.body || {}) as Record<string, unknown>;
+    const userId = getAuthenticatedUserId(req);
+    if (!type || !action || !podId) return res.status(400).json({ error: 'type, action, and podId are required' });
+    // `approval_needed` is what `getPendingApprovals` selects into a pod's
+    // admins' decision queue. This is the generic client-facing create, so it
+    // must not be able to mint one: the caller supplies no `approval` subdoc
+    // and does not need to, because `Activity.approval.status` defaults to
+    // 'pending' and Mongoose materialises exactly the two fields that filter
+    // selects on.
+    if (type === 'approval_needed') return res.status(400).json({ error: 'approval_needed activities cannot be created through this route' });
+    // `podId` arrives as `unknown` off the body, so it is coerced before it
+    // reaches a query: a raw object would otherwise be interpreted as Mongo
+    // operators rather than an id.
+    const pod = await Pod.findById(String(podId)).select('members createdBy').lean();
+    if (!pod) return res.status(404).json({ error: 'Pod not found' });
+    if (!isListedPodMember(pod, userId)) {
+      return res.status(403).json({ error: 'Only pod members can create activities in a pod' });
+    }
+    const user = await User.findById(userId).select('username').lean() as { username?: string } | null;
+    // Store the id of the pod that was actually resolved and authorised, not
+    // the body's copy of it.
+    const activity = await Activity.create({ type, actor: { id: userId, name: user?.username || 'Unknown', type: ActivityService.isAgentUsername(user?.username) ? 'agent' : 'human', verified: false }, action, content, podId: pod._id, target, agentMetadata });
+    return res.json({ success: true, activity: { id: activity._id.toString(), type: activity.type, action: activity.action, content: activity.content, createdAt: activity.createdAt } });
+  } catch (error) {
+    console.error('Error creating activity:', error);
+    return res.status(500).json({ error: 'Failed to create activity' });
+  }
+});
+
+module.exports = router;
+
+export {};

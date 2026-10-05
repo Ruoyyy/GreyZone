@@ -1,0 +1,46 @@
+import mongoose, { Document, Schema } from 'mongoose';
+
+// Atomic claim-based webhook dedup (connector hardening, 2026-08-31 study §gap 2).
+// Providers redeliver: Telegram re-sends an update until it gets a 200, Slack
+// retries on slow acks. Without a claim on the provider's delivery id, every
+// redelivery of an already-processed update becomes a duplicate pod message and
+// a duplicate agent wake (admitted in the bridge's own comments).
+//
+// Contract (claim-before-run, route-specific error policy):
+//   1. On receipt, atomically create {provider, deliveryId}. A duplicate-key
+//      error means another delivery of the same update is processing or done —
+//      ack 200 and stop.
+//   2. If processing THROWS before relay starts, a route may release the claim
+//      before its non-2xx response so the provider's redelivery retries. Once
+//      relay starts, retain the claim through downstream errors: a post-write
+//      failure must not release and duplicate the pod message.
+// The TTL bounds the table: a delivery id only needs to be remembered for as
+// long as the provider keeps redelivering it.
+//
+// Key scope: {provider, deliveryId}. Provider routes that serve more than one
+// account namespace their deliveryId with the account identity (for example,
+// Slack `team:event` and Discord `webhook:event`). Telegram serves one bot and
+// retains its sequential update_id as-is.
+export interface IWebhookDelivery extends Document {
+  provider: string;
+  deliveryId: string;
+  expiresAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const WebhookDeliverySchema = new Schema<IWebhookDelivery>(
+  {
+    provider: { type: String, required: true },
+    deliveryId: { type: String, required: true },
+    expiresAt: { type: Date, required: true, index: { expires: 0 } },
+  },
+  { timestamps: true, collection: 'webhook_deliveries' },
+);
+
+WebhookDeliverySchema.index({ provider: 1, deliveryId: 1 }, { unique: true });
+
+export default mongoose.model<IWebhookDelivery>('WebhookDelivery', WebhookDeliverySchema);
+// CJS compat: let require() return the default export directly
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+module.exports = exports["default"]; Object.assign(module.exports, exports);

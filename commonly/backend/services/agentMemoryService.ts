@@ -1,0 +1,958 @@
+import crypto from 'crypto';
+
+import AgentMemory, {
+  AGENT_WRITABLE_SECTIONS,
+  SYSTEM_EXCHANGE_ENTRY_CAP,
+  SYSTEM_EXCHANGE_TAKEAWAY_MAX,
+  SYSTEM_EXCHANGE_KINDS,
+  CYCLE_CONTENT_MAX,
+  CYCLE_ENTRY_CAP,
+  MEMORY_HISTORY_CAP,
+} from '../models/AgentMemory';
+import type {
+  AgentWritableSection,
+  IAgentMemorySections,
+  ICycleEntry,
+  IDailySection,
+  IMemorySection,
+  IMemoryWriteSource,
+  IRelationshipNote,
+  ISystemExchangeEntry,
+  MemoryVisibility,
+  SystemExchangeKind,
+} from '../models/AgentMemory';
+
+// ADR-012 §1: allow-list test for the agent-facing write tool. Returns true
+// only for sections agents are permitted to address via `commonly_save_my_memory`
+// (PUT /memory and POST /memory/sync). `system_exchanges` is excluded by
+// construction.
+const AGENT_WRITABLE_SET = new Set<string>(AGENT_WRITABLE_SECTIONS);
+export function isAgentWritableSection(key: string): key is AgentWritableSection {
+  return AGENT_WRITABLE_SET.has(key);
+}
+
+// Valid YYYY-MM-DD — ADR-003 daily[].date shape. Strict: must be a calendar-
+// valid date (Date.parse rejects e.g. 2026-02-30).
+export const YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+export function isValidYMD(s: unknown): boolean {
+  if (typeof s !== 'string') return false;
+  const m = s.match(YMD_RE);
+  if (!m) return false;
+  const [, y, mo, d] = m;
+  const dt = new Date(`${y}-${mo}-${d}T00:00:00Z`);
+  if (Number.isNaN(dt.getTime())) return false;
+  return (
+    dt.getUTCFullYear() === Number(y)
+    && dt.getUTCMonth() + 1 === Number(mo)
+    && dt.getUTCDate() === Number(d)
+  );
+}
+
+// ADR-003 Phase 1: parse legacy v1 `content` blobs into a v2 section envelope.
+// The parser splits markdown on top-level `## ` headers and buckets each
+// section into `dedup_state` (if the header name matches a known dedup tag)
+// or `long_term` (everything else, including the preamble above the first
+// header). Unknown shape is preserved verbatim — the kernel does not try to
+// understand markdown beyond finding section boundaries.
+
+// Dedup section names emitted by OpenClaw heartbeat templates today — see
+// `backend/routes/registry/presets.ts` HEARTBEAT.md content for the authoritative
+// list. When Phase 2 heartbeat changes add or rename a header, update here.
+// Match is case-insensitive and non-alphanumeric-stripped (see normalizeHeader).
+const DEDUP_HEADERS = new Set(
+  [
+    'commented',
+    'replied',
+    'repliedmsgs',
+    'podvisits',
+    'stalerevivalat',
+  ],
+);
+
+const HEADER_LINE = /^## +(.+?)\s*$/gm;
+
+interface ParsedSections {
+  long_term: string;
+  dedup_state: string;
+}
+
+function normalizeHeader(raw: string): string {
+  return raw.replace(/[^a-z0-9]/gi, '').toLowerCase();
+}
+
+function byteSize(s: string): number {
+  return Buffer.byteLength(s, 'utf8');
+}
+
+function makeSection(
+  content: string,
+  visibility: MemoryVisibility = 'private',
+  updatedAt: Date = new Date(),
+): IMemorySection {
+  return {
+    content,
+    visibility,
+    updatedAt,
+    byteSize: byteSize(content),
+  };
+}
+
+export function parseContentIntoSections(content: string): ParsedSections {
+  if (!content || !content.trim()) {
+    return { long_term: '', dedup_state: '' };
+  }
+
+  const matches: { header: string; start: number; end: number }[] = [];
+  for (const m of content.matchAll(HEADER_LINE)) {
+    const start = m.index ?? 0;
+    matches.push({ header: m[1], start, end: start + m[0].length });
+  }
+
+  if (matches.length === 0) {
+    return { long_term: content, dedup_state: '' };
+  }
+
+  const longTermChunks: string[] = [];
+  const dedupChunks: string[] = [];
+
+  // Preamble before the first header is always long_term.
+  if (matches[0].start > 0) {
+    longTermChunks.push(content.slice(0, matches[0].start));
+  }
+
+  for (let i = 0; i < matches.length; i++) {
+    const { header, start } = matches[i];
+    const nextStart = i + 1 < matches.length ? matches[i + 1].start : content.length;
+    const block = content.slice(start, nextStart);
+    if (DEDUP_HEADERS.has(normalizeHeader(header))) {
+      dedupChunks.push(block);
+    } else {
+      longTermChunks.push(block);
+    }
+  }
+
+  return {
+    long_term: longTermChunks.join('').replace(/\n+$/, ''),
+    dedup_state: dedupChunks.join('').replace(/\n+$/, ''),
+  };
+}
+
+// Build a sections envelope from a legacy v1 `content` string. Returns the
+// sections object the model will accept directly.
+export function buildSectionsFromLegacyContent(
+  content: string,
+  now: Date = new Date(),
+): IAgentMemorySections {
+  const { long_term, dedup_state } = parseContentIntoSections(content);
+  const sections: IAgentMemorySections = {};
+  if (long_term) sections.long_term = makeSection(long_term, 'private', now);
+  if (dedup_state) sections.dedup_state = makeSection(dedup_state, 'private', now);
+  return sections;
+}
+
+// When a v2 caller writes sections, mirror `long_term.content` back into the
+// `content` field so v1 readers of GET /memory still see their data. If
+// there's no long_term, leave content empty.
+export function mirrorContentFromSections(
+  sections: IAgentMemorySections | undefined,
+): string {
+  return sections?.long_term?.content ?? '';
+}
+
+// Server-stamp metadata the caller shouldn't be trusted to compute: `byteSize`
+// (derived from `content`) and `updatedAt` (now). Callers supply `content` +
+// `visibility`; everything else is enforced server-side. Only stamps the
+// sections actually present in the input — the per-key merge in PUT /memory
+// preserves siblings, so siblings keep their previous stamp.
+//
+// Phase 1 array-section semantics (`daily`, `relationships`) are **whole-array
+// replace**: sending either array replaces the stored array, and every entry
+// gets `updatedAt = now`.
+// This is consistent with the way the per-key dotted-$set merge in the PUT
+// handler stores arrays. A client that wants to add one entry must currently
+// resend all pre-existing entries. Phase 2's POST /memory/sync with explicit
+// `mode: 'patch'` will introduce key-level merge (by `otherInstanceId` /
+// `date`). Until then, if you need element-level freshness, don't persist
+// relationships via this endpoint.
+export function stampSectionsForWrite(
+  sections: IAgentMemorySections,
+  now: Date = new Date(),
+): IAgentMemorySections {
+  const out: IAgentMemorySections = {};
+  // Cast is safe here: validateSectionsPayload in the route rejects any key
+  // outside the allowed set before we get here.
+  for (const key of Object.keys(sections) as (keyof IAgentMemorySections)[]) {
+    const v = sections[key];
+    if (v === undefined) continue;
+
+    // ADR-012 §1: system_exchanges is read-only via the agent surface.
+    // validateSectionsPayload rejects it before it reaches here; this is
+    // defense-in-depth and also keeps the union-typed `out[key]` assignment
+    // below provably safe (the IMemorySection branch can't widen to system_exchanges).
+    if (key === 'system_exchanges') continue;
+    // ADR-012 §10.1: cycles is append-only via appendCycle. Route handlers
+    // pop it out before calling stampSectionsForWrite — this guard is
+    // defense-in-depth for the case where a future caller forgets to.
+    if (key === 'cycles') continue;
+
+    if (key === 'daily') {
+      out.daily = ((v as IDailySection[]) || []).map((d): IDailySection => ({
+        date: d.date,
+        content: d.content ?? '',
+        visibility: (d.visibility ?? 'private') as MemoryVisibility,
+        updatedAt: now,
+      }));
+      continue;
+    }
+
+    if (key === 'relationships') {
+      out.relationships = ((v as IRelationshipNote[]) || []).map((r): IRelationshipNote => ({
+        otherInstanceId: r.otherInstanceId,
+        notes: r.notes ?? '',
+        visibility: (r.visibility ?? 'private') as MemoryVisibility,
+        updatedAt: now,
+      }));
+      continue;
+    }
+
+    const s = v as IMemorySection;
+    (out as Record<string, IMemorySection>)[key] = makeSection(
+      s.content ?? '',
+      s.visibility ?? 'private',
+      now,
+    );
+  }
+  return out;
+}
+
+export interface LastAgentMemoryWrite {
+  section: AgentWritableSection;
+  updatedAt: Date;
+}
+
+// The envelope timestamp is deliberately NOT an activity signal: automatic
+// system_exchanges writes update it even when the agent has saved no memory.
+// Limit this view to the normal agent-save surface. `cycles` is likewise
+// excluded: it is an agent journal, not one of the durable sections exposed by
+// commonly_save_my_memory. Ties keep AGENT_WRITABLE_SECTIONS declaration
+// order, which deliberately places long_term before bookkeeping sections.
+// Legacy entries without a server stamp are skipped rather than assigned a
+// fabricated time during hydration.
+/**
+ * Sections that are internal housekeeping rather than authored memory. The
+ * memory view already excludes them from snippets; naming them is fine for an
+ * owner/admin, and is operational detail about the runtime on a public page.
+ */
+export const BOOKKEEPING_SECTIONS: ReadonlySet<AgentWritableSection> = new Set<AgentWritableSection>([
+  'dedup_state',
+  'runtime_meta',
+]);
+
+export type AgentWriteKind = 'durable' | 'bookkeeping';
+
+export function classifyAgentWriteSection(section: AgentWritableSection): AgentWriteKind {
+  return BOOKKEEPING_SECTIONS.has(section) ? 'bookkeeping' : 'durable';
+}
+
+export interface LastAgentMemoryWriteKind {
+  kind: AgentWriteKind;
+  updatedAt: Date;
+}
+
+/**
+ * One computation, two shapes. `/api/agents/:name/profile` is mounted WITHOUT
+ * auth, so it gets the coarse kind; the owner/admin memory view keeps the exact
+ * section. Coarsening here rather than at each caller keeps the two surfaces
+ * derived from the same max() rather than from two selection rules.
+ */
+export function coarsenAgentMemoryWrite(
+  write: LastAgentMemoryWrite | null,
+): LastAgentMemoryWriteKind | null {
+  if (!write) return null;
+  return { kind: classifyAgentWriteSection(write.section), updatedAt: write.updatedAt };
+}
+
+export function getLastAgentMemoryWrite(
+  sections: IAgentMemorySections | undefined,
+): LastAgentMemoryWrite | null {
+  let latest: LastAgentMemoryWrite | null = null;
+  const consider = (section: AgentWritableSection, value: unknown) => {
+    const updatedAt = value instanceof Date ? value : new Date(String(value || ''));
+    if (Number.isNaN(updatedAt.getTime())) return;
+    if (!latest) {
+      latest = { section, updatedAt };
+      return;
+    }
+    if (updatedAt.getTime() > latest.updatedAt.getTime()) {
+      latest = { section, updatedAt };
+      return;
+    }
+    // Exact ties are the common case, not the corner: one /memory/sync stamps
+    // every section it carries with the same `now`. Falling back to array order
+    // there would report `dedup_state` for a write that also saved `long_term`,
+    // which is the misreading this whole selection rule exists to prevent. So a
+    // durable section takes a tie from a bookkeeping one. Among two durables the
+    // winner is still array order and that is arbitrary — nothing may depend on
+    // it: the public surface coarsens both to `durable`, and the owner view is
+    // naming a section that genuinely holds content this recent either way.
+    if (updatedAt.getTime() === latest.updatedAt.getTime()
+      && classifyAgentWriteSection(latest.section) === 'bookkeeping'
+      && classifyAgentWriteSection(section) === 'durable') {
+      latest = { section, updatedAt };
+    }
+  };
+
+  for (const section of AGENT_WRITABLE_SECTIONS) {
+    const value = sections?.[section];
+    if (section === 'daily') {
+      for (const entry of (value as IDailySection[] | undefined) || []) {
+        consider(section, entry?.updatedAt);
+      }
+    } else if (section === 'relationships') {
+      for (const entry of (value as IRelationshipNote[] | undefined) || []) {
+        consider(section, entry?.updatedAt);
+      }
+    } else {
+      consider(section, (value as IMemorySection | undefined)?.updatedAt);
+    }
+  }
+
+  return latest;
+}
+
+// GH#632 Tier-1 foundation: provenance + capped version history on section
+// writes. For each incoming BLOB section (soul / long_term / dedup_state /
+// shared — array sections are element-keyed and versioned separately later),
+// stamp WHERE the write came from and, when it replaces different existing
+// content, prepend the old version to a capped history. This is the piece
+// that can never be retrofitted: back-trace / replay / undo only work for
+// writes that recorded their past. Pure function — callers pass the existing
+// sections (may be undefined for a fresh doc) and get decorated sections back.
+export function decorateSectionsWithProvenance(
+  existingSections: IAgentMemorySections | undefined,
+  stampedSections: IAgentMemorySections,
+  source: IMemoryWriteSource,
+  now: Date = new Date(),
+): IAgentMemorySections {
+  const out: IAgentMemorySections = { ...stampedSections };
+  for (const key of Object.keys(stampedSections) as (keyof IAgentMemorySections)[]) {
+    if (key === 'daily' || key === 'relationships' || key === 'cycles' || key === 'system_exchanges') continue;
+    const incoming = stampedSections[key] as IMemorySection | undefined;
+    if (!incoming) continue;
+    const prior = existingSections?.[key] as IMemorySection | undefined;
+    const decorated: IMemorySection = {
+      ...incoming,
+      source: { ...source, writtenAt: now },
+    };
+    if (prior && typeof prior.content === 'string' && prior.content !== incoming.content) {
+      decorated.history = [
+        {
+          content: prior.content,
+          replacedAt: now,
+          ...(prior.source ? { source: prior.source } : {}),
+        },
+        ...(prior.history || []),
+      ].slice(0, MEMORY_HISTORY_CAP);
+    } else if (prior?.history) {
+      // Content unchanged (idempotent rewrite) — carry the history forward so
+      // a no-op write never drops versions.
+      decorated.history = prior.history;
+    }
+    (out as Record<string, IMemorySection>)[key] = decorated;
+  }
+  return out;
+}
+
+// ADR-003 Phase 2: element-level merge for array sections under
+// `mode: 'patch'`. `daily[]` is keyed by `date`; `relationships[]` is keyed by
+// `otherInstanceId`. Incoming entries overwrite existing ones with the same
+// key; existing entries with keys not in the payload are preserved. Caller
+// is expected to pass already-stamped incoming sections.
+//
+// Concurrency caveat: the `/memory/sync` handler does a read-merge-write
+// (findOne → mergePatchSections → findOneAndUpdate). Drivers are expected to
+// serialize promotions per (agentName, instanceId) — typical heartbeat
+// cadence. When webhook drivers land (Phase 2b / later), revisit with an
+// update-pipeline `$mergeObjects` / optimistic-concurrency version check.
+export function mergePatchSections(
+  existing: IAgentMemorySections | undefined,
+  incoming: IAgentMemorySections,
+): IAgentMemorySections {
+  const out: IAgentMemorySections = { ...(existing || {}) };
+
+  for (const key of Object.keys(incoming) as (keyof IAgentMemorySections)[]) {
+    const inc = incoming[key];
+    if (inc === undefined) continue;
+
+    // ADR-012 §1: agents cannot patch `system_exchanges`. validateSectionsPayload
+    // rejects it upstream — this guard keeps mergePatchSections safe even if
+    // someone calls it from outside the route.
+    if (key === 'system_exchanges') continue;
+    // ADR-012 §10.1: cycles is append-only — never patched via this path.
+    if (key === 'cycles') continue;
+
+    if (key === 'daily') {
+      const byDate = new Map<string, IDailySection>();
+      for (const d of existing?.daily || []) byDate.set(d.date, d);
+      for (const d of inc as IDailySection[]) byDate.set(d.date, d);
+      out.daily = Array.from(byDate.values());
+      continue;
+    }
+
+    if (key === 'relationships') {
+      const byId = new Map<string, IRelationshipNote>();
+      for (const r of existing?.relationships || []) byId.set(r.otherInstanceId, r);
+      for (const r of inc as IRelationshipNote[]) byId.set(r.otherInstanceId, r);
+      out.relationships = Array.from(byId.values());
+      continue;
+    }
+
+    (out as Record<string, IMemorySection>)[key] = inc as IMemorySection;
+  }
+
+  return out;
+}
+
+// Canonical stringify: sorts object keys recursively so semantically identical
+// payloads hash identically regardless of emit order. JSON.stringify is NOT
+// canonical. Used only for dedup key computation.
+function canonicalStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (value instanceof Date) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalStringify).join(',')}]`;
+  const rec = value as Record<string, unknown>;
+  const keys = Object.keys(rec).sort();
+  const parts = keys.map((k) => `${JSON.stringify(k)}:${canonicalStringify(rec[k])}`);
+  return `{${parts.join(',')}}`;
+}
+
+// Dedup key for /memory/sync — combines day bucket (UTC) with sourceRuntime
+// and a stable content hash of the sections payload. Two syncs with the same
+// *semantic* payload on the same day collapse to one write (see
+// canonicalStringify: key order is normalized).
+// 32 hex chars = 128 bits of collision resistance — ample for a per-instance,
+// per-day dedup where a miss just means one extra write.
+export function computeSyncDedupKey(
+  sections: IAgentMemorySections,
+  sourceRuntime: string | undefined,
+  mode: 'full' | 'patch',
+  now: Date = new Date(),
+): string {
+  const day = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  const payload = canonicalStringify({ sections, sourceRuntime: sourceRuntime ?? null, mode });
+  const hash = crypto.createHash('sha256').update(payload).digest('hex').slice(0, 32);
+  return `${day}:${sourceRuntime ?? '-'}:${hash}`;
+}
+
+// ADR-003 Phase 4: visibility filter for cross-agent memory reads.
+//
+// Pure function: given the owner's stored sections, the requester's authorized
+// pod ids, and the owner's installation pod ids, return only the sections (and
+// per-element entries) the requester is allowed to see.
+//
+// Rules (load-bearing — see ADR-003 §Visibility & access rules):
+//   - 'private' is NEVER returned to non-owners (even if pods overlap).
+//   - 'public' is always returned.
+//   - 'pod' is returned only when requester ∩ owner pods is non-empty.
+//   - For array sections (`daily[]`, `relationships[]`), the same rule applies
+//     element-wise — entries are filtered individually by their own visibility.
+//   - A section that ends up empty after filtering is OMITTED from the output
+//     (the caller can distinguish "no shared section" from "section exists but
+//     all entries hidden" via the empty array vs missing key).
+export function filterSectionsByVisibility(
+  sections: IAgentMemorySections | undefined,
+  requesterPodIds: string[],
+  ownerPodIds: string[],
+): IAgentMemorySections {
+  if (!sections) return {};
+
+  // Pre-compute pod overlap once per call. Defensive: defend against null/
+  // undefined entries in either array (e.g. a ghost installation with no
+  // podId). Normalize to strings for ObjectId compatibility.
+  const ownerPodSet = new Set(
+    (ownerPodIds || []).filter(Boolean).map((p) => String(p)),
+  );
+  const sharesAnyPod = (requesterPodIds || []).some(
+    (p) => p && ownerPodSet.has(String(p)),
+  );
+
+  const allowVisibility = (v: MemoryVisibility | undefined): boolean => {
+    // Defaulting to 'private' matches the model default — a missing
+    // visibility flag is the strictest reading, never the most permissive.
+    const visibility = v ?? 'private';
+    if (visibility === 'public') return true;
+    if (visibility === 'pod') return sharesAnyPod;
+    return false; // 'private' or anything unexpected
+  };
+
+  const out: IAgentMemorySections = {};
+  // Single-object section keys handled identically. Typed assignment via the
+  // helper keeps the keyof union from collapsing into the array-section types.
+  const assignSingle = (key: 'soul' | 'long_term' | 'dedup_state' | 'shared' | 'runtime_meta'): void => {
+    const s = sections[key];
+    if (!s) return;
+    if (allowVisibility(s.visibility)) {
+      out[key] = s;
+    }
+  };
+  assignSingle('soul');
+  assignSingle('long_term');
+  assignSingle('dedup_state');
+  assignSingle('shared');
+  assignSingle('runtime_meta');
+
+  if (sections.daily) {
+    const filteredDaily = sections.daily.filter((d) => allowVisibility(d.visibility));
+    if (filteredDaily.length > 0) out.daily = filteredDaily;
+  }
+
+  if (sections.relationships) {
+    const filteredRel = sections.relationships.filter((r) => allowVisibility(r.visibility));
+    if (filteredRel.length > 0) out.relationships = filteredRel;
+  }
+
+  // ADR-012 §6 + ADR-003 §Visibility: system_exchanges is intentionally
+  // omitted from this filter's output. It is hard-coded `private` and
+  // never legible to non-owners, so cross-agent readers must never see it
+  // even when (theoretically) some entry's visibility flag matched. We
+  // leave the section out of the function entirely — a code reader who
+  // adds it later will be forced to revisit the privacy rule.
+
+  return out;
+}
+
+// ADR-012 §1: takeaway truncation. Keeps the first N chars; on overflow,
+// reserves 1 char for the `…` suffix so the final length never exceeds the
+// schema cap. Defensive against non-string input — callers building takeaway
+// from message content can hand us anything.
+export function truncateTakeaway(
+  raw: unknown,
+  max: number = SYSTEM_EXCHANGE_TAKEAWAY_MAX,
+): string {
+  const s = typeof raw === 'string' ? raw : (raw == null ? '' : String(raw));
+  if (s.length <= max) return s;
+  // Reserve 1 char for `…`. max >= 1 by contract (schema cap is 280).
+  return s.slice(0, Math.max(0, max - 1)) + '…';
+}
+
+// ADR-012 §4: append a system-driven exchange entry. Single atomic Mongo
+// update — `$push + $position:0 + $slice:N` enforces most-recent-first +
+// count cap, `$inc:revision` bumps the monotone revision consumed by
+// memoryDigest, `$currentDate` stamps `system_exchanges.updatedAt`.
+//
+// Concurrency: two concurrent appendSystemExchange calls on the same
+// (agentName, instanceId) serialize at the document level — single-document
+// atomicity guarantees neither lost-updates the other (ADR-012 §4).
+//
+// Carve-out from ADR-003 invariant 8: this writer does NOT clear
+// `lastSyncKey`/`lastSyncAt`. Drivers don't promote `system_exchanges`, so
+// a system write to it is invisible to the sync dedup contract — see
+// ADR-012 §8 (invariant 8a).
+export interface AppendSystemExchangeArgs {
+  agentName: string;
+  instanceId: string;
+  kind: SystemExchangeKind;
+  surfacePodId: string;
+  surfaceLabel?: string;
+  peers?: string[];
+  takeaway?: string;
+  ts?: Date;
+  // Opt-in repeat suppression for kinds whose payload is a CONSTANT. Skip the
+  // append when the newest entry already carries the same
+  // (kind, surfacePodId, takeaway) and is younger than this many ms.
+  //
+  // This exists because `entries` is a fixed-size ring
+  // (SYSTEM_EXCHANGE_ENTRY_CAP = 50) and a repeat writer with an unvarying
+  // payload evicts precisely the entries the ring exists to preserve. Measured
+  // on one live envelope: 50 entries, ~45 of them byte-identical loop-trip
+  // notices, leaving two entries of any other kind. Off by default — a caller
+  // whose takeaway carries real per-event content must keep every append.
+  dedupeWindowMs?: number;
+}
+
+export async function appendSystemExchange(
+  args: AppendSystemExchangeArgs,
+): Promise<{ revision: number; deduped?: boolean } | null> {
+  const {
+    agentName,
+    instanceId,
+    kind,
+    surfacePodId,
+    surfaceLabel = '',
+    peers = [],
+    takeaway = '',
+    ts = new Date(),
+    dedupeWindowMs = 0,
+  } = args;
+
+  if (!agentName || !instanceId) {
+    return null;
+  }
+  if (!SYSTEM_EXCHANGE_KINDS.includes(kind)) {
+    return null;
+  }
+  if (!surfacePodId || typeof surfacePodId !== 'string') {
+    return null;
+  }
+
+  const entry: ISystemExchangeEntry = {
+    ts,
+    kind,
+    surfacePodId: String(surfacePodId),
+    surfaceLabel: typeof surfaceLabel === 'string' ? surfaceLabel : String(surfaceLabel ?? ''),
+    peers: Array.isArray(peers) ? peers.filter((p) => typeof p === 'string') : [],
+    takeaway: truncateTakeaway(takeaway),
+  };
+
+  // Repeat suppression, when the caller opted in. Deliberately a read-then-
+  // decide rather than a filtered update: the update below is an UPSERT, and a
+  // filter that fails to match would insert a second envelope rather than do
+  // nothing. So this races — two simultaneous trips can both see no duplicate
+  // and both append. That is a bounded loss of exactly the property being
+  // bought (2 entries instead of 1) and it is not the failure this guards
+  // against, which is 45 identical entries accumulated one at a time over days.
+  if (dedupeWindowMs > 0) {
+    const existing = await AgentMemory.findOne({ agentName, instanceId })
+      .select({ revision: 1, 'sections.system_exchanges.entries': { $slice: 1 } })
+      .lean<{
+        revision?: number;
+        sections?: { system_exchanges?: { entries?: ISystemExchangeEntry[] } };
+      } | null>();
+    const newest = existing?.sections?.system_exchanges?.entries?.[0];
+    if (newest
+      && newest.kind === entry.kind
+      && String(newest.surfacePodId) === entry.surfacePodId
+      && String(newest.takeaway ?? '') === entry.takeaway) {
+      const newestTs = newest.ts instanceof Date ? newest.ts : new Date(String(newest.ts || ''));
+      const age = entry.ts.getTime() - newestTs.getTime();
+      // `age >= 0` matters: an out-of-order `ts` (a backfill, a clock skew)
+      // yields a negative age, and treating that as "within the window" would
+      // silently drop a genuinely older entry the ring should still receive.
+      if (!Number.isNaN(newestTs.getTime()) && age >= 0 && age < dedupeWindowMs) {
+        return { revision: existing?.revision ?? 1, deduped: true };
+      }
+    }
+  }
+
+  // Single atomic op — works whether the doc exists, the `sections` envelope
+  // exists, or `sections.system_exchanges` exists. Mongo auto-creates
+  // intermediate path nodes for `$push`. `$setOnInsert` handles the upsert
+  // of the doc-level keys; `$set` on sibling section fields runs on every
+  // call (idempotent — visibility is hard-coded 'private', and updatedAt is
+  // bumped via $currentDate). Two concurrent appends serialize at the doc
+  // level (single-document atomicity, ADR-012 §4).
+  //
+  // No byteSize here: ISystemExchangesSection deliberately omits the field
+  // in Phase 1 — see the model. Phase 2's digest builder recomputes from
+  // `entries` directly; no benefit to caching it here.
+  const updated = await AgentMemory.findOneAndUpdate(
+    { agentName, instanceId },
+    {
+      $push: {
+        'sections.system_exchanges.entries': {
+          $each: [entry],
+          $position: 0,
+          $slice: SYSTEM_EXCHANGE_ENTRY_CAP,
+        },
+      },
+      $inc: { revision: 1 },
+      $set: {
+        // Hard-coded private — never widened. Re-setting on every call is
+        // idempotent and survives any prior corrupted state.
+        'sections.system_exchanges.visibility': 'private',
+      },
+      $currentDate: { 'sections.system_exchanges.updatedAt': true },
+      $setOnInsert: {
+        agentName,
+        instanceId,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true },
+  ).select({ revision: 1 }).lean<{ revision?: number } | null>();
+
+  return { revision: updated?.revision ?? 1 };
+}
+
+// ADR-012 §10.1: append a single cycle entry, agent-driven via the route
+// surface (PUT /memory or POST /memory/sync `cycles.append`). Same atomic
+// $push pattern as appendSystemExchange, with two semantic carve-outs:
+//   - does NOT bump `revision` (revision tracks system_exchanges only — cycles
+//     is always emitted as the recent slice, no delta-gating).
+//   - does NOT clear `lastSyncKey`/`lastSyncAt`. Drivers do not sync `cycles`
+//     (it's not in the writable-sections allowlist; the only write path is the
+//     append helper here), so a cycle write does NOT make the sync dedup key
+//     stale. Same logic as invariant 8a for system_exchanges.
+export function truncateCycleContent(raw: unknown, max = CYCLE_CONTENT_MAX): string {
+  const s = typeof raw === 'string' ? raw : (raw == null ? '' : String(raw));
+  if (s.length <= max) return s;
+  return s.slice(0, Math.max(0, max - 1)) + '…';
+}
+
+export interface AppendCycleArgs {
+  agentName: string;
+  instanceId: string;
+  content: string;
+  podId?: string;
+  ts?: Date;
+}
+
+// A write path that mutates its payload must report the mutation. `content`
+// over CYCLE_CONTENT_MAX is silently ellipsised, and a caller who only sees
+// `{ok: true}` has no way to learn its tail was dropped — the tool schema
+// declares no cap, so the truncation is invisible from the client side. AX
+// audit #8 (2026-08-04): three agents mislearned this section's write surface
+// and one of them lost content to this exact silence. Returning what we did to
+// the input is the whole fix; callers surface it as `truncated` on the route.
+export interface AppendCycleResult {
+  ok: true;
+  truncated: boolean;
+  storedChars: number;
+  submittedChars: number;
+  // The append mutates in a SECOND dimension: `$slice: CYCLE_ENTRY_CAP` drops
+  // the oldest entry once the window is full, so a caller can lose history it
+  // never submitted on this call. Reporting only `truncated` would fix half of
+  // one call's silence.
+  evicted: boolean;
+  retainedEntries: number;
+  entryCap: number;
+}
+
+// The route-facing projection of an append's mutations. Exported so every
+// response derives the same keys from the same rule — two routes open-coding
+// this is how the two surfaces drift apart.
+//
+// The two FLAGS are emitted unconditionally, including when they are `false`.
+// An earlier draft omitted them on a clean write, which reads as tidier and is
+// wrong: it overloads absence with two meanings — "nothing was mutated" and
+// "a backend that predates this fix". Those two ship on different clocks. The
+// tool description travels with `@commonlyai/mcp` on npm; this code travels to
+// the cluster on a deploy. So an agent running a NEW description against an OLD
+// backend sees no `truncated`, reads the documented absence, and concludes its
+// content was stored whole — a plausible silence confirming a wrong model, in
+// the fix for a plausible silence. (@ux-lead, msg 52263; @sprint-review then
+// established in 52271 that the obvious alternative discriminator does not
+// work — `schemaVersion: 2` is emitted identically on main and on this branch,
+// so keying off it would have distinguished nothing.)
+//
+// Emitting always makes the FIELD's presence the version discriminator and the
+// field's VALUE the mutation report — two questions, two signals, neither
+// inferred from silence. Absent flag ⇒ old backend, says nothing about content.
+//
+// The detail counts stay conditional: they are only meaningful alongside a true
+// flag, they carry no version information, and `storedChars === submittedChars`
+// on a clean write is noise. `entryCap` rides along with an eviction because a
+// caller learning it lost history should learn the horizon in the same breath.
+export function describeCycleMutation(
+  result: AppendCycleResult | null | undefined,
+): Record<string, unknown> {
+  if (!result) return {};
+  return {
+    truncated: result.truncated,
+    ...(result.truncated
+      ? {
+        storedChars: result.storedChars,
+        submittedChars: result.submittedChars,
+      }
+      : {}),
+    evicted: result.evicted,
+    ...(result.evicted
+      ? {
+        retainedEntries: result.retainedEntries,
+        entryCap: result.entryCap,
+      }
+      : {}),
+  };
+}
+
+export async function appendCycle(
+  args: AppendCycleArgs,
+): Promise<AppendCycleResult | null> {
+  const {
+    agentName,
+    instanceId,
+    content,
+    podId,
+    ts = new Date(),
+  } = args;
+
+  if (!agentName || !instanceId) return null;
+  const trimmedContent = typeof content === 'string' ? content.trim() : '';
+  if (!trimmedContent) return null;
+
+  const storedContent = truncateCycleContent(trimmedContent);
+  const entry: ICycleEntry = {
+    ts,
+    content: storedContent,
+    ...(podId && typeof podId === 'string' ? { podId } : {}),
+  };
+
+  // `new: false` on purpose — the PRE-image is the only thing that separates
+  // "just reached the cap" from "evicted at the cap". Both leave the array at
+  // exactly CYCLE_ENTRY_CAP afterwards, so a post-image can't tell them apart.
+  // Projected down to each entry's `ts` so this costs a count, not 20KB of
+  // content.
+  const prior = await AgentMemory.findOneAndUpdate(
+    { agentName, instanceId },
+    {
+      $push: {
+        'sections.cycles.entries': {
+          $each: [entry],
+          $position: 0,
+          $slice: CYCLE_ENTRY_CAP,
+        },
+      },
+      $set: {
+        'sections.cycles.visibility': 'private',
+      },
+      $currentDate: { 'sections.cycles.updatedAt': true },
+      $setOnInsert: { agentName, instanceId },
+    },
+    {
+      upsert: true,
+      new: false,
+      setDefaultsOnInsert: true,
+      runValidators: true,
+      projection: { 'sections.cycles.entries.ts': 1 },
+    },
+  ).lean<{ sections?: { cycles?: { entries?: unknown[] } } } | null>();
+
+  const priorCount = prior?.sections?.cycles?.entries?.length ?? 0;
+
+  return {
+    ok: true,
+    truncated: storedContent.length < trimmedContent.length,
+    storedChars: storedContent.length,
+    submittedChars: trimmedContent.length,
+    evicted: priorCount >= CYCLE_ENTRY_CAP,
+    retainedEntries: Math.min(priorCount + 1, CYCLE_ENTRY_CAP),
+    entryCap: CYCLE_ENTRY_CAP,
+  };
+}
+
+// ADR-012 §10.2: emit-gated digest builders. Each returns `null` (or `[]`)
+// when there's nothing to surface so the route handler can omit the field
+// entirely from the event payload. Combined budget across the four sub-fields
+// is ~1.5KB — see ADR-012 §10.2.
+
+interface EnvelopeSnapshot {
+  revision?: number;
+  sections?: IAgentMemorySections | null;
+}
+
+// memoryDigest: delta against `lastSeenRevision`. Returns up to N most recent
+// `system_exchanges` entries that landed *since* the last ack. Steady state
+// (caught up) is empty. v1 uses count-cap (10) as a proxy for byte cap; v1.x
+// can layer a precise serialized-size cap once we have production data.
+export function buildMemoryDigest(
+  envelope: EnvelopeSnapshot,
+  lastSeenRevision: number,
+  max = 10,
+): ISystemExchangeEntry[] {
+  const revision = envelope?.revision ?? 0;
+  if (revision <= (lastSeenRevision ?? 0)) return [];
+  const entries = envelope?.sections?.system_exchanges?.entries;
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+  // Most-recent-first invariant on storage (see appendSystemExchange).
+  // Number of entries since lastSeenRevision is bounded by (revision - lastSeenRevision).
+  const delta = Math.max(0, revision - (lastSeenRevision ?? 0));
+  return entries.slice(0, Math.min(delta, max));
+}
+
+// cyclesDigest: last N entries from cycles[]. Always emit the recent slice if
+// non-empty (no delta-gating — cycles is the agent's own writing, surfaced
+// every event so writing pays off).
+export function buildCyclesDigest(
+  envelope: EnvelopeSnapshot,
+  max = 5,
+): ICycleEntry[] {
+  const entries = envelope?.sections?.cycles?.entries;
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+  return entries.slice(0, max);
+}
+
+// longTermDigest: head-truncated `long_term.content`. Returns null when the
+// section is empty so the route can omit the field. v1 head-truncates; future
+// v1.x may layer a small-model summarize step.
+export function buildLongTermDigest(
+  envelope: EnvelopeSnapshot,
+  headChars = 800,
+): string | null {
+  const raw = envelope?.sections?.long_term?.content;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= headChars) return trimmed;
+  return trimmed.slice(0, Math.max(0, headChars - 1)) + '…';
+}
+
+// recentDailyDigest: last `max` daily entries within the last `withinDays`.
+// Each entry's content head-truncated to `charsEach`. v1 sorts by `date`
+// descending (YYYY-MM-DD lex order matches calendar order). Returns [] when
+// the section is empty or all entries fall outside the window.
+export interface RecentDailyEntry {
+  date: string;
+  content: string;
+}
+
+export function buildRecentDailyDigest(
+  envelope: EnvelopeSnapshot,
+  opts: { withinDays?: number; max?: number; charsEach?: number; now?: Date } = {},
+): RecentDailyEntry[] {
+  const { withinDays = 7, max = 2, charsEach = 400, now = new Date() } = opts;
+  const entries = envelope?.sections?.daily;
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+  const cutoffMs = now.getTime() - (withinDays * 24 * 60 * 60 * 1000);
+  const sorted = entries
+    .filter((d) => typeof d?.date === 'string' && d.date.length === 10)
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const out: RecentDailyEntry[] = [];
+  for (const d of sorted) {
+    if (out.length >= max) break;
+    const dt = new Date(`${d.date}T00:00:00Z`).getTime();
+    if (!Number.isFinite(dt) || dt < cutoffMs) continue;
+    const raw = typeof d.content === 'string' ? d.content : '';
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const truncated = trimmed.length <= charsEach
+      ? trimmed
+      : trimmed.slice(0, Math.max(0, charsEach - 1)) + '…';
+    out.push({ date: d.date, content: truncated });
+  }
+  return out;
+}
+
+// Aggregate builder used by the event-fetch path. Computes the four sub-fields
+// in a single pass and returns the shape ready to spread into payload. Each
+// sub-field is omitted (undefined) rather than empty so the consumer can use
+// presence as the emit gate.
+export interface MemoryDigestBundle {
+  memoryRevision?: number;
+  memoryDigest?: ISystemExchangeEntry[];
+  cyclesDigest?: ICycleEntry[];
+  longTermDigest?: string;
+  recentDailyDigest?: RecentDailyEntry[];
+}
+
+export function buildMemoryDigestBundle(
+  envelope: EnvelopeSnapshot,
+  lastSeenRevision: number,
+): MemoryDigestBundle {
+  const out: MemoryDigestBundle = {};
+  const revision = envelope?.revision ?? 0;
+  if (revision > 0) out.memoryRevision = revision;
+
+  const memDigest = buildMemoryDigest(envelope, lastSeenRevision);
+  if (memDigest.length > 0) out.memoryDigest = memDigest;
+
+  const cycDigest = buildCyclesDigest(envelope);
+  if (cycDigest.length > 0) out.cyclesDigest = cycDigest;
+
+  const ltDigest = buildLongTermDigest(envelope);
+  if (ltDigest) out.longTermDigest = ltDigest;
+
+  const dailyDigest = buildRecentDailyDigest(envelope);
+  if (dailyDigest.length > 0) out.recentDailyDigest = dailyDigest;
+
+  return out;
+}

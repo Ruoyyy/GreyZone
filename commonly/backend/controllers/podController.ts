@@ -1,0 +1,752 @@
+const mongoose = require('mongoose');
+const Pod = require('../models/Pod');
+const Message = require('../models/Message');
+const Post = require('../models/Post');
+const Summary = require('../models/Summary');
+const PodAsset = require('../models/PodAsset');
+const Integration = require('../models/Integration');
+const { AgentRegistry, AgentInstallation } = require('../models/AgentRegistry');
+const AgentProfile = require('../models/AgentProfile');
+const AgentIdentityService = require('../services/agentIdentityService');
+const { isPersonalPodType } = require('../services/podTypePolicyService');
+const {
+  COMMUNITY_LISTING_QUERY,
+  NON_LISTABLE_POD_TYPES,
+  communityDiscoverQuery,
+  defaultListingTypeFilter,
+  isDirectlyJoinable,
+} = require('../services/podListing');
+const User = require('../models/User');
+// Add PGPod at the top level if it's available
+let PGPod: any;
+let PGMessage: any;
+if (process.env.PG_HOST) {
+  PGPod = require('../models/pg/Pod');
+  PGMessage = require('../models/pg/Message');
+}
+
+const VALID_POD_TYPES = ['chat', 'study', 'games', 'agent-ensemble', 'agent-admin', 'agent-room', 'team'];
+const DEFAULT_POD_AGENT = process.env.DEFAULT_POD_AGENT_NAME || 'commonly-bot';
+const DEFAULT_POD_AGENT_SCOPES = [
+  'context:read',
+  'summaries:read',
+  'messages:write',
+  'integration:read',
+  'integration:messages:read',
+  'integration:write',
+];
+
+const buildDefaultAgentProfileId = (agentName: any, instanceId = 'default') => (
+  `${agentName.toLowerCase()}:${instanceId || 'default'}`
+);
+
+const isGlobalAdminRequest = async (req: any) => {
+  if (req.user?.role === 'admin') return true;
+  const userId = req.userId || req.user?.id || req.user?._id;
+  if (!userId) return false;
+  const user = await User.findById(userId).select('role').lean();
+  return Boolean(user && user.role === 'admin');
+};
+
+const ensureDefaultAgentRegistryEntry = async (agentName: any) => {
+  const normalized = String(agentName || '').trim().toLowerCase();
+  if (!normalized) return null;
+
+  let agent = await AgentRegistry.findOne({ agentName: normalized });
+  if (agent) return agent;
+
+  if (normalized !== 'commonly-bot') {
+    return null;
+  }
+
+  const commonlyBotType = AgentIdentityService.getAgentTypeConfig('commonly-bot');
+  const capabilities = (commonlyBotType?.capabilities || ['summarize', 'digest', 'integrations'])
+    .map((name: any) => ({ name, description: name }));
+
+  agent = await AgentRegistry.create({
+    agentName: 'commonly-bot',
+    displayName: commonlyBotType?.officialDisplayName || 'Commonly Bot',
+    description: commonlyBotType?.officialDescription
+      || 'Built-in summary agent for pod activity, integrations, and daily digest context',
+    registry: 'commonly-official',
+    categories: ['automation', 'summaries', 'communication'],
+    tags: ['summaries', 'digest', 'integrations', 'commonly'],
+    verified: true,
+    iconUrl: '/icons/commonly-bot.png',
+    manifest: {
+      name: 'commonly-bot',
+      version: '1.0.0',
+      capabilities,
+      context: {
+        required: ['context:read', 'summaries:read', 'messages:write'],
+      },
+      runtime: {
+        type: 'standalone',
+        connection: 'rest',
+      },
+    },
+    latestVersion: '1.0.0',
+    versions: [{ version: '1.0.0', publishedAt: new Date() }],
+    stats: { installs: 0, rating: 0, ratingCount: 0 },
+  });
+
+  return agent;
+};
+
+const installDefaultAgentForPod = async ({ pod, userId }: { pod: any; userId: any }) => {
+  if (!pod?._id || !userId) return;
+  // Opt-in only. Real users' pods must not get the summarizer bot in their
+  // member list (or a posting-authorized AgentInstallation) unless the
+  // instance explicitly turns this on. Default was ON pre-beta, which put
+  // commonly-bot into every UI-created pod.
+  if (process.env.AUTO_INSTALL_DEFAULT_AGENT !== '1') return;
+
+  const agent = await ensureDefaultAgentRegistryEntry(DEFAULT_POD_AGENT);
+  if (!agent) {
+    console.warn(`[pod] default agent "${DEFAULT_POD_AGENT}" not found; skipping auto-install`);
+    return;
+  }
+
+  const instanceId = 'default';
+  const alreadyInstalled = await AgentInstallation.isInstalled(agent.agentName, pod._id, instanceId);
+  if (alreadyInstalled) return;
+
+  const requiredScopes = agent.manifest?.context?.required || [];
+  const scopes = Array.from(new Set([...requiredScopes, ...DEFAULT_POD_AGENT_SCOPES]));
+
+  const installation = await AgentInstallation.install(agent.agentName, pod._id, {
+    version: agent.latestVersion || '1.0.0',
+    config: { preset: 'default-pod-agent', autoInstalled: true },
+    scopes,
+    installedBy: userId,
+    instanceId,
+    displayName: agent.displayName || 'Commonly Bot',
+  });
+
+  await AgentRegistry.incrementInstalls(agent.agentName);
+
+  await AgentProfile.updateOne(
+    {
+      podId: pod._id,
+      agentName: agent.agentName,
+      instanceId,
+    },
+    {
+      $setOnInsert: {
+        agentId: buildDefaultAgentProfileId(agent.agentName, instanceId),
+        name: installation.displayName || agent.displayName || 'Commonly Bot',
+        purpose: 'Social helper that summarizes pod activity, surfaces interesting external signals, and contributes daily digest context.',
+        instructions: 'You act as a friendly social helper: summarize key activity, suggest timely conversation starters, and keep updates concise and useful.',
+        createdBy: userId,
+      },
+      $set: {
+        status: 'active',
+        persona: {
+          tone: 'friendly',
+          specialties: ['summarization', 'community updates', 'conversation starters', 'digest highlights'],
+        },
+      },
+    },
+    { upsert: true },
+  );
+
+  try {
+    const agentUser = await AgentIdentityService.getOrCreateAgentUser(agent.agentName, {
+      instanceId,
+      displayName: installation.displayName || agent.displayName || 'Commonly Bot',
+    });
+    await AgentIdentityService.ensureAgentInPod(agentUser, pod._id);
+  } catch (identityError: any) {
+    console.warn('[pod] failed to provision default agent user identity:', identityError.message);
+  }
+};
+
+// Get all pods or filter by type
+exports.getAllPods = async (req: any, res: any) => {
+  try {
+    // `?type=` is a user-supplied value that used to reach the Mongo query
+    // below unchecked, and `req.query` is parsed by qs: `?type[$ne]=agent-admin`
+    // arrives as an OBJECT, so a caller could supply query operators instead of
+    // a pod type (CodeQL js/sql-injection, "Database query built from
+    // user-controlled sources", raised on this function). Only a string is
+    // honoured — what every real caller sends and what the schema stores — and
+    // anything else returns the same empty list an unknown type always did.
+    //
+    // Deliberately NOT an allowlist of the model's type enum: rows can predate
+    // the enum (the V2 router still knows 'gaming'), and this endpoint's job is
+    // to filter the caller's pods, not to police type names.
+    const rawType = req.query?.type;
+    const type = typeof rawType === 'string' ? rawType : undefined;
+    const hasUnusableType = rawType !== undefined && type === undefined;
+    const scope = String(req.query?.scope || 'mine').toLowerCase();
+    const isCommunityScope = scope === 'community';
+    const isDiscoverScope = scope === 'discover';
+    let scopedCallerId = null;
+    if (isCommunityScope || isDiscoverScope) {
+      const rawCallerId = String(req.userId || req.user?.id || '');
+      if (!mongoose.Types.ObjectId.isValid(rawCallerId)) {
+        return res.status(401).json({ error: 'User authentication failed' });
+      }
+      scopedCallerId = new mongoose.Types.ObjectId(rawCallerId);
+    }
+    if (hasUnusableType) return res.json([]);
+    // The default listing hides the types no connector may target, from one
+    // constant (`services/podListing.ts`), so a type cannot be hidden here and
+    // still be gateable through the API (TASK-171).
+    // Community and Discover are explicit, additive discovery scopes. Personal
+    // pod types stay excluded even if a malformed/admin-created row has the
+    // listing/read flags forced true.
+    // Keep the default query semantically identical to the privacy-hardened
+    // membership listing below.
+    const query = isDiscoverScope
+      ? communityDiscoverQuery({ callerId: scopedCallerId, type })
+      : isCommunityScope
+      ? {
+        // Listed is opt-in and distinct from readable: showcase rooms keep
+        // publicRead for anonymous viewing without appearing in Community.
+        ...COMMUNITY_LISTING_QUERY,
+        members: scopedCallerId,
+        type: type
+          ? { $eq: type, $nin: NON_LISTABLE_POD_TYPES }
+          : { $nin: NON_LISTABLE_POD_TYPES },
+      }
+      : defaultListingTypeFilter(type);
+
+    // Membership filter — return only pods the requester belongs to.
+    //
+    // Personal pod types (agent-admin / agent-room / agent-dm) have always
+    // been membership-gated. As of this commit, the SAME rule extends to
+    // chat/team/study/games pods on the default listing (no `type` query
+    // param). The previous behavior leaked every chat pod on the instance
+    // to every authenticated user, which made the V2 sidebar unusable on
+    // a multi-tenant or shared dev instance and broke isolation for
+    // demos / test accounts.
+    //
+    // To opt into the cross-instance "everything I can audit" view —
+    // useful for admin tooling — pass `?scope=all`. That path is admin-
+    // only; non-admins are silently downgraded to `scope=mine`.
+    //
+    // Admins do NOT bypass membership on the default sidebar listing:
+    // their own pod list must be their own pods, otherwise every
+    // private DM in the instance leaks into their sidebar (which made
+    // xcjsam see — and try to post into — sam-demo's agent-rooms).
+    const isPersonal = isPersonalPodType(type);
+    let membershipFilterToMine = false;
+    let memberId: any = null;
+    if (req.userId && !isCommunityScope && !isDiscoverScope) {
+      const wantsAll = scope === 'all';
+      const isAdmin = wantsAll ? await isGlobalAdminRequest(req) : false;
+      membershipFilterToMine = isPersonal || !wantsAll || !isAdmin;
+      if (membershipFilterToMine) {
+        const uid = String(req.userId);
+        memberId = mongoose.Types.ObjectId.isValid(uid) ? new mongoose.Types.ObjectId(uid) : null;
+      }
+    }
+
+    // Push the membership predicate into Mongo rather than materialising every
+    // pod on the instance and discarding all but the caller's in JS (TASK-151).
+    // Measured before this change, for a caller with ONE pod: 118-182 ms on a
+    // 200-pod instance, 412-515 ms on 1,200, 644-767 ms on 4,200 — the cost was
+    // proportional to everyone else's pods (collection scan + in-memory sort +
+    // populate across all of them) while the response was byte-identical. After:
+    // the same three cases are flat (see the benchmark in the PR). Falls back to
+    // the JS filter only when the caller id is not castable, which preserves the
+    // previous behaviour exactly (no pods match, empty list) instead of throwing
+    // a CastError out of the query.
+    const listedQuery = memberId ? { ...query, members: memberId } : query;
+
+    let pods = await Pod.find(listedQuery)
+      .populate('createdBy', 'username profilePicture')
+      .populate('members', 'username profilePicture isBot')
+      .populate('parentPod', 'name _id')
+      .sort({ updatedAt: -1 });
+
+    if (membershipFilterToMine && !memberId) {
+      const uid = String(req.userId);
+      // `m &&` : populate leaves a null in place of a member whose User row is
+      // gone, and the previous `m._id` would throw on it — turning one stale
+      // reference anywhere on the instance into a 500 for the whole sidebar.
+      pods = pods.filter((p: any) => (p.members || []).some((m: any) => m && String(m._id || m) === uid));
+    }
+
+    // Attach last-message preview per pod for the sidebar snippet. Single
+    // PG query with DISTINCT ON, batched across all returned pod IDs —
+    // O(1) round-trips regardless of pod count. Falls back silently if PG
+    // isn't available.
+    if (PGMessage && Array.isArray(pods) && pods.length > 0) {
+      try {
+        const podIds = pods.map((p: any) => String(p._id));
+        const { pool } = require('../config/db-pg');
+        const sql = `
+          SELECT DISTINCT ON (m.pod_id) m.pod_id, m.content, m.created_at, m.user_id, u.username
+          FROM messages m
+          LEFT JOIN users u ON u._id = m.user_id
+          WHERE m.pod_id = ANY($1::text[])
+          ORDER BY m.pod_id, m.created_at DESC
+        `;
+        const result = await pool.query(sql, [podIds]);
+        const byPod = new Map<string, any>();
+        for (const row of result.rows || []) {
+          byPod.set(String(row.pod_id), {
+            content: row.content,
+            createdAt: row.created_at,
+            username: row.username || null,
+          });
+        }
+        pods = pods.map((p: any) => {
+          const obj = typeof p.toObject === 'function' ? p.toObject() : { ...p };
+          obj.lastMessage = byPod.get(String(p._id)) || null;
+          return obj;
+        });
+      } catch (pgErr: any) {
+        console.warn('[getAllPods] lastMessage attach failed:', pgErr.message);
+      }
+    }
+
+    return res.json(pods);
+  } catch (err: any) {
+    console.error(err.message);
+    return res.status(500).json({ error: 'Server Error' });
+  }
+};
+
+// Get pods by type
+exports.getPodsByType = async (req: any, res: any) => {
+  try {
+    const { type } = req.params;
+
+    if (!VALID_POD_TYPES.includes(type)) {
+      return res.status(400).json({ error: 'Invalid pod type' });
+    }
+
+    const pods = await Pod.find({ type })
+      .populate('createdBy', 'username profilePicture')
+      .populate('members', 'username profilePicture isBot')
+      .sort({ updatedAt: -1 });
+
+    // Personal pod types (agent-admin, agent-room, agent-dm) are always
+    // filtered to caller membership — admins included. The instance-wide
+    // moderation view is a separate admin tool, not this typed listing.
+    if (isPersonalPodType(type) && req.userId) {
+      const uid = String(req.userId);
+      const memberPods = pods.filter((p: any) => p.members.some((m: any) => String(m._id || m) === uid));
+      return res.json(memberPods);
+    }
+
+    return res.json(pods);
+  } catch (err: any) {
+    console.error(err.message);
+    return res.status(500).json({ error: 'Server Error' });
+  }
+};
+
+// Get a specific pod
+exports.getPodById = async (req: any, res: any) => {
+  try {
+    const { id, type } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ error: 'Pod ID is required' });
+    }
+
+    // Get the pod with populated data
+    const pod = await Pod.findById(id)
+      .populate('createdBy', 'username profilePicture')
+      .populate('members', 'username profilePicture isBot')
+      .populate('parentPod', 'name _id');
+
+    if (!pod) {
+      return res.status(404).json({ error: 'Pod not found' });
+    }
+
+    // If type is specified, ensure pod is of that type
+    if (type && pod.type !== type) {
+      return res
+        .status(404)
+        .json({ error: 'Pod not found or is not of specified type' });
+    }
+
+    // Personal pod types are private 1:1/N:1 surfaces. Direct ID lookups
+    // by non-members 404 to avoid leaking existence (the sidebar bug that
+    // surfaced PR #375). Two carve-outs that match canViewPod semantics:
+    //   - `agent-dm` (agent ↔ agent): humans who share a pod with either
+    //     DM participant get read access via the §3.7 fan-out — they can
+    //     observe their team's agent collaborations without being a
+    //     formal DM member. Without this carve-out a user can't navigate
+    //     to an a2a DM from the agent inspector even though messages
+    //     under /api/messages/:podId already serve them (canViewPod).
+    //   - Global admins reading agent-dm — moderation observability.
+    // `agent-room` and `agent-admin` keep strict membership: those are
+    // truly private surfaces (user↔agent rooms; ops admin pods) and we
+    // don't want admins resolving someone else's agent-room by ID either.
+    if (isPersonalPodType(pod.type) && req.userId) {
+      const uid = String(req.userId);
+      const isMember = (pod.members || []).some(
+        (m: any) => String(m?._id || m) === uid,
+      );
+      if (!isMember) {
+        if (pod.type === 'agent-dm') {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
+          const DMService = require('../services/dmService').default
+            || require('../services/dmService');
+          const allowed = await DMService.canViewPod(uid, pod);
+          if (!allowed) return res.status(404).json({ error: 'Pod not found' });
+        } else {
+          return res.status(404).json({ error: 'Pod not found' });
+        }
+      }
+    }
+
+    return res.json(pod);
+  } catch (err: any) {
+    console.error('Error in getPodById:', err.message);
+    if (err.kind === 'ObjectId') {
+      return res.status(404).json({ error: 'Pod not found' });
+    }
+    return res.status(500).json({ error: 'Server Error' });
+  }
+};
+
+// Create a pod
+exports.createPod = async (req: any, res: any) => {
+  try {
+    const {
+      name, description, type, joinPolicy, parentPod,
+    } = req.body;
+
+    if (!name || !type) {
+      return res.status(400).json({ msg: 'Name and type are required' });
+    }
+
+    if (!VALID_POD_TYPES.includes(type)) {
+      return res.status(400).json({ msg: 'Invalid pod type' });
+    }
+
+    // ADR-001 §3.10 / ADR-016 invariant 3: agent-room and agent-dm are
+    // strictly 1:1 and are created only by paths that establish BOTH members (dmService
+    // .getOrCreateAgentDmRoom, ensureAgentInPod, commonly_open_dm). This
+    // endpoint writes `members: [req.userId]`, so allowing a strict-DM type here
+    // mints a one-member DM pod — and every later guard is an *entrance*
+    // guard (join, invite create, invite redeem, install), so none of them
+    // can repair a pod that was born malformed.
+    //
+    // Derived from DM_POD_TYPES_GUARD rather than by narrowing
+    // VALID_POD_TYPES: that constant is also the read filter for
+    // getPodsByType above, so narrowing it for a creation reason would
+    // silently 400 a read endpoint. The guard is the strict-DM predicate; a
+    // hand-maintained allowlist only happens to agree with it.
+    const { DM_POD_TYPES_GUARD } = require('../services/agentIdentityService');
+    if (DM_POD_TYPES_GUARD.has(String(type))) {
+      return res.status(400).json({
+        msg: 'DM pods are 1:1 and cannot be created here — they are created with both members by the DM rail. Use type "chat" for a multi-party room, or start a DM with the agent.',
+        code: 'dm_pod_not_creatable',
+      });
+    }
+
+    const newPod = new Pod({
+      name,
+      description,
+      type,
+      joinPolicy: joinPolicy === 'invite-only' ? 'invite-only' : 'open',
+      parentPod: parentPod || null,
+      createdBy: req.userId,
+      members: [req.userId],
+    });
+
+    const pod = await newPod.save();
+
+    // Populate the user data
+    await pod.populate('createdBy', 'username profilePicture');
+    await pod.populate('members', 'username profilePicture isBot');
+
+    // Also create in PostgreSQL if available
+    try {
+      if (process.env.PG_HOST && PGPod) {
+        console.log('Creating pod in PostgreSQL as well:', pod._id);
+
+        // Insert into PostgreSQL with the same ID
+        await PGPod.create(
+          name,
+          description,
+          type,
+          req.userId,
+          pod._id.toString(), // Pass the MongoDB ID
+        );
+
+        console.log('Pod successfully created in PostgreSQL');
+      }
+    } catch (pgErr: any) {
+      console.error('Error creating pod in PostgreSQL:', pgErr.message);
+      // We don't fail the request if PostgreSQL creation fails
+      // The synchronization script can fix this later
+    }
+
+    try {
+      await installDefaultAgentForPod({
+        pod,
+        userId: req.userId,
+      });
+    } catch (defaultAgentError: any) {
+      console.warn('[pod] default agent auto-install failed:', defaultAgentError.message);
+    }
+
+    res.json(pod);
+  } catch (err: any) {
+    console.error(err.message);
+    res.status(500).send('Server Error');
+  }
+};
+
+// Join a pod
+exports.joinPod = async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ msg: 'Pod ID is required' });
+    }
+
+    // Access the user ID safely
+    const userId = req.userId || req.user?.id || req.user?._id;
+
+    if (!userId) {
+      return res.status(401).json({ msg: 'User authentication failed' });
+    }
+
+    const pod = await Pod.findById(id);
+
+    if (!pod) {
+      return res.status(404).json({ msg: 'Pod not found' });
+    }
+
+    // Agent DMs are strictly 1:1 (ADR-001 §3.10). The pod is created with
+    // exactly two members at `DMService.getOrCreateAgentRoom()` time —
+    // the agent (host, set as `pod.createdBy`) and the user who opened
+    // the DM. No third party can join afterwards: not another human, not
+    // another agent. The invite-only/creator-bypass branch below is
+    // effectively dead for agent-rooms because `pod.createdBy` is the
+    // host *agent*, not a human user. For multi-party human↔agent
+    // surfaces, use `type: 'chat'` instead.
+    // Only agent-room and agent-dm are strictly 1:1. Third-party joins must
+    // spawn a NEW DM pod with the
+    // requesting party + the relevant agent — see dmService
+    // .getOrCreateAgentDmRoom. Same invariant lives in
+    // agentIdentityService.DM_POD_TYPES_GUARD.
+    const { DM_POD_TYPES_GUARD } = require('../services/agentIdentityService');
+    if (DM_POD_TYPES_GUARD.has(String(pod.type))) {
+      return res.status(403).json({
+        msg: 'DM pods are 1:1 — third-person joins are not allowed. Start a new DM with the agent for a private conversation, or use a chat pod for multi-party.',
+      });
+    }
+
+    const isMember = (pod.members || []).some(
+      (member: any) => String(member?._id || member) === String(userId),
+    );
+
+    // Repeated self-join requests are successful and side-effect free. This
+    // keeps optimistic clients and retried requests idempotent.
+    if (!isMember) {
+      const isAdmin = await isGlobalAdminRequest(req);
+      const isJoinable = isDirectlyJoinable(pod);
+      if (!isAdmin && !isJoinable) {
+        return res.status(403).json({
+          code: 'join_refused',
+          msg: 'This pod cannot be joined directly. Ask a member for an invite link.',
+        });
+      }
+
+      await Pod.updateOne(
+        { _id: pod._id },
+        {
+          $addToSet: { members: userId },
+          $set: { updatedAt: new Date() },
+        },
+      );
+    }
+
+    const updatedPod = await Pod.findById(id)
+      .populate('createdBy', 'username profilePicture')
+      .populate('members', 'username profilePicture isBot');
+
+    return res.json(updatedPod);
+  } catch (err: any) {
+    console.error('Error in joinPod:', err.message);
+
+    if (err.kind === 'ObjectId') {
+      return res.status(404).json({ msg: 'Pod not found' });
+    }
+
+    return res.status(500).json({
+      msg: 'Server Error',
+    });
+  }
+};
+
+// Leave a pod
+exports.leavePod = async (req: any, res: any) => {
+  try {
+    const pod = await Pod.findById(req.params.id);
+
+    if (!pod) {
+      return res.status(404).json({ msg: 'Pod not found' });
+    }
+
+    // TASK-166: the creator cannot leave. `createdBy` is written only at
+    // creation and nothing transfers it, while `removeMember` is gated on it
+    // with no admin fallback — so a creator who left would strand the pod with
+    // nobody able to remove a member. Refused rather than stripped: the field
+    // records who made the pod, and the membership readers no longer read it as
+    // membership.
+    if (String(pod.createdBy) === String(req.userId)) {
+      return res.status(409).json({
+        msg: 'A pod creator cannot leave their own pod.',
+        code: 'creator_cannot_leave',
+      });
+    }
+
+    // Check if user is a member
+    if (!pod.members.includes(req.userId)) {
+      return res.status(400).json({ msg: 'Not a member of this pod' });
+    }
+
+    // Remove user from members
+    pod.members = pod.members.filter(
+      (member: any) => member.toString() !== req.userId,
+    );
+    pod.updatedAt = Date.now();
+
+    await pod.save();
+
+    // Populate the user data
+    await pod.populate('createdBy', 'username profilePicture');
+    await pod.populate('members', 'username profilePicture isBot');
+
+    res.json(pod);
+  } catch (err: any) {
+    console.error(err.message);
+    if (err.kind === 'ObjectId') {
+      return res.status(404).json({ msg: 'Pod not found' });
+    }
+    res.status(500).send('Server Error');
+  }
+};
+
+// Remove a member from a pod (only creator can remove)
+exports.removeMember = async (req: any, res: any) => {
+  try {
+    const { id: podId, memberId } = req.params;
+    const userId = req.userId || req.user?.id;
+
+    if (!podId || !memberId) {
+      return res.status(400).json({ msg: 'Pod ID and member ID are required' });
+    }
+
+    if (!userId) {
+      return res.status(401).json({ msg: 'User authentication failed' });
+    }
+
+    const pod = await Pod.findById(podId);
+
+    if (!pod) {
+      return res.status(404).json({ msg: 'Pod not found' });
+    }
+
+    const creatorId = pod.createdBy?.toString?.() || pod.createdBy;
+    if (creatorId !== userId.toString()) {
+      return res.status(403).json({ msg: 'Only pod admin can remove members' });
+    }
+
+    if (memberId.toString() === creatorId.toString()) {
+      return res.status(400).json({ msg: 'Cannot remove pod creator' });
+    }
+
+    const isMember = pod.members.some(
+      (member: any) => member.toString() === memberId.toString(),
+    );
+    if (!isMember) {
+      return res.status(400).json({ msg: 'User is not a member of this pod' });
+    }
+
+    pod.members = pod.members.filter(
+      (member: any) => member.toString() !== memberId.toString(),
+    );
+    pod.updatedAt = Date.now();
+
+    await pod.save();
+
+    // Best-effort cleanup in PostgreSQL if available
+    if (process.env.PG_HOST && PGPod) {
+      try {
+        await PGPod.removeMember(podId, memberId.toString());
+      } catch (pgErr: any) {
+        console.warn(
+          'Failed to remove member from PostgreSQL pod members:',
+          pgErr.message,
+        );
+      }
+    }
+
+    await pod.populate('createdBy', 'username profilePicture');
+    await pod.populate('members', 'username profilePicture isBot');
+
+    return res.json(pod);
+  } catch (err: any) {
+    console.error('Error removing pod member:', err.message);
+    if (err.kind === 'ObjectId') {
+      return res.status(404).json({ msg: 'Pod not found' });
+    }
+    return res.status(500).json({ msg: 'Server Error' });
+  }
+};
+
+// Delete a pod (only creator can delete)
+exports.deletePod = async (req: any, res: any) => {
+  try {
+    const pod = await Pod.findById(req.params.id);
+
+    if (!pod) {
+      return res.status(404).json({ msg: 'Pod not found' });
+    }
+
+    const requesterId = req.userId || req.user?.id || req.user?._id;
+    const isCreator = pod.createdBy.toString() === requesterId?.toString();
+    const isGlobalAdmin = await isGlobalAdminRequest(req);
+
+    // Check if user is the creator or global admin
+    if (!isCreator && !isGlobalAdmin) {
+      return res.status(401).json({ msg: 'Not authorized to delete this pod' });
+    }
+
+    // Delete all messages in the pod
+    await Message.deleteMany({ podId: req.params.id });
+    if (PGMessage) {
+      await PGMessage.deleteByPodId(req.params.id);
+    }
+
+    await Promise.allSettled([
+      Post.deleteMany({ podId: req.params.id }),
+      Summary.deleteMany({ podId: req.params.id }),
+      PodAsset.deleteMany({ podId: req.params.id }),
+      Integration.deleteMany({ podId: req.params.id }),
+      AgentInstallation.deleteMany({ podId: req.params.id }),
+      AgentProfile.deleteMany({ podId: req.params.id }),
+    ]);
+
+    if (PGPod) {
+      await PGPod.delete(req.params.id);
+    }
+
+    // Delete the pod
+    await Pod.deleteOne({ _id: req.params.id });
+
+    res.json({ msg: 'Pod deleted' });
+  } catch (err: any) {
+    console.error(err.message);
+    if (err.kind === 'ObjectId') {
+      return res.status(404).json({ msg: 'Pod not found' });
+    }
+    res.status(500).send('Server Error');
+  }
+};
+
+export {};

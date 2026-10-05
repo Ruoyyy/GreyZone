@@ -1,0 +1,362 @@
+import jwt from 'jsonwebtoken';
+import axios from 'axios';
+
+export interface GitHubToken {
+  token: string;
+  expiresAt: string | null;
+}
+
+export interface GitHubIssueLabel {
+  name: string;
+  color?: string;
+}
+
+export interface GitHubIssue {
+  number: number;
+  title: string;
+  body: string;
+  html_url: string;
+  labels: GitHubIssueLabel[];
+  pull_request?: unknown;
+  milestone?: { title: string } | null;
+}
+
+interface ListIssuesOptions {
+  owner?: string;
+  repo?: string;
+  perPage?: number;
+  installationId?: string;
+  forceApp?: boolean;
+}
+
+interface CreateIssueOptions {
+  owner?: string;
+  repo?: string;
+  title: string;
+  body?: string;
+  labels?: string[];
+  installationId?: string;
+  forceApp?: boolean;
+}
+
+interface IssueCommentOptions {
+  owner?: string;
+  repo?: string;
+  issueNumber: number;
+  body: string;
+  installationId?: string;
+  forceApp?: boolean;
+}
+
+interface CloseIssueOptions {
+  owner?: string;
+  repo?: string;
+  issueNumber: number;
+  comment?: string;
+  installationId?: string;
+  forceApp?: boolean;
+}
+
+interface IssueNumberOptions {
+  owner?: string;
+  repo?: string;
+  issueNumber: number;
+  installationId?: string;
+  forceApp?: boolean;
+}
+
+interface PullRequestOptions {
+  owner?: string;
+  repo?: string;
+  pullNumber: number;
+  installationId?: string;
+  forceApp?: boolean;
+}
+
+interface MergePullRequestOptions extends PullRequestOptions {
+  mergeMethod?: 'merge' | 'squash' | 'rebase';
+  commitTitle?: string;
+  commitMessage?: string;
+  sha?: string;
+}
+
+type PullReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
+
+interface PullDiffOptions {
+  owner?: string;
+  repo?: string;
+  pullNumber: number;
+}
+
+interface PullReviewOptions {
+  owner?: string;
+  repo?: string;
+  pullNumber: number;
+  event: PullReviewEvent;
+  body?: string;
+}
+
+/**
+ * GitHubAppService — generates short-lived installation access tokens
+ * using a GitHub App's private key (RS256 JWT).
+ *
+ * Required env vars:
+ *   GITHUB_APP_ID                         — numeric app ID from GitHub App settings
+ *   GITHUB_APP_PRIVATE_KEY                — PEM private key (from GCP SM)
+ *   GITHUB_APP_INSTALLATION_ID_COMMONLY   — pre-known installation ID for Team-Commonly/commonly
+ */
+class GitHubAppService {
+  /**
+   * Generate a short-lived JWT to authenticate as the GitHub App itself (valid 10 min).
+   * Used as a stepping stone to get installation access tokens.
+   */
+  static generateAppJWT(): string {
+    const now = Math.floor(Date.now() / 1000);
+    return jwt.sign(
+      { iat: now - 60, exp: now + 600, iss: process.env.GITHUB_APP_ID },
+      process.env.GITHUB_APP_PRIVATE_KEY as string,
+      { algorithm: 'RS256' },
+    );
+  }
+
+  /**
+   * Exchange an installation ID for a short-lived installation access token (valid 1 hour).
+   * This token is what agents use with `gh` CLI and `git`.
+   */
+  static async getInstallationToken(installationId: string | number): Promise<GitHubToken> {
+    const appJWT = this.generateAppJWT();
+    const res = await axios.post(
+      `https://api.github.com/app/installations/${installationId}/access_tokens`,
+      {},
+      {
+        headers: {
+          Authorization: `Bearer ${appJWT}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      },
+    );
+    return { token: res.data.token, expiresAt: res.data.expires_at };
+  }
+
+  /**
+   * Look up the installation ID for any repo where the app is installed.
+   * Used for multi-repo support when owner/repo is not Team-Commonly/commonly.
+   */
+  static async getInstallationIdForRepo(owner: string, repo: string): Promise<number> {
+    const appJWT = this.generateAppJWT();
+    const res = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}/installation`,
+      {
+        headers: {
+          Authorization: `Bearer ${appJWT}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      },
+    );
+    return res.data.id;
+  }
+
+  /**
+   * Check whether a PAT is configured (simpler alternative to GitHub App).
+   */
+  static isPatConfigured(): boolean {
+    return !!process.env.GITHUB_PAT;
+  }
+
+  /**
+   * Return the PAT directly as a token response.
+   * PATs don't have a server-issued expiry, so expiresAt is null.
+   */
+  static getPatToken(): GitHubToken {
+    return { token: process.env.GITHUB_PAT as string, expiresAt: null };
+  }
+
+  // ─── Issues API ──────────────────────────────────────────────────────────
+
+  /**
+   * Shared headers for GitHub REST API calls (uses PAT or App token).
+   * Supplying an installationId is an app-only request. This keeps a future
+   * broker tool fail-closed even if its caller forgets to pass forceApp.
+   */
+  static async _apiHeaders(token?: string, installationId?: string, forceApp = false): Promise<Record<string, string>> {
+    const pat = forceApp || installationId ? undefined : (token || process.env.GITHUB_PAT);
+    let credential = pat;
+    const appConfigured = !!(
+      process.env.GITHUB_APP_ID
+      && process.env.GITHUB_APP_PRIVATE_KEY
+      && (installationId || process.env.GITHUB_APP_INSTALLATION_ID_COMMONLY)
+    );
+    if (!credential && appConfigured) {
+      const installation = await this.getInstallationToken(
+        installationId || process.env.GITHUB_APP_INSTALLATION_ID_COMMONLY as string,
+      );
+      credential = installation.token;
+    }
+    if (!credential) throw new Error('github_not_configured');
+    return {
+      Authorization: `Bearer ${credential}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+  }
+
+  /**
+   * List open issues for a repo (excludes pull requests).
+   */
+  static async listOpenIssues({ owner = 'Team-Commonly', repo = 'commonly', perPage = 20, installationId, forceApp }: ListIssuesOptions = {}): Promise<GitHubIssue[]> {
+    const headers = await this._apiHeaders(undefined, installationId, forceApp);
+    const res = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}/issues?state=open&per_page=${perPage}`,
+      { headers },
+    );
+    return (res.data as GitHubIssue[]).filter((i) => !i.pull_request);
+  }
+
+  /**
+   * Create a new GitHub issue.
+   */
+  static async createIssue({ owner = 'Team-Commonly', repo = 'commonly', title, body, labels, installationId, forceApp }: CreateIssueOptions): Promise<GitHubIssue> {
+    const headers = await this._apiHeaders(undefined, installationId, forceApp);
+    const payload: Record<string, unknown> = { title };
+    if (body) payload.body = body;
+    if (labels?.length) payload.labels = labels;
+    const res = await axios.post(
+      `https://api.github.com/repos/${owner}/${repo}/issues`,
+      payload,
+      { headers },
+    );
+    return res.data;
+  }
+
+  /**
+   * Add a comment to an existing issue.
+   */
+  static async addIssueComment({ owner = 'Team-Commonly', repo = 'commonly', issueNumber, body, installationId, forceApp }: IssueCommentOptions): Promise<unknown> {
+    const headers = await this._apiHeaders(undefined, installationId, forceApp);
+    const res = await axios.post(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+      { body },
+      { headers },
+    );
+    return res.data;
+  }
+
+  /**
+   * Close an issue (optionally with a final comment).
+   */
+  static async closeIssue({ owner = 'Team-Commonly', repo = 'commonly', issueNumber, comment, installationId, forceApp }: CloseIssueOptions): Promise<unknown> {
+    if (comment) {
+      await this.addIssueComment({ owner, repo, issueNumber, body: comment, installationId, forceApp });
+    }
+    const headers = await this._apiHeaders(undefined, installationId, forceApp);
+    const res = await axios.patch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`,
+      { state: 'closed' },
+      { headers },
+    );
+    return res.data;
+  }
+
+  /** Fetch one issue without exposing the server credential to the caller. */
+  static async getIssue({ owner = 'Team-Commonly', repo = 'commonly', issueNumber, installationId, forceApp }: IssueNumberOptions): Promise<GitHubIssue> {
+    const headers = await this._apiHeaders(undefined, installationId, forceApp);
+    const res = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`,
+      { headers },
+    );
+    return res.data;
+  }
+
+  /** Fetch one pull request. */
+  static async getPullRequest({ owner = 'Team-Commonly', repo = 'commonly', pullNumber, installationId, forceApp }: PullRequestOptions): Promise<unknown> {
+    const headers = await this._apiHeaders(undefined, installationId, forceApp);
+    const res = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      { headers },
+    );
+    return res.data;
+  }
+
+  /** List files changed by one pull request. */
+  static async listPullRequestFiles({ owner = 'Team-Commonly', repo = 'commonly', pullNumber, installationId, forceApp }: PullRequestOptions): Promise<unknown[]> {
+    const headers = await this._apiHeaders(undefined, installationId, forceApp);
+    const res = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/files`,
+      { headers },
+    );
+    return res.data;
+  }
+
+  /** Merge one pull request using the connected GitHub App installation. */
+  static async mergePullRequest({
+    owner = 'Team-Commonly', repo = 'commonly', pullNumber, mergeMethod, commitTitle, commitMessage,
+    installationId, forceApp, sha,
+  }: MergePullRequestOptions): Promise<unknown> {
+    const headers = await this._apiHeaders(undefined, installationId, forceApp);
+    const payload: Record<string, unknown> = {};
+    if (sha) payload.sha = sha;
+    if (mergeMethod) payload.merge_method = mergeMethod;
+    if (commitTitle) payload.commit_title = commitTitle;
+    if (commitMessage) payload.commit_message = commitMessage;
+    const res = await axios.put(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
+      payload,
+      { headers },
+    );
+    return res.data;
+  }
+
+  // ─── Pull Requests API ─────────────────────────────────────────────────────
+
+  /**
+   * Fetch the raw unified diff for a pull request.
+   * Uses the `application/vnd.github.v3.diff` media type, which makes the
+   * `GET /repos/.../pulls/{n}` endpoint return the diff text instead of JSON.
+   */
+  static async getPullDiff({ owner = 'Team-Commonly', repo = 'commonly', pullNumber }: PullDiffOptions): Promise<string> {
+    const headers = await this._apiHeaders();
+    headers.Accept = 'application/vnd.github.v3.diff';
+    const res = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      { headers },
+    );
+    return res.data as string;
+  }
+
+  /**
+   * Submit a review on a pull request.
+   * `event` is one of APPROVE | REQUEST_CHANGES | COMMENT. GitHub requires a
+   * non-empty `body` for REQUEST_CHANGES and COMMENT (the route enforces this).
+   */
+  static async createPullReview({ owner = 'Team-Commonly', repo = 'commonly', pullNumber, event, body }: PullReviewOptions): Promise<unknown> {
+    const headers = await this._apiHeaders();
+    const payload: Record<string, unknown> = { event };
+    if (body) payload.body = body;
+    const res = await axios.post(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}/reviews`,
+      payload,
+      { headers },
+    );
+    return res.data;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Check whether the GitHub App credentials are configured in env.
+   */
+  static isConfigured(): boolean {
+    return !!(
+      process.env.GITHUB_APP_ID &&
+      process.env.GITHUB_APP_PRIVATE_KEY &&
+      process.env.GITHUB_APP_INSTALLATION_ID_COMMONLY
+    );
+  }
+}
+
+export default GitHubAppService;
+// CJS compat: let require() return the default export directly
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+module.exports = exports["default"]; Object.assign(module.exports, exports);

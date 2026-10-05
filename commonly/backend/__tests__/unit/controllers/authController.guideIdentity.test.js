@@ -1,0 +1,122 @@
+/**
+ * Per-user Guide identity fork.
+ *
+ * Identity is the join key for everything (ADR-003: one memory envelope per
+ * (agentName, instanceId)). Installing every user's Guide as (guide,
+ * 'default') gave the whole instance ONE shared memory doc — user A's
+ * durable preferences readable from user B's workspace. Caught 2026-08-13
+ * with zero bytes written; these pin the fork so it cannot regress.
+ *
+ * TASK-149 moved the Guide's install into finishWorkspaceOnboarding, queued
+ * from createDefaultWorkspacePod rather than awaited before the 201. These
+ * tests therefore drive the tail directly — the identity is computed from the
+ * userId, so the entry point is irrelevant to the property under test.
+ */
+
+// jsonwebtoken must be mocked or it fails to load under the Node-26 drift
+// (buffer-equal-constant-time) — same guard the sibling authController tests use.
+jest.mock('jsonwebtoken', () => ({ sign: jest.fn(() => 'tok'), verify: jest.fn(), decode: jest.fn() }));
+jest.mock('bcryptjs', () => ({ hash: jest.fn(), compare: jest.fn(), genSalt: jest.fn(() => 'salt') }));
+jest.mock('@sendgrid/mail', () => ({ setApiKey: jest.fn(), send: jest.fn().mockResolvedValue({}) }));
+jest.mock('../../../services/communityPodService', () => ({
+  ensureUserInCommunityPod: jest.fn().mockResolvedValue(undefined),
+}));
+
+const mockSyncUser = jest.fn().mockResolvedValue(undefined);
+const mockSyncPod = jest.fn().mockResolvedValue({});
+const mockGetOrCreateAgentUser = jest.fn().mockResolvedValue({ _id: 'guide-bot-1' });
+const mockInstallUpsert = jest.fn().mockResolvedValue({});
+const mockPostMessage = jest.fn().mockResolvedValue({});
+const mockPodUpdateOne = jest.fn().mockResolvedValue({});
+
+jest.mock('../../../models/Pod', () => ({
+  create: jest.fn().mockImplementation(async (attrs) => ({
+    _id: 'pod-123',
+    type: attrs.type,
+    members: attrs.members,
+  })),
+  updateOne: (...args) => mockPodUpdateOne(...args),
+}));
+jest.mock('../../../models/User', () => ({ findById: jest.fn().mockResolvedValue({ _id: 'user-1' }) }));
+jest.mock('../../../models/Task', () => ({ create: jest.fn().mockResolvedValue([]) }));
+jest.mock('../../../services/agentIdentityService', () => ({
+  syncUserToPostgreSQL: mockSyncUser,
+  getOrCreateAgentUser: (...args) => mockGetOrCreateAgentUser(...args),
+}));
+jest.mock('../../../services/pgPodSyncService', () => ({ syncPodFromMongo: mockSyncPod }));
+jest.mock('../../../models/AgentRegistry', () => ({
+  AgentInstallation: { findOneAndUpdate: (...args) => mockInstallUpsert(...args) },
+}));
+jest.mock('../../../scripts/seed-native-agents', () => ({
+  buildInstallationConfig: jest.fn(() => ({
+    runtime: { runtimeType: 'native' },
+    wakeOnMessage: { enabled: true },
+  })),
+}));
+jest.mock('../../../services/agentMessageService', () => ({
+  postMessage: (...args) => mockPostMessage(...args),
+}));
+
+const { createHash } = require('crypto');
+const authController = require('../../../controllers/authController');
+
+// The per-user-agent identity convention (Sam, 2026-08-13): short, stable,
+// and OPAQUE — the raw userId must not survive into any identity tier.
+const conventionId = (userId) => `u${createHash('sha256').update(String(userId)).digest('hex').slice(0, 10)}`;
+
+describe('workspace onboarding guide identity fork (2026-08-13)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('installs the guide under the convention instanceId — short, opaque, never default', async () => {
+    await authController.finishWorkspaceOnboarding({ _id: 'pod-123' }, 'User-1');
+    const expected = conventionId('User-1');
+
+    const [filter, update] = mockInstallUpsert.mock.calls[0];
+    expect(filter.instanceId).toBe(expected);
+    expect(update.$setOnInsert.instanceId).toBe(expected);
+    expect(filter.instanceId).not.toBe('default');
+    // Convention shape: u + 10 hex. Neither the raw userId nor its lowercase
+    // form may appear in the identity.
+    expect(filter.instanceId).toMatch(/^u[a-f0-9]{10}$/);
+    expect(filter.instanceId).not.toContain('user-1');
+
+    expect(mockGetOrCreateAgentUser).toHaveBeenCalledWith('scout', expect.objectContaining({
+      instanceId: expected,
+    }));
+    expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({
+      agentName: 'scout',
+      instanceId: expected,
+    }));
+    // The setting is per installation, not a pod-shape policy. A later shared
+    // room continues to honor this owner's explicit opt-in.
+    expect(update.$set.config.wakeOnMessage.enabled).toBe(true);
+  });
+
+  test('two users get two distinct guide identities — the memory-envelope fork', async () => {
+    await authController.finishWorkspaceOnboarding({ _id: 'pod-123' }, 'aaaa1111');
+    await authController.finishWorkspaceOnboarding({ _id: 'pod-123' }, 'bbbb2222');
+
+    const ids = mockInstallUpsert.mock.calls.map(([filter]) => filter.instanceId);
+    expect(ids).toEqual([conventionId('aaaa1111'), conventionId('bbbb2222')]);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  // The dependency the tail's order exists for: the welcome is a message INSERT
+  // against the pod's PG row, so the mirror has to have finished first. Call
+  // order, not presence — presence alone would not notice the two being swapped.
+  test('mirrors the pod into PG before the Guide posts its welcome', async () => {
+    const oldPgHost = process.env.PG_HOST;
+    process.env.PG_HOST = 'localhost';
+    try {
+      await authController.finishWorkspaceOnboarding({ _id: 'pod-123' }, 'User-1');
+
+      expect(mockSyncPod).toHaveBeenCalledTimes(1);
+      expect(mockPostMessage).toHaveBeenCalledTimes(1);
+      expect(mockSyncPod.mock.invocationCallOrder[0])
+        .toBeLessThan(mockPostMessage.mock.invocationCallOrder[0]);
+    } finally {
+      if (oldPgHost === undefined) delete process.env.PG_HOST;
+      else process.env.PG_HOST = oldPgHost;
+    }
+  });
+});

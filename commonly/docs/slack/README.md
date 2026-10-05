@@ -1,0 +1,50 @@
+# Slack Integration (Ingest-only v1)
+
+## Status
+- ⚠️ Legacy in-platform provider (will move to external service).
+- ✅ Provider implemented (`backend/integrations/providers/slackProvider.ts`)
+- ✅ Webhook: `POST /api/webhooks/slack/:integrationId`
+- Ingest-only: receives channel message events via Events API; no outbound send wired yet.
+
+External service stub lives at `external/commonly-provider-services/slack-service/`.
+
+## Required App Setup
+1) Create a Slack App (workspace-level is fine for v1). One app serves the
+   instance: its signing secret lives in the backend environment, and its bot
+   token is stored per install as an opaque `botTokenRef` on the row (step 5).
+2) Add bot scopes: `channels:history`, `channels:read`, `users:read` (omit write scopes until we enable outbound).
+3) Enable Events API:
+   - Request URL: `https://<your-host>/api/webhooks/slack/<integrationId>`
+   - Subscribe to events: `message.channels` (add more if needed later).
+4) Install the app to the workspace; invite the bot to target channels.
+5) Capture the Bot Token (`xoxb-...`) and Signing Secret. The **signing secret**
+   stays on the INSTANCE (`SLACK_SIGNING_SECRET` in the backend environment);
+   the **bot token** is not an environment variable any more — the OAuth bind
+   stores it per install as `botTokenRef` (`SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`
+   were retired in TASK-151). A `signingSecret` sent in an integration body is
+   stripped (`SERVER_OWNED_CONFIG_KEYS`), and every reader takes the instance's
+   value — pasting a per-row secret verifies nothing (TASK-141).
+
+## Verification
+- Commonly computes `v0:{timestamp}:{rawBody}` HMAC-SHA256 with the signing secret and compares to `X-Slack-Signature`.
+- Request must include `X-Slack-Request-Timestamp`; stale timestamps should be rejected by Slack itself.
+
+## Data Flow
+1) Slack sends an event -> webhook validates signature -> normalizes message -> buffers for summarizer.
+2) Summaries are posted inside Commonly (not back to Slack in v1).
+3) The hourly scheduler consumes buffered messages and posts a bot summary to the pod.
+
+## UI
+- Sidebar Apps quick-add uses a simple "Add Slack" redirect flow (no inline config fields).
+- The redirect/callback flow is responsible for returning the bot token (stored
+  as an opaque `botTokenRef` on the row) + the channel details. It does not
+  return a signing secret: the instance's `SLACK_SIGNING_SECRET` verifies every
+  event.
+
+## Limitations (v1)
+- No outbound `chat.postMessage` yet.
+- No history polling (helper exists but unused).
+- Attachments are passed through as text/links only.
+
+## Notes for parallel providers
+- Slack webhook is independent per `integrationId` and can run alongside GroupMe/Telegram without conflict.

@@ -1,0 +1,358 @@
+# GKE Development Environment Overrides
+# Use with: helm install commonly . -f values-dev.yaml
+
+global:
+  namespace: commonly-dev
+  environment: development
+
+errorTracking:
+  enabled: true
+
+# All three commonly-dev-stripe-* secrets verified present with an ENABLED
+# version on 2026-08-06 before this was flipped. Do not set true anywhere the
+# secrets are absent: an empty secret container passes `describe` and still
+# breaks the whole api-keys ExternalSecret. See the note in values.yaml.
+billing:
+  enabled: true
+
+agentProvisioning:
+  enabled: true
+  createWorkspacePvc: false
+
+backend:
+  replicaCount: 1
+  image:
+    repository: gcr.io/YOUR_GCP_PROJECT_ID/commonly-backend
+    tag: "20260417214615-r4"
+    pullPolicy: Always  # Always pull in dev
+  # ADR-015 amendment (2026-07-12): the backend serves the user-facing API and
+  # is the one workload a spot reclamation must never interrupt. It requests
+  # only 200m/512Mi and fits in existing dev-pool headroom, so pinning it to the
+  # on-demand pool closes the abrupt-reclamation gap for ~$0 (cheaper than a 2nd
+  # replica, which would also stay on spot). Spot stays for restartable/batch
+  # workloads (agents, LiteLLM); the user-facing API + Redis belong on dev-pool.
+  nodeSelector:
+    pool: dev
+  tolerations:
+    - key: "pool"
+      operator: "Equal"
+      value: "dev"
+      effect: "NoSchedule"
+  env:
+    nodeEnv: development
+    # Registration opened 2026-07-03 — the invitation code now gates the
+    # hosted-agent entitlement (redeemed at signup or later), not signup
+    # itself. BYO/local agents are open to every account.
+    registrationInviteOnly: "0"
+    agentProvisionerK8s: "1"
+    agentProvisionerDocker: "0"
+    agentProvisionerNodePool: "dev"
+    frontendUrl: "https://commonly.me"
+    backendUrl: "https://api.commonly.me"
+    communityPodId: "6a5fe677306155f677c26abf"
+    # Retention-exempt: the landing-page showroom (Eng Milestone) and HQ.
+    # Both are publicly readable; the 30-day cron emptied the previous
+    # showroom silently (2026-08-05). Replace with per-account retention
+    # entitlements when the paid tier lands.
+    retentionExemptPodIds: "6a507c9b792f1ed2cbfec648,6a5fe677306155f677c26abf"
+    # Must match the callback URL registered on the GitHub/Google OAuth apps.
+    oauthCallbackBaseUrl: "https://api.commonly.me"
+    commonlyApiUrl: ""
+    # ADR-023 W2 hosted runtime (workers/agent-runtime, deployed 2026-08-30).
+    hostedRuntimeUrl: "https://commonly-agent-runtime.commonlyai.workers.dev"
+    clawdbotGatewayUrl: ""
+    moltbotGatewayUrl: ""
+    pgHost: "YOUR_PG_HOST"
+    pgPort: "25450"
+    pgDatabase: "defaultdb"
+    pgUser: "avnadmin"
+    pgSslEnabled: "true"
+    pgCaCertPath: "/app/certs/ca.pem"
+    marketplaceManifestPath: "/app/packages/commonly-marketplace/marketplace.json"
+    logLevel: debug
+    # Session threshold tuned for multi-step agent tasks. 150KB was killing
+    # legitimate work mid-flight (e.g. Theo regenerating 3 office files +
+    # uploading them grew sessions to 320KB and got swept). Pre-2026-05-06
+    # the docs called for 400KB default; bumping to 600KB gives headroom
+    # for chat.mention follow-ups that span multiple tool calls without
+    # losing the safety net for genuinely-runaway sessions (>1MB).
+    agentSessionMaxSizeKb: "600"
+    # Bypass off — provisioner now writes LiteLLM virtual keys (not raw
+    # Codex JWTs) to per-agent auth-profiles, and LiteLLM proxies Codex
+    # via /chatgpt-auth/auth.json (rotator-managed). Pairs with
+    # litellm.codexBypassLitellm: false + litellm.codexAuthRotator.enabled: true.
+    codexBypassLitellm: "false"
+    # injection-guard ONLY (2026-08-13). The default pair includes
+    # openai-moderation-enforce, whose OPENAI_API_KEY is the literal
+    # "placeholder" — every guarded native run has 401'd on the guardrail
+    # BEFORE reaching its model (found by the Guide smoke test; also the
+    # probable cause of the native fleet's 98% July failure rate, which
+    # predates the August LiteLLM outage). injection-guard is LiteLLM-native
+    # (no key, no external service) and keeps the prompt-injection block for
+    # untrusted input. Restore the pair only after a real OpenAI moderation
+    # key lands in the api-keys secret.
+    nativeRuntimeGuardrails: "injection-guard"
+
+    # Kernel work-sweep kill switch (#1080). Commented out = sweep runs.
+    # Set to "true" and roll to stop the sweep rescuing lapsed leases and
+    # advertising them as unclaimed work.
+    #
+    # Why the knob exists: on 2026-08-21 the sweep produced 14 rescues in
+    # under three hours, none of them abandoned work — every rescued row had
+    # an open PR or a live holder. A 30-minute lease against multi-hour tasks
+    # plus a 10-minute sweep locks into a 40-minute orbit, and rescued rows
+    # re-claim seconds later so their orbits converge onto one tick.
+    #
+    # This is a stopgap for @fable-lead's ruling on #1080; the durable fix is
+    # liveness-gated rescue + renewal-from-work + provenance (PR #1082).
+    # Remove the override once that has merged AND deployed.
+    # agentWorkSweepDisabled: "true"
+
+frontend:
+  replicaCount: 1
+  image:
+    repository: gcr.io/YOUR_GCP_PROJECT_ID/commonly-frontend
+    tag: "20260412125218"
+    pullPolicy: Always
+  # ADR-015: static asset server, completely fine to reschedule on spot.
+  nodeSelector:
+    workload-tier: spot
+  tolerations:
+    - key: "workload-tier"
+      operator: "Equal"
+      value: "spot"
+      effect: "NoSchedule"
+
+mongodb:
+  enabled: false
+  persistence:
+    storageClass: standard-rwo  # GCP standard persistent disk
+    size: 50Gi
+  nodeSelector:
+    pool: dev
+  tolerations:
+    - key: "pool"
+      operator: "Equal"
+      value: "dev"
+      effect: "NoSchedule"
+
+postgresql:
+  enabled: false
+  persistence:
+    storageClass: standard-rwo
+    size: 50Gi
+
+redis:
+  enabled: true
+  # ADR-015 amendment (2026-07-11): Redis is a realtime availability
+  # dependency. Two user-visible 503s showed that spot reclamation here takes
+  # the shell offline, so keep it on the on-demand dev pool.
+  nodeSelector:
+    pool: dev
+  tolerations:
+    - key: "pool"
+      operator: "Equal"
+      value: "dev"
+      effect: "NoSchedule"
+
+externalSecrets:
+  enabled: true
+  secretStore:
+    name: gcpsm-secretstore
+    projectId: YOUR_GCP_PROJECT_ID
+    clusterLocation: us-central1
+    clusterName: commonly-dev
+
+agents:
+  clawdbot:
+    # PARKED 2026-08-20 (Sam) — the moltbot tier is retiring in favour of
+    # pi/OpenCode wrapper adapters (ADR-021/ADR-023, #1050). Its credential
+    # stack had been dead since 2026-07-02 — both cluster codex tokens expired,
+    # OpenRouter 401 "User not found" — and nobody noticed for seven weeks,
+    # because the native and BYO tiers never touch those credentials.
+    #
+    # This flag is the durable half of the park. The manual
+    # `kubectl scale --replicas=0` alone would be UNDONE by the next Deploy Dev,
+    # because the template hardcodes `replicas: 1` behind this flag and helm
+    # upgrade restores whatever the chart declares. Identity continuity holds
+    # either way: User rows, memory, and installations survive (ADR-001), so
+    # the same agents return as themselves on the replacement runtime.
+    enabled: false
+    image:
+      repository: gcr.io/YOUR_GCP_PROJECT_ID/clawdbot-gateway
+      tag: "20260414192025"
+      pullPolicy: Always
+    strategy:
+      type: Recreate
+    persistence:
+      config:
+        storageClass: standard-rwo
+        size: 1Gi
+        accessMode: ReadWriteOnce
+      workspace:
+        storageClass: standard-rwo
+        size: 10Gi
+        accessMode: ReadWriteOnce
+    nodeSelector:
+      pool: dev
+    tolerations:
+      - key: "pool"
+        operator: "Equal"
+        value: "dev"
+        effect: "NoSchedule"
+
+  commonlyBot:
+    enabled: true
+    image:
+      repository: gcr.io/YOUR_GCP_PROJECT_ID/commonly-bot
+      tag: "20260411055334"
+      pullPolicy: Always
+    nodeSelector:
+      pool: dev
+    tolerations:
+      - key: "pool"
+        operator: "Equal"
+        value: "dev"
+        effect: "NoSchedule"
+
+  cloudCodex:
+    enabled: true
+    apiUrl: http://backend.commonly-dev.svc.cluster.local:5000
+    agents:
+      cody:
+        # The AgentInstallation row this pod's runtime token is bound to.
+        # podId = Team Orchestration Demo pod (where Cody lives).
+        podId: 69f841a9063269526de0437c
+        # Registry agentName for Cody's install. `cloud-codex` was the
+        # original plan but isn't in AGENT_TYPES, so the periodic cleanup
+        # sweep marks any install with that agentName as `status: stale`
+        # and the mention service stops routing to it. `codex` IS in
+        # AGENT_TYPES (mapped to runtime: 'codex') so the install stays
+        # active across reprovisions.
+        registryAgentName: codex
+        agentInstanceId: cody
+        adapter: codex
+        storage: 1Gi
+        tokenSecret: cloud-codex-cody-token
+        # Parked 2026-08-12 (Sam: the working fleet is the Sharpen pod).
+        # Identity, PVC, and token secret stay; flip to 1 to revive.
+        replicas: 0
+
+rbac:
+  create: true
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+  hosts:
+    frontend:
+      host: commonly.me
+    backend:
+      host: api.commonly.me
+    litellm:
+      host: litellm.commonly.me
+  tls:
+    enabled: false  # Enable after setting up cert-manager
+
+configMaps:
+  marketplaceManifest:
+    enabled: true
+  skillsCatalog:
+    enabled: true
+  postgresCA:
+    enabled: true
+
+skillsCatalogStorage:
+  enabled: true
+  bootstrapFromImage: true
+  downloadUrl: "https://storage.googleapis.com/YOUR_GCP_PROJECT_ID_cloudbuild/awesome-agent-skills-index.json"
+
+autoscaling:
+  backend:
+    enabled: false  # Enable after Phase 3
+
+monitoring:
+  prometheus:
+    enabled: false  # Enable after Phase 3
+
+# Cloudflare Tunnel (optional)
+cloudflared:
+  enabled: true
+  namespace: ingress-nginx
+  nodeSelector:
+    pool: dev
+  tolerations:
+    - key: "pool"
+      operator: "Equal"
+      value: "dev"
+      effect: "NoSchedule"
+  ingressService: ingress-nginx-controller.ingress-nginx.svc.cluster.local
+
+litellm:
+  enabled: true
+  # Pinned override on top of values.yaml's v1.82.3-stable default.
+  #
+  # 2026-05-31: bumped from v1.83.7-stable to v1.88.0-rc.1 to fix the
+  # ChatgptException `'ResponsesAPIResponse' object has no attribute
+  # 'output'` bug. Symptom: every openai-codex/* call silently fell
+  # through to the OpenRouter fallback chain (Nemotron) even with valid
+  # auth.json — agents posted but never on Codex output. The fix lands
+  # in v1.87.x; first ghcr stable that includes it would be v1.87.0
+  # (not yet published as plain v1.87.x — only RCs available). v1.88.0-
+  # rc.1 is the earliest tag that ghcr serves which has the patch.
+  #
+  # Pinning to the RC is the price; revisit when v1.87.0 stable or
+  # v1.88.0 stable lands on ghcr.io/berriai/litellm. v1.86.2 confirmed
+  # still broken via direct kubectl set image test (2026-05-31).
+  image:
+    repository: ghcr.io/berriai/litellm
+    tag: v1.88.0-rc.1
+  # BerriAI/litellm#25429 workaround used to live here. Now off — acpx is
+  # being deprecated in commonly (see ADR-005 Stage 3) and we'd rather route
+  # everything through LiteLLM than chase an upstream bug for a code path
+  # we're retiring. With bypass off, all Codex traffic goes via LiteLLM's
+  # chatgpt/ bridge and the rotator below handles 429-driven account swaps.
+  codexBypassLitellm: false
+  # Re-enable the codex-auth-rotator sidecar — swaps /chatgpt-auth/auth.json
+  # between accounts every 10 min OR on 429 events written by LiteLLM's
+  # custom callback. Each ChatGPT Team user has independent quota, so
+  # rotation gives real multi-account benefit when one account exhausts.
+  codexAuthRotator:
+    enabled: true
+  # Persist chatgpt-auth across pod restarts so pod-side device-auth'd
+  # auth-N.json files survive litellm rollouts. Without this every
+  # helm-upgrade nukes the cluster-bound tokens and Nova/Pixel/Cody
+  # go silent until the operator re-device-auths.
+  chatgptAuth:
+    persistence:
+      enabled: true
+      size: 1Gi
+      storageClass: standard-rwo
+  nodeSelector:
+    pool: dev
+  tolerations:
+    - key: "pool"
+      operator: "Equal"
+      value: "dev"
+      effect: "NoSchedule"
+
+backup:
+  # ADR-015: database dumps must stay on the on-demand pool; spot
+  # preemption can terminate a backup mid-dump and leave no usable artifact.
+  nodeSelector:
+    pool: dev
+  tolerations:
+    - key: "pool"
+      operator: "Equal"
+      value: "dev"
+      effect: "NoSchedule"
+  mongodb:
+    enabled: false  # Operator-private flag; enable only after bucket + WI setup.
+  postgresql:
+    enabled: false  # Operator-private flag; enable only after bucket + WI setup.
+
+slack:
+  oauth:
+    enabled: true

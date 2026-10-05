@@ -1,0 +1,221 @@
+// ESM import (not require) so CodeQL's js/missing-rate-limiting query
+// recognises the limiter on the POST route — same pattern as uploads.ts.
+import rateLimit from 'express-rate-limit';
+import { cloudflareIpRateLimitKeyGenerator } from '../middleware/ipRateLimit';
+import { createHash } from 'crypto';
+// eslint-disable-next-line global-require
+const express = require('express');
+// eslint-disable-next-line global-require
+const auth = require('../middleware/auth');
+// eslint-disable-next-line global-require
+const agentRuntimeAuth = require('../middleware/agentRuntimeAuth');
+// eslint-disable-next-line global-require
+const {
+  getMessages,
+  createMessage,
+  deleteMessage,
+} = require('../controllers/messageController');
+// eslint-disable-next-line global-require
+const {
+  addReaction,
+  removeReaction,
+} = require('../controllers/reactionController');
+// eslint-disable-next-line global-require
+const {
+  followThread,
+  unfollowThread,
+  listThreadState,
+  setThreadCollapsed,
+} = require('../controllers/threadStateController');
+
+interface RateLimitReq {
+  ip?: string;
+  get?: (header: string) => string | undefined;
+}
+interface RateLimitRes {
+  status: (n: number) => RateLimitRes;
+  json: (d: unknown) => void;
+}
+
+// 60 chat messages/min/user is roomy for a person typing fast (one per second
+// for a minute straight) and tight enough to blunt a runaway client looping
+// on a flaky send. Keyed on the Authorization header (hashed) so each user's
+// bearer token gets its own bucket — NAT'd users sharing one office IP don't
+// collide. Falls back to the Cloudflare-aware key helper for the rare unauth
+// path. Applied as the FIRST middleware on POST so CodeQL's
+// js/missing-rate-limiting query sees it.
+const sendMessageRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: RateLimitReq) => {
+    const authHeader = req.get?.('authorization');
+    if (authHeader) {
+      return `tok:${createHash('sha256').update(authHeader).digest('hex').slice(0, 16)}`;
+    }
+    return cloudflareIpRateLimitKeyGenerator(req as never);
+  },
+  handler: (_req: unknown, res: RateLimitRes) => {
+    res.status(429).json({ msg: 'rate limit exceeded: 60 messages per 60s' });
+  },
+});
+
+// Reads are cheaper than writes but still hit the DB and (now clamped) can
+// return up to 200 rows — throttle so a leaked token can't spray unbounded
+// GETs. Same token/IP keying as the write limiter.
+const readMessageRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 240,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: RateLimitReq) => {
+    const authHeader = req.get?.('authorization');
+    if (authHeader) {
+      return `tok:${createHash('sha256').update(authHeader).digest('hex').slice(0, 16)}`;
+    }
+    return cloudflareIpRateLimitKeyGenerator(req as never);
+  },
+  handler: (_req: unknown, res: RateLimitRes) => {
+    res.status(429).json({ msg: 'rate limit exceeded: 240 message reads per 60s' });
+  },
+});
+
+const router: ReturnType<typeof express.Router> = express.Router();
+
+router.get('/:podId', readMessageRateLimit, auth, getMessages);
+router.post('/:podId', sendMessageRateLimit, auth, createMessage);
+router.delete('/:id', auth, deleteMessage);
+
+// Sprint B5 — reactions. Lives under /:messageId/reactions so the
+// `:podId` route above doesn't shadow it (Express routes by order +
+// specificity). reactionRateLimit shares the same shape as the
+// send-message limiter; CodeQL recognises it inline on each route.
+const reactionRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: RateLimitReq) => {
+    const authHeader = req.get?.('authorization');
+    if (authHeader) {
+      return `rxn:${createHash('sha256').update(authHeader).digest('hex').slice(0, 16)}`;
+    }
+    return cloudflareIpRateLimitKeyGenerator(req as never);
+  },
+  handler: (_req: unknown, res: RateLimitRes) => {
+    res.status(429).json({ msg: 'rate limit exceeded: 120 reactions per 60s' });
+  },
+});
+// dualAuth: accept human JWT OR agent runtime token (cm_agent_*).
+//
+// This comment used to say dualAuth was inlined here "so the route reads its
+// auth wire from the same file CodeQL scans for the rate-limit middleware
+// (same-file detection)." That credits the wrong cause, and the belief spread:
+// it was copied into routes/registry/files.ts, where a limiter WAS declared in
+// the same file and the route was flagged anyway (#1720, and #1658 for three
+// months). What actually keeps the routes below clean is ORDER — the limiter
+// precedes the auth middleware, so the Mongo lookup auth performs is itself
+// covered. Cross-tabbed 2026-08-04: ~37 routes with the limiter before auth,
+// none flagged; 9 with it after, 6 flagged.
+//
+// Keep the limiter first in every route registration here. Inlining dualAuth is
+// fine but is not what satisfies the query, so don't infer a placement rule
+// from it.
+//
+// Agents reacting is first-class — see ADR-006 + reactionController's
+// agentUser fallback. Production tip: react sparingly per heartbeat
+// template guidance; only for genuine social signal, not as ack.
+const dualAuth = (req: any, res: any, next: any) => {
+  const bearer = ((req.header?.('Authorization') || '').replace('Bearer ', '')).trim();
+  const altHeader = (req.header?.('x-commonly-agent-token') || '').trim();
+  const token = bearer || altHeader;
+  if (token.startsWith('cm_agent_')) return agentRuntimeAuth(req, res, next);
+  return auth(req, res, next);
+};
+router.post('/:messageId/reactions', reactionRateLimit, dualAuth, addReaction);
+router.delete('/:messageId/reactions/:emoji', reactionRateLimit, dualAuth, removeReaction);
+
+// Per-user, per-thread state (W-T, TASK-029, 2/4). dualAuth for the same reason
+// reactions use it: an agent following a thread is first-class, and gating on
+// req.userId alone silently excludes every agent.
+//
+// NOT protected by ordering — `GET /:podId` is registered at :85, sixty-odd
+// lines ABOVE this, and Express matches in registration order. An earlier
+// version of this comment claimed the opposite and named `/threads/following`,
+// a path that has never existed on this router (the closest real thing is
+// `/following/threads` on posts.ts, different router, `auth` not `dualAuth`).
+//
+// What protects it is SEGMENT COUNT: `/:podId` compiles to a single-segment
+// pattern and `/threads/state` is two. Rename this to one segment and
+// `getMessages` swallows it under `auth`, so agents get a 401 on a route that
+// looks registered and reads correct. The toggles below survive for a second
+// independent reason — their verbs (POST/DELETE/PUT on two segments) are not
+// ones the greedy route registers. Pinned, executing, in
+// __tests__/unit/routes/messages.threadStateOrdering.test.js.
+//
+// Any message in a thread may be followed — the root is resolved server-side.
+// Reuses reactionRateLimit: same shape of cheap, spammable, per-message toggle.
+//
+// Follow and collapse are SEPARATE endpoints, not one PATCH taking both
+// booleans: following never implies expanded, and a combined write invites a
+// client to send the pair and clobber the half the user did not touch.
+router.get('/threads/state', reactionRateLimit, dualAuth, listThreadState);
+router.post('/:messageId/follow', reactionRateLimit, dualAuth, followThread);
+router.delete('/:messageId/follow', reactionRateLimit, dualAuth, unfollowThread);
+router.put('/:messageId/collapsed', reactionRateLimit, dualAuth, setThreadCollapsed);
+
+// Backdate a message's `created_at`. Pod-creator-only (or message author);
+// no general-purpose user authorization for editing other people's chronology.
+//
+// Why this exists: chat history demos / fixtures need plausible timestamps
+// (yesterday / this morning / etc.) but POST /:podId always stamps with NOW().
+// Direct PG UPDATE works for ops with PG access; this route is the same
+// capability for ops without PG access (Aiven IP-allowlisted, kubectl exec
+// timing out on new sessions, etc.).
+//
+// Body: { created_at: ISO8601 string }
+router.patch('/:id/created-at', auth, async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const { created_at: createdAtRaw } = req.body || {};
+    const ts = createdAtRaw ? new Date(createdAtRaw) : null;
+    if (!ts || Number.isNaN(ts.getTime())) {
+      return res.status(400).json({ msg: 'created_at (ISO8601) is required' });
+    }
+
+    // Authorization: load the message, then check author or pod-creator.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
+    const PGMessage = require('../models/pg/Message');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
+    const Pod = require('../models/Pod');
+    const userId = req.userId || req.user?.id;
+    if (!userId) return res.status(401).json({ msg: 'auth required' });
+
+    const message = await PGMessage.findById(id);
+    if (!message) return res.status(404).json({ msg: 'message not found' });
+
+    if (String(message.user_id) !== String(userId)) {
+      const pod = await Pod.findById(message.pod_id);
+      if (!pod || String(pod.createdBy) !== String(userId)) {
+        return res.status(403).json({ msg: 'must be message author or pod creator' });
+      }
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
+    const { pool } = require('../config/db-pg');
+    const r = await pool.query(
+      'UPDATE messages SET created_at = $1, updated_at = $1 WHERE id = $2 RETURNING id, created_at',
+      [ts, id],
+    );
+    if (r.rowCount === 0) return res.status(404).json({ msg: 'message not found in PG' });
+    return res.json({ ok: true, id: r.rows[0].id, created_at: r.rows[0].created_at });
+  } catch (err: any) {
+    console.error('backdate route error:', err?.message || err);
+    return res.status(500).json({ msg: 'backdate failed' });
+  }
+});
+
+module.exports = router;
+
+export {};

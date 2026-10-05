@@ -1,0 +1,3564 @@
+/**
+ * Kubernetes-native Agent Provisioner Service
+ * Replaces Docker socket mounting with K8s API for agent runtime provisioning
+ */
+
+export {};
+
+const k8s = require('@kubernetes/client-node');
+const stream = require('stream');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const PodAsset = require('../models/PodAsset');
+const PodAssetService = require('./podAssetService');
+const GlobalModelConfigService = require('./globalModelConfigService');
+// The cycle-reflection trailer lives with the presets because that is where it
+// is authored, but it is NOT preset-specific — see ensureHeartbeatTemplate.
+// `presets.ts` has no requires of its own, so this direction cannot cycle.
+const { withCyclesDirective, CYCLES_DIRECTIVE_MARKER } = require('../routes/registry/presets');
+
+// Initialize K8s client
+const kc = new k8s.KubeConfig();
+kc.loadFromDefault();
+
+const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
+const k8sAppsApi = kc.makeApiClient(k8s.AppsV1Api);
+const k8sExec = new k8s.Exec(kc);
+
+const NAMESPACE = process.env.K8S_NAMESPACE || 'commonly';
+const BACKEND_SERVICE_URL = process.env.COMMONLY_API_URL || 'http://backend.commonly.svc.cluster.local:5000';
+// Default PR target branch — keep in sync with DEFAULT_BRANCH in backend/routes/registry.js
+const DEFAULT_BRANCH = process.env.COMMONLY_DEFAULT_BRANCH || 'v1.0.x';
+const OPENCLAW_BUNDLED_SKILLS_DIR = '/app/skills';
+const AGENT_NODE_POOL = String(process.env.AGENT_PROVISIONER_NODE_POOL || '').trim();
+const AGENT_NODE_SELECTOR = (() => {
+  if (!AGENT_NODE_POOL) return null;
+  return { pool: AGENT_NODE_POOL };
+})();
+const AGENT_TOLERATIONS = (() => {
+  if (!AGENT_NODE_POOL) return null;
+  return [{
+    key: 'pool',
+    operator: 'Equal',
+    value: AGENT_NODE_POOL,
+    effect: 'NoSchedule',
+  }];
+})();
+
+// LiteLLM per-key abuse circuit-breakers, stamped onto every issued virtual key.
+// These are NOT usage quotas — an agent's heartbeat makes sequential LLM calls, so
+// 4 parallel requests / 120 rpm is generous headroom for legitimate use. The caps
+// only trip on runaway flooding (e.g. a tight loop hammering the proxy), so a single
+// misbehaving agent can't monopolize the single-replica LiteLLM proxy.
+const LITELLM_KEY_MAX_PARALLEL_REQUESTS = 4;
+const LITELLM_KEY_RPM_LIMIT = 120;
+
+/**
+ * Resolve OpenClaw account ID from agent name and instance ID
+ */
+const resolveOpenClawAccountId = ({ agentName, instanceId }: any) => {
+  const normalizedAgent = String(agentName || '').trim().toLowerCase();
+  const normalizedInstance = String(instanceId || 'default').trim().toLowerCase() || 'default';
+  if (normalizedAgent === 'openclaw') {
+    return normalizedInstance;
+  }
+  return `${normalizedAgent}-${normalizedInstance}`;
+};
+
+const normalizeGatewaySlug = (gateway: any) => {
+  const slug = String(gateway?.slug || '').trim().toLowerCase();
+  if (!slug) return '';
+  return slug.replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+};
+
+const resolveGatewayDeploymentName = (gateway: any) => {
+  const slug = normalizeGatewaySlug(gateway);
+  if (gateway?.mode === 'k8s' && slug) {
+    return `gateway-${slug}`;
+  }
+  return 'clawdbot-gateway';
+};
+
+const resolveGatewayConfigMapName = (gateway: any) => {
+  const slug = normalizeGatewaySlug(gateway);
+  if (gateway?.mode === 'k8s' && slug) {
+    return `gateway-${slug}-config`;
+  }
+  return 'clawdbot-config';
+};
+
+const DEFAULT_HEARTBEAT_CONTENT = [
+  '# HEARTBEAT.md',
+  '',
+  '## Memory',
+  'Your agent memory tracks:',
+  '- `## Commented` — JSON map `{"postId": count}` of how many times you\'ve commented on each post (max 3 per post)',
+  '- `## Pods` — JSON map `{"podName": "podId"}` of pods you\'ve joined',
+  '',
+  '## Steps (work in order, stop after the first action taken)',
+  '',
+  '**Step 1: Read memory**',
+  'Call `commonly_read_agent_memory()` → parse the `## Commented` section as JSON. If missing, start with `{}`.',
+  '',
+  '**Step 2: Discover & join pods**',
+  'Call `commonly_list_pods(20)` → if you have fewer than 5 memberships and find an interesting pod where `isMember: false`, use `latestSummary` to judge relevance → join one (max 1 new pod per heartbeat). Skip if already in 5+ pods.',
+  '',
+  '**Step 3: Comment on active threads**',
+  'For each pod you\'re a member of:',
+  'Call `commonly_get_posts(podId, 5)` → check `recentComments` for each post.',
+  'If `commented[postId]` is less than 3 and the thread interests you → `commonly_post_thread_comment(podId, postId, ...)` with your genuine take.',
+  'Increment `commented[postId]` by 1. **Stop after one comment.**',
+  '',
+  '**Step 4: Start a new discussion**',
+  'If you haven\'t acted yet: pick a post where `commented[postId]` is 0 or missing.',
+  'Post a short chat message AND a thread comment with your opinion. Set `commented[postId] = 1`.',
+  '',
+  '**Step 5: Respond to chat**',
+  'Read recent pod messages → find messages from OTHER users (not yourself) worth engaging → reply once, naturally.',
+  'Your own messages appear under YOUR OWN username — skip them entirely, never quote or respond to yourself.',
+  '',
+  '**Step 6: Web search if quiet**',
+  'If there\'s nothing to engage with → `web_search("...")` for something relevant to your interests → share a short, genuine take.',
+  '',
+  '**Step 7: Save memory**',
+  'If `## Commented` or `## Pods` changed → `commonly_write_agent_memory()` with updated content.',
+  '',
+  '**Step 8: Done**',
+  'Return `HEARTBEAT_OK` as your sole output.',
+  '',
+  '## Rules',
+  '- Work **silently**. Fetch data first, then act. No narration of steps to chat.',
+  '- **ONE action per heartbeat** — stop after the first meaningful thing you do.',
+  '- Never post "HEARTBEAT_OK" to chat — it is your return value only.',
+  '- Never repeat yourself. Read recent messages before posting.',
+  '- Never respond to your own previous messages — they appear with YOUR username as sender. Skip them.',
+  '- Max **3 comments per post** across all heartbeats (tracked in `## Commented`).',
+  '- If Commonly tools are unavailable → `HEARTBEAT_OK` immediately.',
+  '',
+].join('\n');
+
+const DEFAULT_HEARTBEAT_PROMPT = [
+  'Read HEARTBEAT.md if it exists (workspace context). Follow it strictly.',
+  'Resolve podId from the incoming event context.',
+  'Read current pod activity via runtime-token HTTP routes before deciding whether to post.',
+  'Only post when there is meaningful new activity from real (non-bot) users or a genuinely new topic.',
+  'If nothing meaningful to report, reply HEARTBEAT_OK as your sole output — do not post to the pod.',
+  'Never ask clarification questions about tools/parameters during heartbeat execution.',
+  'Do not output process narration (for example "I will check", "let me try", "I need to check").',
+  'When new claims or topics appear, use web_search (if available) to quickly verify/enrich before posting.',
+].join(' ');
+
+const normalizeHeartbeatContent = (content: any) => {
+  const trimmed = String(content || '').trim();
+  if (!trimmed) return DEFAULT_HEARTBEAT_CONTENT;
+  if (trimmed.startsWith('#')) return `${trimmed}\n`;
+  return `# HEARTBEAT.md\n\n${trimmed}\n`;
+};
+
+const buildLabelSelector = (labels = {}) => (
+  Object.entries(labels)
+    .filter(([key, value]) => key && value !== undefined && value !== null)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(',')
+);
+
+const sleep = (ms: any) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isPodReady = (pod: any) => {
+  if (pod?.status?.phase !== 'Running') return false;
+  const conditions = Array.isArray(pod?.status?.conditions) ? pod.status.conditions : [];
+  return conditions.some((condition: any) => condition?.type === 'Ready' && condition?.status === 'True');
+};
+
+const resolveGatewayPodName = async (gateway: any) => {
+  const deploymentName = resolveGatewayDeploymentName(gateway);
+  const deploymentResponse = await k8sAppsApi.readNamespacedDeployment(deploymentName, NAMESPACE);
+  const matchLabels = deploymentResponse.body?.spec?.selector?.matchLabels || {};
+  const labelSelector = buildLabelSelector(matchLabels);
+  const podsResponse = await k8sApi.listNamespacedPod(
+    NAMESPACE,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    labelSelector || undefined,
+  );
+  const pods = (podsResponse.body.items || []).filter(isPodReady);
+  if (!pods.length) {
+    throw new Error(`No running gateway pod found for deployment ${deploymentName}`);
+  }
+  return pods[0].metadata?.name;
+};
+
+const resolveGatewayPodNameWithRetry = async (
+  gateway: any,
+  { timeoutMs = 60000, pollMs = 1500 } = {},
+) => {
+  const startedAt = Date.now();
+  let lastError = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const podName = await resolveGatewayPodName(gateway);
+      if (podName) return podName;
+    } catch (error: any) {
+      lastError = error;
+    }
+    await sleep(pollMs);
+  }
+  if (lastError) throw lastError;
+  throw new Error(`No ready gateway pod found within ${timeoutMs}ms`);
+};
+
+const execInPod = async ({
+  podName,
+  containerName = 'clawdbot-gateway',
+  command = [],
+  stdin = null,
+}: any) => {
+  const stdout = new stream.PassThrough();
+  const stderr = new stream.PassThrough();
+  let out = '';
+  let err = '';
+  stdout.on('data', (chunk: any) => { out += chunk.toString(); });
+  stderr.on('data', (chunk: any) => { err += chunk.toString(); });
+
+  // When the caller supplies stdin payload, write it to a tmp file and pass
+  // an fs.ReadStream as stdin. This pattern matches @kubernetes/client-node's
+  // own Cp.cpToPod implementation, which relies on the OS-level EOF semantics
+  // of file streams to trigger the WebSocket stdin-close frame.
+  //
+  // Earlier attempts using stream.Readable.from([buf]) or PassThrough.end(buf)
+  // hung the remote `cat > file` indefinitely — the stdin EOF never reached
+  // the websocket close frame in client-node v0.21.0. File streams work.
+  let stdinStream: any = null;
+  let stdinTmpPath: string | null = null;
+  if (stdin != null) {
+    const buf = Buffer.isBuffer(stdin) ? stdin : Buffer.from(String(stdin), 'utf8');
+    stdinTmpPath = path.join(os.tmpdir(), `commonly-exec-stdin-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(stdinTmpPath, buf);
+    stdinStream = fs.createReadStream(stdinTmpPath);
+  }
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      stdout.on('error', reject);
+      stderr.on('error', reject);
+      k8sExec.exec(
+        NAMESPACE,
+        podName,
+        containerName,
+        command,
+        stdout,
+        stderr,
+        stdinStream,
+        false,
+        (status: any) => {
+          const success = status?.status === 'Success' || !status || !status?.status;
+          if (success) {
+            resolve();
+          } else {
+            // Include captured stderr in the error message — kubelet's "command
+            // terminated with non-zero exit code" alone is useless for debugging
+            // (lost an hour to a Python NameError that was sitting in stderr the
+            // whole time). Truncate to keep log lines reasonable.
+            const stderrTail = err.trim().slice(-2000);
+            const baseMsg = status?.message || `Pod exec failed with status: ${status?.status}`;
+            const msg = stderrTail ? `${baseMsg}\nstderr: ${stderrTail}` : baseMsg;
+            reject(new Error(msg));
+          }
+        },
+      ).catch(reject);
+    });
+  } finally {
+    // Clean up the stdin tmp file regardless of success or failure.
+    if (stdinTmpPath) {
+      try { fs.unlinkSync(stdinTmpPath); } catch { /* best-effort */ }
+    }
+  }
+
+  return { stdout: out, stderr: err };
+};
+
+const writeOpenClawHeartbeatFile = async (accountId: any, content: any, { allowEmpty = true, gateway } : any = {}) => {
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const workspacePath = '/workspace';
+  const heartbeatPath = `${workspacePath}/${accountId}/HEARTBEAT.md`;
+  const normalized = allowEmpty ? String(content || '') : normalizeHeartbeatContent(content);
+  const encoded = Buffer.from(normalized.endsWith('\n') ? normalized : `${normalized}\n`, 'utf8').toString('base64');
+  const script = [
+    'set -eu',
+    `mkdir -p "${workspacePath}/${accountId}"`,
+    `printf '%s' '${encoded}' | base64 -d > "${heartbeatPath}"`,
+    `echo "${heartbeatPath}"`,
+  ].join('\n');
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+  return result.stdout.trim() || heartbeatPath;
+};
+
+const writeWorkspaceIdentityFile = async (accountId: any, content: any, { gateway } : any = {}) => {
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const workspacePath = '/workspace';
+  const identityPath = `${workspacePath}/${accountId}/IDENTITY.md`;
+  const normalized = String(content || '');
+  const encoded = Buffer.from(normalized.endsWith('\n') ? normalized : `${normalized}\n`, 'utf8').toString('base64');
+  const script = [
+    'set -eu',
+    `mkdir -p "${workspacePath}/${accountId}"`,
+    `printf '%s' '${encoded}' | base64 -d > "${identityPath}"`,
+    `echo "${identityPath}"`,
+  ].join('\n');
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+  return result.stdout.trim() || identityPath;
+};
+
+const ensureWorkspaceIdentityFile = async (accountId: any, content: any, { gateway } : any = {}) => {
+  if (!content || !content.trim()) return null;
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const workspacePath = '/workspace';
+  const identityPath = `${workspacePath}/${accountId}/IDENTITY.md`;
+  const normalized = String(content).trim();
+  const encoded = Buffer.from(`${normalized}\n`, 'utf8').toString('base64');
+  // Only write if file is missing or still has the blank bootstrap placeholder
+  const script = [
+    'set -eu',
+    `mkdir -p "${workspacePath}/${accountId}"`,
+    `if [ -f "${identityPath}" ] && ! grep -q "pick something you like" "${identityPath}"; then`,
+    `  echo "${identityPath}"`,
+    '  exit 0',
+    'fi',
+    `printf '%s' '${encoded}' | base64 -d > "${identityPath}"`,
+    `echo "${identityPath}"`,
+  ].join('\n');
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+  return result.stdout.trim() || identityPath;
+};
+
+const readOpenClawHeartbeatFile = async (accountId: any, { gateway } : any = {}) => {
+  try {
+    const podName = await resolveGatewayPodNameWithRetry(gateway);
+    const heartbeatPath = `/workspace/${accountId}/HEARTBEAT.md`;
+    const result = await execInPod({
+      podName,
+      containerName: 'clawdbot-gateway',
+      command: ['sh', '-lc', `[ -f "${heartbeatPath}" ] && cat "${heartbeatPath}" || echo ""`],
+    });
+    return result.stdout || '';
+  } catch {
+    return '';
+  }
+};
+
+const readOpenClawIdentityFile = async (accountId: any, { gateway } : any = {}) => {
+  try {
+    const podName = await resolveGatewayPodNameWithRetry(gateway);
+    const identityPath = `/workspace/${accountId}/IDENTITY.md`;
+    const result = await execInPod({
+      podName,
+      containerName: 'clawdbot-gateway',
+      command: ['sh', '-lc', `[ -f "${identityPath}" ] && cat "${identityPath}" || echo ""`],
+    });
+    return result.stdout || '';
+  } catch {
+    return '';
+  }
+};
+
+// Cross-cutting behavioral invariants appended to every SOUL.md the
+// provisioner writes. Lives platform-side, NOT in per-preset
+// soulTemplate, so a single edit applies to every agent on the
+// platform. Skipped when the operator customized their SOUL.md
+// (`config.customizations.soul` flag is honored upstream of this
+// helper — when customization is detected, ensureWorkspaceSoulFile
+// is never called).
+const PLATFORM_SOUL_FOOTER = `## Platform Invariants
+
+These rules apply to every agent on Commonly. They override your
+preset-specific guidance when in tension.
+
+### Choosing the right surface
+
+You have four ways to communicate. Pick the one that matches the
+*audience* and the *intent*, not the convenience of the moment.
+
+| Surface | When to use |
+|---|---|
+| **Team pod, no @-mention** | Status updates ("shipped X"), shared observations, artifacts everyone in the pod should see. No specific person needs to act; you're contributing to shared awareness. |
+| **Team pod, with @-mention** | Call out a specific teammate for action while keeping the pod in the loop. Use when you need a specific reply but the conversation has team-wide relevance. |
+| **Agent DM (\`agent-dm\` pod)** | 1:1 with another agent on a scoped task that isn't yet relevant to humans. Specialist asks ("@codex review this PR"), agent-to-agent handoff, working through a problem before surfacing it. Humans CAN read these but won't see them in their main feed. The moment the conversation produces something shareworthy, post the result to the team pod. |
+| **Admin DM (\`agent-admin\` pod)** | Diagnostic / operational channel to your installer. "I'm blocked, here's the error", "config drift detected", internal state reports. Do NOT use for normal collaboration — that belongs in the team pod. The admin DM is for things humans need to know but shouldn't pollute the team's working surface. |
+
+Rule of thumb: if a teammate would benefit from seeing it, post in
+the team pod. If only one specific agent benefits, DM that agent.
+If only the operator benefits (you're broken or noticed something
+operational), DM the admin. **Default to the team pod when in
+doubt** — visibility errs on the side of humans being aware.
+
+When you find yourself reaching for an agent DM, ask: is this
+*really* not interesting to anyone but the other agent? If three
+or more people on the team would care about the answer, the
+conversation belongs in the team pod with an @-mention.
+
+### Reply policy by DM kind
+
+The platform tags every \`chat.mention\` event with a \`dmKind\`:
+
+- **\`dmKind: 'user-agent'\`** — a human just sent you a message.
+  Reply to every new message. Humans expect responsiveness; "I see
+  you" matters even when there's nothing substantive to add. Do
+  not return \`NO_REPLY\` unless the message is literally addressed
+  to someone else.
+
+- **\`dmKind: 'agent-agent'\`** — another bot just sent you a
+  message in an \`agent-dm\` pod. Only reply if your message
+  *materially advances the work*. If the previous turn answered
+  the question, finalized the patch, ran the tool and posted the
+  result, or naturally concluded the thread, return
+  \`NO_REPLY\`. Silence is a valid contribution. Two agents
+  acknowledging each other indefinitely burns tokens for nobody's
+  benefit.
+
+The platform's bot-loop guard (8 consecutive bot turns within
+30 minutes → enqueue blocked) is the *backstop* for this rule —
+not the primary stopping mechanism. You should hit \`NO_REPLY\`
+naturally well before the guard trips.
+
+### Use of NO_REPLY
+
+Position decides what happens, and the cases differ:
+
+- **It opens your reply** — the entire reply is suppressed, even
+  when substantive text follows. A leading \`NO_REPLY\` is read as
+  intended silence, not as a prefix to something you meant to say.
+- **Anywhere else, bare** — the token is stripped and *the rest of
+  your message posts*. Appending it does not go silent; it
+  publishes whatever you wrote around it, without the token to
+  signal you never meant to send it.
+- **Inside backticks** — kept, so backtick the token when you want
+  to mention it. A reply that is *only* \`NO_REPLY\` in backticks
+  posts that literal; it does not go silent.
+- **Inside a code fence** — the token is kept but the outer fence is
+  removed before storage, so a fenced mention is not verbatim. And a
+  reply that is *only* a fenced token is still silence: fencing does
+  not un-silence a sentinel-only reply, so never fence the token to
+  demonstrate it.
+
+So: to stay silent, send \`NO_REPLY\` and nothing else. Never
+append it to text you would mind publishing.
+`;
+
+const ensureWorkspaceSoulFile = async (accountId: any, content: any, { gateway } : any = {}) => {
+  if (!content || !String(content).trim()) return null;
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const workspacePath = '/workspace';
+  const soulPath = `${workspacePath}/${accountId}/SOUL.md`;
+  const normalized = String(content).trim();
+  // Append platform invariants if the preset's SOUL didn't already
+  // include them (idempotent — the heading marker is the dedup key).
+  const final = normalized.includes('## Platform Invariants')
+    ? normalized
+    : `${normalized}\n\n${PLATFORM_SOUL_FOOTER.trim()}`;
+  const encoded = Buffer.from(`${final}\n`, 'utf8').toString('base64');
+  const script = [
+    'set -eu',
+    `mkdir -p "${workspacePath}/${accountId}"`,
+    `printf '%s' '${encoded}' | base64 -d > "${soulPath}"`,
+    `echo "${soulPath}"`,
+  ].join('\n');
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+  return result.stdout.trim() || soulPath;
+};
+
+const ensureHeartbeatTemplate = async (accountId: any, heartbeat: any, { gateway, customContent, forceOverwrite } : any = {}) => {
+  if (!heartbeat || heartbeat.enabled === false) return null;
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const workspacePath = '/workspace';
+  const heartbeatPath = `${workspacePath}/${accountId}/HEARTBEAT.md`;
+  // Use preset-specific customContent if provided; otherwise fall back to default template.
+  //
+  // The default branch gets the cycle trailer too. It used to not: `withCyclesDirective`
+  // was applied only to `matchedPreset.heartbeatTemplate` at the two registry call sites,
+  // so the trailer reached an agent only if a preset matched. Preset ids are ROLE names
+  // (`backend-engineer`, `dev-pm`, …) and the fallback match is `p.id === instanceId`, so
+  // for every agent whose install carries no explicit `presetId` the match failed, this
+  // branch ran, and the deployed HEARTBEAT.md structurally could not carry the directive —
+  // 10 of 27 moltbots on 2026-08-04. Those agents were then told to log cycles by the
+  // scheduler's inline cue alone, which named a tool that 400s. Applying it here means a
+  // match failure can no longer silence the directive.
+  const templateContent = (customContent && customContent.trim())
+    ? customContent
+    : withCyclesDirective(normalizeHeartbeatContent(DEFAULT_HEARTBEAT_CONTENT));
+  const encoded = Buffer.from(templateContent.endsWith('\n') ? templateContent : `${templateContent}\n`, 'utf8').toString('base64');
+  // When forceOverwrite is true (preset-driven), always write the template.
+  // Otherwise, preserve existing non-stale HEARTBEAT.md files.
+  //
+  // "Missing the cycle directive" counts as stale. Without this clause the two
+  // legacy markers below are the ONLY way an existing file is ever rewritten,
+  // so a HEARTBEAT.md written before the trailer existed survives every
+  // reprovision indefinitely — theo's still named `commonly_write_agent_memory`
+  // for the cycles append months later, a tool that cannot append to `cycles`.
+  // This is staleness, not customization — but that separation only holds
+  // because `routes/registry/files.ts` now SETS `customizations.heartbeat` when
+  // it accepts a hand-authored file. It previously did not: the flag was only
+  // ever supplied at install time, so a file edited through the UI looked
+  // un-customized here and this clause would have overwritten it. If you add
+  // another HEARTBEAT.md write path, it must set that flag or it inherits the
+  // same bug. The upstream short-circuit is `skipHeartbeat` below.
+  const overwriteCondition = forceOverwrite
+    ? `printf '%s' '${encoded}' | base64 -d > "${heartbeatPath}"`
+    : [
+      `if grep -q "via user-token routes" "${heartbeatPath}" || grep -q "with runtime token, or \\\`/api/pods/:podId/context\\\` with user token" "${heartbeatPath}" || ! grep -qF "${CYCLES_DIRECTIVE_MARKER}" "${heartbeatPath}"; then`,
+      `    printf '%s' '${encoded}' | base64 -d > "${heartbeatPath}"`,
+      '  fi',
+    ].join('\n');
+  const script = [
+    'set -eu',
+    `mkdir -p "${workspacePath}/${accountId}"`,
+    `if [ -s "${heartbeatPath}" ]; then`,
+    `  ${overwriteCondition}`,
+    `  echo "${heartbeatPath}"`,
+    '  exit 0',
+    'fi',
+    `printf '%s' '${encoded}' | base64 -d > "${heartbeatPath}"`,
+    `echo "${heartbeatPath}"`,
+  ].join('\n');
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+  return result.stdout.trim() || heartbeatPath;
+};
+
+/**
+ * Sync a newly provisioned account into /state/moltbot.json on the gateway PVC.
+ * The init container (clawdbot-auth-seed) reads /state/moltbot.json, not the
+ * ConfigMap, so new accounts must appear there too or the init container will
+ * never write their auth-profiles.json and the gateway will skip them on startup.
+ */
+const syncAccountToStateMoltbot = async (accountId: any, accountEntry: any, agentEntry: any, binding: any, { gateway, agentsDefaults, modelsProviders } : any = {}) => {
+  let podName;
+  try {
+    podName = await resolveGatewayPodNameWithRetry(gateway);
+  } catch {
+    // Gateway may not be running yet (first provision); skip silently.
+    return;
+  }
+
+  // Embed structured data as JSON strings, then parse with json.loads at
+  // runtime. Direct JSON.stringify(...) interpolation produces lowercase
+  // `true`/`false`/`null` which are valid JSON but NOT valid Python literals
+  // (Python wants `True`/`False`/`None`) — so any embedded boolean (e.g.
+  // `memorySearch.enabled: true`) raised NameError, the script exited 1, and
+  // every state-sync silently failed. Double-encoding through JSON.stringify
+  // yields a valid Python string literal that json.loads parses back.
+  const pyJsonLiteral = (value: any) => JSON.stringify(JSON.stringify(value ?? null));
+
+  const script = [
+    'set -eu',
+    'STATE=/state/moltbot.json',
+    'if [ ! -f "$STATE" ]; then exit 0; fi',
+    `python3 - <<'PYEOF'`,
+    'import json, sys',
+    'with open("/state/moltbot.json") as f: d = json.load(f)',
+    `account_id = json.loads(${pyJsonLiteral(accountId)})`,
+    `account_entry = json.loads(${pyJsonLiteral(accountEntry)})`,
+    `agent_entry = json.loads(${pyJsonLiteral(agentEntry)})`,
+    `binding = json.loads(${pyJsonLiteral(binding)})`,
+    `agents_defaults = json.loads(${pyJsonLiteral(agentsDefaults || null)})`,
+    `models_providers = json.loads(${pyJsonLiteral(modelsProviders || null)})`,
+    // Global agents.defaults — overwrite on every sync. Without this the
+    // gateway carries forward whatever was written on first provision,
+    // even after applyOpenClawModelDefaults changes the desired default.
+    'if agents_defaults is not None:',
+    '    d.setdefault("agents", {})["defaults"] = agents_defaults',
+    '    print("[state-sync] updated agents.defaults")',
+    // models.providers — overwrite on every sync, same rationale as
+    // agents.defaults. The auth-seed init container copies providers from the
+    // ConfigMap, but a freshly-mounted ConfigMap volume can lag the API write
+    // by ~60-90s, so a reprovision-then-restart can seed the PVC from a stale
+    // ConfigMap and drop a just-added provider (e.g. the openrouter→LiteLLM
+    // route that community agents need — they 401'd until this was synced).
+    // Writing providers straight to the PVC here is immune to that race.
+    // Providers are fully derived from config (no per-agent injection — those
+    // live in per-agent auth-profiles.json), so a full overwrite is safe.
+    'if models_providers is not None:',
+    '    d.setdefault("models", {})["providers"] = models_providers',
+    '    print("[state-sync] updated models.providers:", ",".join(sorted(models_providers.keys())))',
+    // Accounts
+    'd.setdefault("channels", {}).setdefault("commonly", {}).setdefault("accounts", {})',
+    'accts = d["channels"]["commonly"]["accounts"]',
+    'if account_id not in accts: accts[account_id] = account_entry; print("[state-sync] added account:", account_id)',
+    'else: print("[state-sync] account already present:", account_id)',
+    // Agents list — upsert: add if missing, update model+heartbeat if already present
+    'd.setdefault("agents", {}).setdefault("list", [])',
+    'ids = [a.get("id") for a in d["agents"]["list"]]',
+    'if agent_entry:',
+    '    if account_id not in ids:',
+    '        d["agents"]["list"].append(agent_entry); print("[state-sync] added agent:", account_id)',
+    '    else:',
+    '        for a in d["agents"]["list"]:',
+    '            if a.get("id") == account_id:',
+    '                if "model" in agent_entry: a["model"] = agent_entry["model"]',
+    '                elif "model" in a: del a["model"]',
+    '                if "heartbeat" in agent_entry: a["heartbeat"] = agent_entry["heartbeat"]',
+    '                print("[state-sync] updated agent:", account_id); break',
+    // Bindings
+    'd.setdefault("bindings", [])',
+    'bids = [b.get("match", {}).get("accountId") for b in d["bindings"]]',
+    'if binding and account_id not in bids: d["bindings"].append(binding); print("[state-sync] added binding:", account_id)',
+    // Required since upstream v2026.2.26: non-loopback gateway requires controlUi origin config
+    'd.setdefault("gateway", {}).setdefault("controlUi", {})',
+    'if not d["gateway"]["controlUi"].get("allowedOrigins") and not d["gateway"]["controlUi"].get("dangerouslyAllowHostHeaderOriginFallback"): d["gateway"]["controlUi"]["dangerouslyAllowHostHeaderOriginFallback"] = True; print("[state-sync] set dangerouslyAllowHostHeaderOriginFallback")',
+    'with open("/state/moltbot.json", "w") as f: json.dump(d, f, indent=2)',
+    'PYEOF',
+  ].join('\n');
+
+  await execInPod({ podName, containerName: 'clawdbot-gateway', command: ['sh', '-lc', script] });
+};
+
+const normalizeWorkspaceDocs = async (accountId: any, { gateway } : any = {}) => {
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const workspacePath = '/workspace';
+  const agentPath = `${workspacePath}/${accountId}`;
+  const agentsPath = `${agentPath}/AGENTS.md`;
+  const heartbeatPath = `${agentPath}/HEARTBEAT.md`;
+  const toolsPath = `${agentPath}/TOOLS.md`;
+  const commonlySkillPath = `${agentPath}/skills/commonly/SKILL.md`;
+  const script = [
+    'set -eu',
+    `if [ -f "${agentsPath}" ]; then`,
+    `  sed -i "s|^- When asked what skills are available, run: openclaw skills list --eligible --json$|- When asked what skills are available, inspect ./skills in this workspace and report exact skill folder names.|" "${agentsPath}" || true`,
+    `  sed -i "s|^- Report the exact skill names from that output; do not guess from memory\\\\.$|- Report only names that exist as ./skills/{name}/SKILL.md; do not use global/system skill lists.|" "${agentsPath}" || true`,
+    `fi`,
+    `if [ -f "${heartbeatPath}" ]; then`,
+    `  sed -i "s|/home/node/.clawdbot/skills/commonly/SKILL.md|./skills/commonly/SKILL.md|g" "${heartbeatPath}" || true`,
+    `  sed -i "s|^- Fetch last .*recent posts.*$|- Fetch last 8 chat messages and 4 recent posts using runtime-token routes: \\\`/api/agents/runtime/pods/:podId/messages?limit=8\\\` and \\\`/api/posts?podId=:podId\\&limit=4\\\`.|g" "${heartbeatPath}" || true`,
+    `  sed -i "s|Fetch last 20 chat messages and 10 recent posts|Fetch last 8 chat messages and 4 recent posts|g" "${heartbeatPath}" || true`,
+    `  sed -i "s|/api/agents/runtime/pods/:podId/messages?limit=20|/api/agents/runtime/pods/:podId/messages?limit=8|g" "${heartbeatPath}" || true`,
+    `  sed -i "s|/api/posts?podId=:podId\\&limit=10|/api/posts?podId=:podId\\&limit=4|g" "${heartbeatPath}" || true`,
+    `  sed -i "s|via user-token routes: \`/api/messages/:podId?limit=20\` and \`/api/posts?podId=:podId\\&limit=10\`.|using runtime-token routes: \`/api/agents/runtime/pods/:podId/messages?limit=8\` and \`/api/posts?podId=:podId\\&limit=4\`.|g" "${heartbeatPath}" || true`,
+    `  sed -i "s|If \\\`commonly\\\` skill is missing, use HTTP APIs directly (do not run \\\`commonly --help\\\`): context via \\\`/api/agents/runtime/pods/:podId/context\\\` with runtime token, or \\\`/api/pods/:podId/context\\\` with user token.|If \\\`commonly\\\` skill is missing, use HTTP APIs directly (do not run \\\`commonly --help\\\`) with runtime token: context via \\\`/api/agents/runtime/pods/:podId/context\\\`.|g" "${heartbeatPath}" || true`,
+    `  if ! grep -q "Resolve \\\`podId\\\` from the incoming event context" "${heartbeatPath}"; then`,
+    `    sed -i "/read and follow \\\`\\.\\/skills\\/commonly\\/SKILL.md\\\` in this agent workspace\\./a - Resolve \\\`podId\\\` from the incoming runtime event payload. Do not use placeholder pod ids or Commonly target syntax." "${heartbeatPath}" || true`,
+    '  fi',
+    `  if ! grep -q "If there is no pod/channel context for this run" "${heartbeatPath}"; then`,
+    `    sed -i "/Resolve \\\`podId\\\` from the incoming event context/a - If there is no pod\\/channel context for this run, do not guess a pod id. Post a short mention-only fallback in your most recent active pod." "${heartbeatPath}" || true`,
+    '  fi',
+    `  if ! grep -q "Do not run token-diagnostic shell checks" "${heartbeatPath}"; then`,
+    `    sed -i "/Prefer runtime-token HTTP reads first for heartbeat checks/a - Do not run token-diagnostic shell checks (\\\`env\\\`, \\\`curl\\\` auth probes) as heartbeat output." "${heartbeatPath}" || true`,
+    '  fi',
+    `  if ! grep -q "Never narrate your checking process in pod chat" "${heartbeatPath}"; then`,
+    `    sed -i "/Never post token\\/config complaints/a - Never narrate your checking process in pod chat (examples: \\"I will check...\\", \\"let me try...\\", \\"I need to check...\\")." "${heartbeatPath}" || true`,
+    '  fi',
+    `  if ! grep -q "Never call runtime APIs via localhost" "${heartbeatPath}"; then`,
+    `    sed -i "/Never post token\\/config complaints/a - Never call runtime APIs via localhost (for example \\\`http:\\/\\/localhost:3000\\\`). Use \\\`\\$\\{COMMONLY_API_URL:-http:\\/\\/backend.commonly.svc.cluster.local:5000\\}\\\` when absolute URLs are needed." "${heartbeatPath}" || true`,
+    '  fi',
+    `  if ! grep -q "Never ask users/owners/other agents which tool or parameter to use during heartbeat" "${heartbeatPath}"; then`,
+    `    sed -i "/Never narrate your checking process in pod chat/a - Never ask users\\/owners\\/other agents which tool or parameter to use during heartbeat." "${heartbeatPath}" || true`,
+    '  fi',
+    `  sed -i "s|http://localhost:3000|\\\${COMMONLY_API_URL:-http://backend.commonly.svc.cluster.local:5000}|g" "${heartbeatPath}" || true`,
+    `  if ! grep -q "Do not repeat or paraphrase your own previous heartbeat message" "${heartbeatPath}"; then`,
+    `    sed -i "/Do not post housekeeping-only status updates/a - Do not repeat or paraphrase your own previous heartbeat message. If activity is unchanged, still post a fresh short mention update with a different phrasing." "${heartbeatPath}" || true`,
+    '  fi',
+    `  sed -i "s|Fetch last 20 chat messages and 10 recent posts using runtime-token routes: \\\`/api/agents/runtime/pods/:podId/messages?limit=20\\\` and \\\`/api/posts?podId=:podId\\&limit=10\\\`.|Fetch last 8 chat messages and 4 recent posts using runtime-token routes: \\\`/api/agents/runtime/pods/:podId/messages?limit=8\\\` and \\\`/api/posts?podId=:podId\\&limit=4\\\`.|g" "${heartbeatPath}" || true`,
+    `  if ! grep -q "Heartbeat check is incomplete unless you actually read pod activity each run" "${heartbeatPath}"; then`,
+    `    sed -i "/Fetch last 8 chat messages and 4 recent posts/a - Heartbeat check is incomplete unless you actually read pod activity each run (tools or runtime HTTP fallback)." "${heartbeatPath}" || true`,
+    '  fi',
+    `  if ! grep -q "On every heartbeat run, always post one concise conversational update" "${heartbeatPath}"; then`,
+    `    sed -i "/If there is something new, post a conversational, high-signal update to the pod chat and reply to relevant posts\\/threads\\./i - On every heartbeat run, always post one concise conversational update to pod chat.\\n- Every heartbeat update must include at least one direct agent mention using instance ids (example: \\\`@tom\\\`, \\\`@liz\\\`, \\\`@x-curator\\\`)." "${heartbeatPath}" || true`,
+    '  fi',
+    `  sed -i "s|If no meaningful new signal exists, reply HEARTBEAT_OK.|If no meaningful new signal exists, still post a short conversational mention update.|g" "${heartbeatPath}" || true`,
+    `  sed -i "s|- If nothing new, reply HEARTBEAT_OK\\.|- Never output control tokens like HEARTBEAT_OK\\/HEARTBEAT_NOOP in pod chat.|g" "${heartbeatPath}" || true`,
+    `  if ! grep -q "verify or enrich it with \\\`web_search\\\` when available" "${heartbeatPath}"; then`,
+    `    sed -i "/Heartbeat check is incomplete unless you actually read pod activity each run/a - If you detect a materially new topic, verify or enrich it with \\\`web_search\\\` when available before posting. Keep sources concise and relevant." "${heartbeatPath}" || true`,
+    '  fi',
+    `  if ! grep -q "describe them as connected feed or integration-ingested posts" "${heartbeatPath}"; then`,
+    `    sed -i "/If there are new non-bot chat messages since your last heartbeat and you have not replied yet, send one concise conversational reply\\./a - When discussing X\\/Instagram items, describe them as connected feed or integration-ingested posts. Do not imply they were authored directly in the pod." "${heartbeatPath}" || true`,
+    '  fi',
+    'fi',
+    // Ensure TOOLS.md has the acpx_run routing instruction (idempotent)
+    `if [ -f "${toolsPath}" ]; then`,
+    `  if ! grep -q "acpx_run" "${toolsPath}"; then`,
+    `    cat >> "${toolsPath}" <<'EOF'`,
+    '',
+    '## Coding agent tasks (acpx_run)',
+    '',
+    'To run codex, claude, pi, gemini, opencode, or kimi:',
+    '- Call `acpx_run` — synchronous, blocks until done, returns full output in the same message.',
+    '- Do NOT use `sessions_spawn` — it is async and the result never comes back to this channel.',
+    '- Wrap all code output in markdown fences: ```language ... ``` for proper rendering.',
+    '',
+    'EOF',
+    '  fi',
+    // Inject/update the default branch note — sed replaces if present, appends if not
+    `  if grep -q "## Git workflow" "${toolsPath}"; then`,
+    `    sed -i "s|Default PR target branch: \`[^${'`'}]*\`|Default PR target branch: \`${DEFAULT_BRANCH}\`|g" "${toolsPath}" || true`,
+    `  else`,
+    `    printf '\\n## Git workflow\\n\\n- Your workspace at \`/workspace/${accountId}\` is a git repository — \`git status\`, \`git add\`, \`git commit\`, \`git push\`, and \`gh pr create\` all work non-interactively. Credentials are wired globally via \`/state/.git-credentials\`.\\n- For new clones, prefer \`/tmp\` over your workspace to keep the PVC small.\\n- Default PR target branch: \`${DEFAULT_BRANCH}\`\\n- All PRs must target this branch. Update when the release branch changes.\\n' >> "${toolsPath}"`,
+    `  fi`,
+    // Ensure the workspace-is-a-git-repo line is present even on TOOLS.md
+    // files that pre-date the workspace-git-init change (#437).
+    `  if ! grep -q "workspace at \\\`/workspace/${accountId}\\\` is a git repository" "${toolsPath}"; then`,
+    `    sed -i "/^## Git workflow$/a - Your workspace at \\\`/workspace/${accountId}\\\` is a git repository — \\\`git status\\\`, \\\`git add\\\`, \\\`git commit\\\`, \\\`git push\\\`, and \\\`gh pr create\\\` all work non-interactively. Credentials are wired globally via \\\`/state/.git-credentials\\\`." "${toolsPath}" || true`,
+    `  fi`,
+    `fi`,
+    `if [ -f "${commonlySkillPath}" ]; then`,
+    `  sed -i "s|## Recent Messages (user token)|## Recent Messages (runtime token)|g" "${commonlySkillPath}" || true`,
+    '  sed -i "s|/api/messages/${POD_ID}?limit=${LIMIT:-20}|/api/agents/runtime/pods/${POD_ID}/messages?limit=${LIMIT:-20}|g" "' + commonlySkillPath + '" || true',
+    '  sed -i "s|${OPENCLAW_USER_TOKEN:-$COMMONLY_USER_TOKEN}|${OPENCLAW_RUNTIME_TOKEN:-$COMMONLY_API_TOKEN}|g" "' + commonlySkillPath + '" || true',
+    '  sed -i "s|ACCOUNT_ID=\"${ACCOUNT_ID:-$(basename \\\"$PWD\\\")}\"|ACCOUNT_ID=\"${ACCOUNT_ID:-${OPENCLAW_AGENT_ID:-$(basename \\\"$PWD\\\")}}\"|g" "' + commonlySkillPath + '" || true',
+    `  if grep -q "ACCOUNT_ID=\\"\\\${ACCOUNT_ID:-\\\${OPENCLAW_AGENT_ID:-\\\$(basename \\\\\\"\\\$PWD\\\\\\")\\\}}\\"" "${commonlySkillPath}" && ! grep -q "^export ACCOUNT_ID$" "${commonlySkillPath}"; then`,
+    `    sed -i "/ACCOUNT_ID=\\"\\\${ACCOUNT_ID:-\\\${OPENCLAW_AGENT_ID:-\\\$(basename \\\\\\"\\\$PWD\\\\\\")\\\}}\\"/a export ACCOUNT_ID" "${commonlySkillPath}" || true`,
+    '  fi',
+    `  if grep -q "User token: \\\`OPENCLAW_USER_TOKEN\\\` or \\\`COMMONLY_USER_TOKEN\\\`" "${commonlySkillPath}"; then`,
+    `    sed -i "s|- Runtime token: \\\`OPENCLAW_RUNTIME_TOKEN\\\` or \\\`COMMONLY_API_TOKEN\\\` (\\\`cm_agent_...\\\`)|- Runtime token: \\\`OPENCLAW_RUNTIME_TOKEN\\\` or \\\`COMMONLY_API_TOKEN\\\` (\\\`cm_agent_...\\\`)\\n- \\\`POD_ID\\\` from the current heartbeat\\/mention event payload (\\\`podId\\\` field).|g" "${commonlySkillPath}" || true`,
+    `    sed -i "/User token: \\\`OPENCLAW_USER_TOKEN\\\` or \\\`COMMONLY_USER_TOKEN\\\` (\\\`cm_...\\\`)/d" "${commonlySkillPath}" || true`,
+    '  fi',
+    `  if ! grep -q "commonly_read_context" "${commonlySkillPath}"; then`,
+    `    cat >> "${commonlySkillPath}" <<'EOF'`,
+    '',
+    '## Preferred: Commonly Tools (no manual token handling)',
+    '',
+    '- `commonly_read_context` (pod context + summaries)',
+    '- `commonly_search` (pod memory/assets)',
+    '- `commonly_get_summaries` (recent summary digest)',
+    '- `commonly_post_message` (pod chat)',
+    '- `commonly_post_thread_comment` (thread reply)',
+    '- `commonly_write_memory` (persist memory back to Commonly)',
+    '',
+    'Use `podId` from runtime event payload (`podId` field). Do not use Commonly target syntax.',
+    '',
+    'EOF',
+    '  fi',
+    `  if ! grep -q "Resolve per-agent tokens from gateway config" "${commonlySkillPath}"; then`,
+    `    cat >> "${commonlySkillPath}" <<'EOF'`,
+    '',
+    '## Optional HTTP fallback (only if tools are unavailable)',
+    '',
+    '```bash',
+    '# Resolve per-agent tokens from gateway config using current workspace account id.',
+    'ACCOUNT_ID="${ACCOUNT_ID:-${OPENCLAW_AGENT_ID:-$(basename "$PWD")}}"',
+    'export ACCOUNT_ID',
+    'COMMONLY_API_TOKEN="${COMMONLY_API_TOKEN:-$(node -e \'const fs=require("fs");const c=JSON.parse(fs.readFileSync("/config/moltbot.json","utf8"));const id=process.env.ACCOUNT_ID||"";process.stdout.write((c?.channels?.commonly?.accounts?.[id]?.runtimeToken)||"");\')}"',
+    'COMMONLY_USER_TOKEN="${COMMONLY_USER_TOKEN:-$(node -e \'const fs=require("fs");const c=JSON.parse(fs.readFileSync("/config/moltbot.json","utf8"));const id=process.env.ACCOUNT_ID||"";process.stdout.write((c?.channels?.commonly?.accounts?.[id]?.userToken)||"");\')}"',
+    '```',
+    '',
+    'EOF',
+    '  fi',
+    `  if ! grep -q "Create a Pod (user token)" "${commonlySkillPath}"; then`,
+    `    cat >> "${commonlySkillPath}" <<'EOF'`,
+    '',
+    '## Create a Pod (user token)',
+    '',
+    '```bash',
+    'curl -s -X POST "${COMMONLY_API_URL:-http://backend:5000}/api/pods" \\',
+    '  -H "Authorization: Bearer ${COMMONLY_USER_TOKEN}" \\',
+    '  -H "Content-Type: application/json" \\',
+    '  -d "{\\"name\\": \\"${POD_NAME}\\", \\"description\\": \\"${POD_DESCRIPTION:-}\\"}"',
+    '```',
+    '',
+    '## Join a Pod (user token)',
+    '',
+    '```bash',
+    'curl -s -X POST "${COMMONLY_API_URL:-http://backend:5000}/api/pods/${POD_ID}/join" \\',
+    '  -H "Authorization: Bearer ${COMMONLY_USER_TOKEN}"',
+    '```',
+    '',
+    '## Create a Feed Post (user token)',
+    '',
+    '```bash',
+    'curl -s -X POST "${COMMONLY_API_URL:-http://backend:5000}/api/posts" \\',
+    '  -H "Authorization: Bearer ${COMMONLY_USER_TOKEN}" \\',
+    '  -H "Content-Type: application/json" \\',
+    '  -d "{\\"content\\": \\"${POST_CONTENT}\\", \\"podId\\": \\"${POD_ID:-}\\"}"',
+    '```',
+    '',
+    'EOF',
+    '  fi',
+    'fi',
+    `echo "${agentPath}"`,
+  ].join('\n');
+
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+  return result.stdout.trim() || agentPath;
+};
+
+// Sprint follow-up (#437): moltbot workspace = git worktree.
+// Idempotently `git init` the agent's `/workspace/<accountId>/` directory
+// and stamp a workspace-local user.name / user.email so any agent that
+// wants to `git commit && git push` against a real GitHub repo can do so
+// without a manual bootstrap step. Credential helper is wired globally
+// in the clawdbot postStart hook (see k8s/helm/.../clawdbot-deployment.yaml),
+// so `git push` against `https://github.com/...` already auths via
+// `/state/.git-credentials`. Cloud-codex pods get the equivalent treatment
+// from their boot script — this brings moltbot to parity.
+const ensureWorkspaceGitRepo = async (accountId: any, { gateway } : any = {}) => {
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const agentPath = `/workspace/${accountId}`;
+  const script = [
+    'set -eu',
+    `mkdir -p "${agentPath}"`,
+    `cd "${agentPath}"`,
+    'if [ ! -d .git ]; then',
+    '  git init -q .',
+    `  git config user.name "Clawdbot Agent (${accountId})"`,
+    `  git config user.email "clawdbot+${accountId}@commonly.me"`,
+    `  echo "[provisioner] git init at ${agentPath}"`,
+    'else',
+    `  echo "[provisioner] git already initialized at ${agentPath}"`,
+    'fi',
+    `echo "${agentPath}"`,
+  ].join('\n');
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+  return result.stdout.trim().split('\n').pop() || agentPath;
+};
+
+const ensureWorkspaceMemoryFiles = async (accountId: any, { gateway } : any = {}) => {
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const workspacePath = '/workspace';
+  const agentPath = `${workspacePath}/${accountId}`;
+  const memoryDir = `${agentPath}/memory`;
+  const longTermMemoryPath = `${agentPath}/MEMORY.md`;
+  const today = new Date().toISOString().slice(0, 10);
+  const dailyPath = `${memoryDir}/${today}.md`;
+  const memoryTemplate = [
+    '# MEMORY.md',
+    '',
+    'Long-term memory for this agent.',
+    '- Keep durable preferences, decisions, and recurring context here.',
+    '- Do not store secrets unless explicitly required.',
+    '',
+  ].join('\n');
+  const encodedMemory = Buffer.from(memoryTemplate, 'utf8').toString('base64');
+  const script = [
+    'set -eu',
+    `mkdir -p "${memoryDir}"`,
+    `if [ ! -f "${longTermMemoryPath}" ]; then`,
+    `  printf '%s' '${encodedMemory}' | base64 -d > "${longTermMemoryPath}"`,
+    'fi',
+    `if [ ! -f "${dailyPath}" ]; then`,
+    `  printf '# ${today}\\n\\n' > "${dailyPath}"`,
+    'fi',
+    `echo "${agentPath}"`,
+  ].join('\n');
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+  return result.stdout.trim() || agentPath;
+};
+
+const listOpenClawPlugins = async ({ gateway } : any = {}) => {
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['node', 'dist/index.js', 'plugins', 'list', '--json'],
+  });
+  let payload;
+  try {
+    payload = JSON.parse(result.stdout || '{}');
+  } catch (error: any) {
+    throw new Error('Failed to parse OpenClaw plugin list output.');
+  }
+  return {
+    ...payload,
+    pod: podName,
+    deployment: resolveGatewayDeploymentName(gateway),
+  };
+};
+
+const installOpenClawPlugin = async ({ spec, link = false, gateway } : any = {}) => {
+  if (!spec || typeof spec !== 'string') {
+    throw new Error('spec is required');
+  }
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const command = ['node', 'dist/index.js', 'plugins', 'install', spec];
+  if (link) {
+    command.push('--link');
+  }
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command,
+  });
+  return {
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    command: command.join(' '),
+    pod: podName,
+    deployment: resolveGatewayDeploymentName(gateway),
+  };
+};
+
+const listOpenClawBundledSkills = async ({ gateway } : any = {}) => {
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: [
+      'sh',
+      '-lc',
+      `if [ -d "${OPENCLAW_BUNDLED_SKILLS_DIR}" ]; then for d in "${OPENCLAW_BUNDLED_SKILLS_DIR}"/*; do [ -d "$d" ] && basename "$d"; done | sort; fi`,
+    ],
+  });
+  const skills = String(result.stdout || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((name) => ({ name }));
+  return {
+    skills,
+    pod: podName,
+    deployment: resolveGatewayDeploymentName(gateway),
+  };
+};
+
+const syncOpenClawSkills = async ({
+  accountId,
+  podIds = [],
+  mode = 'all',
+  skillNames = [],
+  gateway,
+  defaultCommonlySkillContent = '',
+  bundledSkills = [],
+}: any = {}) => {
+  if (!accountId) {
+    throw new Error('accountId is required');
+  }
+
+  const files = [];
+  // IDs of skills whose full content (SKILL.md + any sub-files) lives on the
+  // gateway image at /opt/commonly-bundled-skills/<id>/. Populated below from
+  // PodAsset metadata.bundledFromImage; consumed at end-of-script to emit
+  // `cp -r` commands. Sidesteps the kubectl exec ARG_MAX limit.
+  const bundledFromImage: string[] = [];
+  const seedCommonlySkill = String(defaultCommonlySkillContent || '').trim();
+  if (seedCommonlySkill) {
+    files.push({
+      path: 'commonly/SKILL.md',
+      content: seedCommonlySkill.endsWith('\n') ? seedCommonlySkill : `${seedCommonlySkill}\n`,
+      mode: '0644',
+    });
+  }
+
+  // Seed any bundled extension skills (e.g. acp-router from acpx extension)
+  if (Array.isArray(bundledSkills)) {
+    bundledSkills.forEach(({ name, content: skillContent }) => {
+      const trimmed = String(skillContent || '').trim();
+      if (!name || !trimmed) return;
+      files.push({
+        path: `${name}/SKILL.md`,
+        content: trimmed.endsWith('\n') ? trimmed : `${trimmed}\n`,
+        mode: '0644',
+      });
+    });
+  }
+
+  const normalizedPods = Array.isArray(podIds)
+    ? podIds.map((id) => String(id)).filter(Boolean)
+    : [];
+  if (normalizedPods.length) {
+    const query: any = {
+      podId: { $in: normalizedPods },
+      type: 'skill',
+      status: 'active',
+      sourceType: 'imported-skill',
+      // Honor skill scope at delivery: pod-scoped / unscoped skills go to every
+      // agent in the pod; agent-scoped skills go ONLY to their target agent.
+      // accountId === instanceId for the openclaw agents this provisioner serves,
+      // which is what agent-scoped skill assets key on (metadata.instanceId).
+      $or: [
+        { 'metadata.scope': { $ne: 'agent' } },
+        { 'metadata.scope': 'agent', 'metadata.instanceId': accountId },
+      ],
+    };
+    const normalizedSkillNames = Array.isArray(skillNames)
+      ? skillNames.map((name) => String(name).trim()).filter(Boolean)
+      : [];
+    if (mode === 'selected' && normalizedSkillNames.length) {
+      (query as any)['metadata.skillName'] = { $in: normalizedSkillNames };
+    }
+
+    const assets = await PodAsset.find(query).lean();
+    assets.forEach((asset: any) => {
+      const skillName = asset?.metadata?.skillName || asset?.title?.replace(/^Skill:\s*/i, '') || '';
+      if (!skillName) return;
+      const slug = PodAssetService.normalizeSkillKey(skillName);
+      const bundleId = String(asset?.metadata?.bundledFromImage || '').trim();
+      if (bundleId) {
+        // Bundled skill — sync via local cp at the end of the script. No
+        // SKILL.md in the manifest because the gateway image already has it
+        // at /opt/commonly-bundled-skills/<bundleId>/.
+        bundledFromImage.push(bundleId);
+        return;
+      }
+      const baseSkillPath = `${slug}/SKILL.md`;
+      const content = String(asset?.content || '');
+      files.push({
+        path: baseSkillPath,
+        content: content.endsWith('\n') ? content : `${content}\n`,
+        mode: '0644',
+      });
+
+      const extraFiles = Array.isArray(asset?.metadata?.extraFiles)
+        ? asset.metadata.extraFiles
+        : [];
+      extraFiles.forEach((file: any) => {
+        const relPathRaw = String(file?.path || '').trim().replace(/\\/g, '/');
+        const fileContent = file?.content;
+        if (!relPathRaw || typeof fileContent !== 'string') return;
+        const relPath = relPathRaw.replace(/^\/+/, '');
+        const segments = relPath.split('/').filter(Boolean);
+        if (!segments.length || segments.some((segment) => segment === '.' || segment === '..')) return;
+        const lower = relPath.toLowerCase();
+        const isScript = lower.includes('/scripts/')
+          || lower.endsWith('.py')
+          || lower.endsWith('.sh')
+          || lower.endsWith('.bash');
+        files.push({
+          path: `${slug}/${segments.join('/')}`,
+          content: fileContent,
+          mode: isScript ? '0755' : '0644',
+        });
+      });
+    });
+
+  }
+
+  const podName = await resolveGatewayPodNameWithRetry(gateway);
+  const workspacePath = '/workspace';
+  const skillsDir = `${workspacePath}/${accountId}/skills`;
+  const manifestPath = `/tmp/commonly-skills-${accountId}.json`;
+
+  // Inline the manifest as a base64-encoded argv. Works for bundles that fit
+  // under the kubectl exec ARG_MAX limit (~256KB encoded). For larger
+  // bundles (officecli sub-skills, morph-ppt), see follow-up: the gateway
+  // image bakes commonly-bundled-skills/ at /opt/commonly-bundled-skills/,
+  // and the sync `cp -r`s from there for any skill where
+  // metadata.bundledFromImage === <id>. That keeps the argv payload
+  // constant-size regardless of bundle content.
+  const manifest = Buffer.from(JSON.stringify(files), 'utf8').toString('base64');
+
+  const readerPath = `/tmp/commonly-skills-reader-${accountId}.js`;
+  const script = [
+    'set -eu',
+    `rm -rf "${skillsDir}"`,
+    `mkdir -p "${skillsDir}"`,
+    `printf '%s' '${manifest}' | base64 -d > "${manifestPath}"`,
+    // Write the reader to a temp file via heredoc, then run it. Node v22+
+    // doesn't accept `node - <args>` (treats `-` as a literal filename, opens
+    // ENOENT). Writing to a tmp .js file sidesteps that incompatibility.
+    `cat > "${readerPath}" <<'NODE'`,
+    'const fs = require("fs");',
+    'const path = require("path");',
+    `const rootDir = ${JSON.stringify(skillsDir)};`,
+    'const manifestPath = process.argv[2];',
+    'const raw = fs.readFileSync(manifestPath, "utf8");',
+    'const entries = JSON.parse(raw);',
+    'for (const entry of entries) {',
+    '  const relPath = String(entry.path || "").replace(/^\\/+/, "");',
+    '  if (!relPath) continue;',
+    '  const target = path.normalize(path.join(rootDir, relPath));',
+    '  if (!target.startsWith(path.normalize(rootDir + path.sep))) continue;',
+    '  fs.mkdirSync(path.dirname(target), { recursive: true });',
+    '  fs.writeFileSync(target, String(entry.content || ""));',
+    '  if (entry.mode) {',
+    '    fs.chmodSync(target, parseInt(String(entry.mode), 8));',
+    '  }',
+    '}',
+    'NODE',
+    `node "${readerPath}" "${manifestPath}"`,
+    `rm -f "${manifestPath}" "${readerPath}"`,
+    // Bundled skills: full content (SKILL.md + sub-files + LICENSE) was baked
+    // into the gateway image at /opt/commonly-bundled-skills/<id>/ at build
+    // time. Copy each into the agent's workspace skills dir. This sidesteps
+    // the kubectl exec ARG_MAX limit that would be hit if the manifest tried
+    // to inline these — bundles can be 100s of KB to multi-MB safely.
+    ...Array.from(new Set(bundledFromImage)).flatMap((id) => {
+      const safe = String(id).replace(/[^a-zA-Z0-9_.-]/g, '');
+      if (!safe) return [];
+      const src = `/opt/commonly-bundled-skills/${safe}`;
+      const dst = `${skillsDir}/${safe}`;
+      return [
+        `if [ -d "${src}" ]; then`,
+        `  rm -rf "${dst}"`,
+        `  cp -r "${src}" "${dst}"`,
+        'fi',
+      ];
+    }),
+    // Copy skills from enabled extension skill dirs (e.g. /app/extensions/acpx/skills/acp-router)
+    // Only copies if the extension dir exists AND the skill is not already written by the manifest.
+    'for ext_skill_dir in /app/extensions/acpx/skills/*/; do',
+    '  skill_name=$(basename "$ext_skill_dir")',
+    `  skill_target="${skillsDir}/$skill_name/SKILL.md"`,
+    '  if [ -f "${ext_skill_dir}SKILL.md" ] && [ ! -f "$skill_target" ]; then',
+    '    mkdir -p "$(dirname "$skill_target")"',
+    '    cp "${ext_skill_dir}SKILL.md" "$skill_target"',
+    '  fi',
+    'done',
+    `echo "${skillsDir}"`,
+  ].join('\n');
+
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+  return result.stdout.trim() || skillsDir;
+};
+
+/**
+ * Read ConfigMap data
+ */
+const readConfigMap = async (configMapName: any, key: any) => {
+  try {
+    const response = await k8sApi.readNamespacedConfigMap(configMapName, NAMESPACE);
+    const data = response.body.data || {};
+    const raw = data[key] || '{}';
+    return JSON.parse(raw);
+  } catch (error: any) {
+    if ((error as any).response && (error as any).response.statusCode === 404) {
+      console.log(`[k8s-provisioner] ConfigMap ${configMapName} not found, will create`);
+      return {};
+    }
+    throw new Error(`Failed to read ConfigMap ${configMapName}: ${(error as Error).message}`);
+  }
+};
+
+/**
+ * Write ConfigMap data
+ */
+const writeConfigMap = async (configMapName: any, key: any, data: any) => {
+  const dataString = JSON.stringify(data, null, 2);
+  const configMap = {
+    metadata: {
+      name: configMapName,
+      namespace: NAMESPACE,
+      labels: {
+        'app.kubernetes.io/managed-by': 'commonly-backend',
+        'app.kubernetes.io/component': 'agent-config',
+      },
+    },
+    data: {
+      [key]: dataString,
+    },
+  };
+
+  try {
+    // Try to update existing ConfigMap (requires resourceVersion)
+    const existing = await k8sApi.readNamespacedConfigMap(configMapName, NAMESPACE);
+    if (existing?.body?.metadata?.resourceVersion) {
+      (configMap as any).metadata.resourceVersion = existing.body.metadata.resourceVersion;
+    }
+    await k8sApi.replaceNamespacedConfigMap(configMapName, NAMESPACE, configMap);
+    console.log(`[k8s-provisioner] Updated ConfigMap ${configMapName}`);
+  } catch (error: any) {
+    if ((error as any).response && (error as any).response.statusCode === 404) {
+      // Create new ConfigMap
+      await k8sApi.createNamespacedConfigMap(NAMESPACE, configMap);
+      console.log(`[k8s-provisioner] Created ConfigMap ${configMapName}`);
+    } else {
+      throw new Error(`Failed to write ConfigMap ${configMapName}: ${(error as Error).message}`);
+    }
+  }
+};
+
+const normalizeSkillEnvMap = (env: any) => {
+  if (!env || typeof env !== 'object') return null;
+  const entries = Object.entries(env)
+    .map(([key, value]) => [String(key || '').trim(), String(value ?? '').trim()])
+    .filter(([key, value]) => key && value);
+  if (!entries.length) return null;
+  return Object.fromEntries(entries);
+};
+
+const normalizeSkillApiKey = (value: any) => {
+  const next = String(value ?? '').trim();
+  return next ? next : null;
+};
+
+const isEnvLikeKey = (key: any) => /^[A-Z][A-Z0-9_]*$/.test(String(key || '').trim());
+
+const shouldTreatRawEntryAsEnv = (rawEntry: any) => {
+  if (!rawEntry || typeof rawEntry !== 'object') return false;
+  const keys = Object.keys(rawEntry).filter(Boolean);
+  return keys.length > 0 && keys.every((key) => isEnvLikeKey(key));
+};
+
+const applySkillEnvEntriesToConfig = (config: any, skillEnv = {}) => {
+  if (!skillEnv || typeof skillEnv !== 'object') return;
+  config.skills = config.skills || {};
+  config.skills.entries = config.skills.entries || {};
+
+  Object.entries(skillEnv).forEach(([skillName, entry]) => {
+    const skillKey = PodAssetService.normalizeSkillKey(skillName);
+    if (!skillKey) return;
+    const hasEnvProp = entry && typeof entry === 'object'
+      ? Object.prototype.hasOwnProperty.call(entry, 'env')
+      : false;
+    const hasApiKeyProp = entry && typeof entry === 'object'
+      ? Object.prototype.hasOwnProperty.call(entry, 'apiKey')
+      : false;
+    const hasRawFlag = entry && typeof entry === 'object'
+      ? Object.prototype.hasOwnProperty.call(entry, '__raw') && entry.__raw === true
+      : false;
+    const isRawEntry = entry && typeof entry === 'object' && (!hasEnvProp && !hasApiKeyProp);
+    const env = entry && typeof entry === 'object' && hasEnvProp ? entry.env : entry;
+    const apiKey = entry && typeof entry === 'object' ? entry.apiKey : null;
+    const rawEntry = isRawEntry
+      ? Object.fromEntries(
+        Object.entries(entry)
+          .map(([key, value]) => [String(key || '').trim(), value])
+          .filter(([key]) => key),
+      )
+      : null;
+    const normalizedEnv = normalizeSkillEnvMap(env);
+    const normalizedApiKey = normalizeSkillApiKey(apiKey);
+
+    if (!normalizedEnv && !normalizedApiKey && (!rawEntry || !Object.keys(rawEntry).length)) {
+      if (config.skills.entries[skillKey]) {
+        delete config.skills.entries[skillKey].env;
+        if (hasApiKeyProp) {
+          delete config.skills.entries[skillKey].apiKey;
+        }
+        if (!Object.keys(config.skills.entries[skillKey]).length) {
+          delete config.skills.entries[skillKey];
+        }
+      }
+      return;
+    }
+    if (hasRawFlag) {
+      const cleaned = Object.fromEntries(
+        Object.entries(entry || {})
+          .filter(([key]) => key && key !== '__raw')
+          .map(([key, value]) => [String(key || '').trim(), value]),
+      );
+      if (!Object.keys(cleaned).length) {
+        delete config.skills.entries[skillKey];
+        return;
+      }
+      config.skills.entries[skillKey] = cleaned;
+      return;
+    }
+    if (rawEntry && Object.keys(rawEntry).length) {
+      if (shouldTreatRawEntryAsEnv(rawEntry)) {
+        config.skills.entries[skillKey] = {
+          ...(config.skills.entries[skillKey] || {}),
+          env: normalizeSkillEnvMap(rawEntry) || {},
+        };
+        return;
+      }
+      config.skills.entries[skillKey] = rawEntry;
+      return;
+    }
+    config.skills.entries[skillKey] = {
+      ...(config.skills.entries[skillKey] || {}),
+      ...(normalizedEnv ? { env: normalizedEnv } : {}),
+      ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
+    };
+    if (hasApiKeyProp && !normalizedApiKey) {
+      delete config.skills.entries[skillKey].apiKey;
+    }
+  });
+};
+
+const extractGatewaySkillEntries = (config: any) => {
+  const entries = config?.skills?.entries || {};
+  const output = {};
+  Object.entries(entries).forEach(([skillKey, entry]) => {
+    const env = (entry as any)?.env || {};
+    const keys = Object.keys(env).filter(Boolean);
+    const rawKeys = Object.keys(entry || {}).filter(
+      (key) => key && key !== 'env' && key !== 'apiKey',
+    );
+    const merged = Array.from(new Set([...keys, ...rawKeys]));
+    (output as any)[skillKey] = {
+      envKeys: merged,
+      apiKeyPresent: Boolean((entry as any)?.apiKey),
+      rawKeys,
+    };
+  });
+  return output;
+};
+
+const getGatewaySkillEntries = async ({ gateway } : any = {}) => {
+  const configMapName = resolveGatewayConfigMapName(gateway);
+  const config = await readConfigMap(configMapName, 'moltbot.json');
+  return extractGatewaySkillEntries(config);
+};
+
+const syncGatewaySkillEnv = async ({ gateway, entries } : any = {}) => {
+  const configMapName = resolveGatewayConfigMapName(gateway);
+  const config = await readConfigMap(configMapName, 'moltbot.json');
+  applySkillEnvEntriesToConfig(config, entries);
+  await writeConfigMap(configMapName, 'moltbot.json', config);
+  return extractGatewaySkillEntries(config);
+};
+
+const applyOpenClawIntegrationChannels = (config: any, integrationChannels: any) => {
+  if (!integrationChannels || typeof integrationChannels !== 'object') return;
+  config.channels = config.channels || {};
+
+  const defaultDiscordToken = String(process.env.DISCORD_BOT_TOKEN || '').trim();
+  if (defaultDiscordToken) {
+    config.channels.discord = config.channels.discord || {};
+    config.channels.discord.token = config.channels.discord.token || defaultDiscordToken;
+  }
+  // Slack is deliberately absent (TASK-151): the instance-wide
+  // SLACK_BOT_TOKEN / SLACK_APP_TOKEN / SLACK_SIGNING_SECRET fallback is
+  // retired. Whether this server can talk to Slack is decided at send time by
+  // the per-workspace OAuth bind, and the webhook path reads its own
+  // SLACK_SIGNING_SECRET directly (`routes/webhooks/slack.ts`).
+  const defaultTelegramBotToken = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  const defaultTelegramSecret = String(process.env.TELEGRAM_SECRET_TOKEN || '').trim();
+  if (defaultTelegramBotToken || defaultTelegramSecret) {
+    config.channels.telegram = config.channels.telegram || {};
+    if (defaultTelegramBotToken) {
+      config.channels.telegram.botToken = (
+        config.channels.telegram.botToken || defaultTelegramBotToken
+      );
+    }
+    if (defaultTelegramSecret) {
+      config.channels.telegram.webhookSecret = (
+        config.channels.telegram.webhookSecret || defaultTelegramSecret
+      );
+    }
+  }
+
+  const asEntries = (value: any) => {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((entry) => entry && typeof entry === 'object')
+      .map((entry) => ({
+        accountId: String(entry.accountId || '').trim(),
+        ...entry,
+      }))
+      .filter((entry) => entry.accountId);
+  };
+
+  const discordAccounts = asEntries(integrationChannels.discord);
+  if (discordAccounts.length) {
+    config.channels.discord = config.channels.discord || {};
+    config.channels.discord.accounts = config.channels.discord.accounts || {};
+    discordAccounts.forEach((entry) => {
+      const token = String(entry.token || '').trim();
+      if (!token) return;
+      const existing = config.channels.discord.accounts[entry.accountId] || {};
+      config.channels.discord.accounts[entry.accountId] = {
+        ...existing,
+        ...(entry.name ? { name: entry.name } : {}),
+        token,
+      };
+      if (!config.channels.discord.token) {
+        config.channels.discord.token = token;
+      }
+    });
+  }
+
+  const slackAccounts = asEntries(integrationChannels.slack);
+  if (slackAccounts.length) {
+    config.channels.slack = config.channels.slack || {};
+    config.channels.slack.accounts = config.channels.slack.accounts || {};
+    slackAccounts.forEach((entry) => {
+      const botToken = String(entry.botToken || '').trim();
+      if (!botToken) return;
+      const existing = config.channels.slack.accounts[entry.accountId] || {};
+      config.channels.slack.accounts[entry.accountId] = {
+        ...existing,
+        ...(entry.name ? { name: entry.name } : {}),
+        botToken,
+        ...(entry.appToken ? { appToken: entry.appToken } : {}),
+        ...(entry.signingSecret ? { signingSecret: entry.signingSecret } : {}),
+        ...(entry.channelId ? { channels: { [entry.channelId]: { enabled: true } } } : {}),
+      };
+      if (!config.channels.slack.botToken) {
+        config.channels.slack.botToken = botToken;
+      }
+      if (!config.channels.slack.appToken && entry.appToken) {
+        config.channels.slack.appToken = entry.appToken;
+      }
+      if (!config.channels.slack.signingSecret && entry.signingSecret) {
+        config.channels.slack.signingSecret = entry.signingSecret;
+      }
+    });
+  }
+
+  const telegramAccounts = asEntries(integrationChannels.telegram);
+  if (telegramAccounts.length) {
+    config.channels.telegram = config.channels.telegram || {};
+    config.channels.telegram.accounts = config.channels.telegram.accounts || {};
+    telegramAccounts.forEach((entry) => {
+      const botToken = String(entry.botToken || '').trim();
+      if (!botToken) return;
+      const existing = config.channels.telegram.accounts[entry.accountId] || {};
+      config.channels.telegram.accounts[entry.accountId] = {
+        ...existing,
+        ...(entry.name ? { name: entry.name } : {}),
+        botToken,
+        ...(entry.webhookSecret ? { webhookSecret: entry.webhookSecret } : {}),
+        ...(entry.chatId ? { groups: { [entry.chatId]: { enabled: true } } } : {}),
+      };
+      if (!config.channels.telegram.botToken) {
+        config.channels.telegram.botToken = botToken;
+      }
+      if (!config.channels.telegram.webhookSecret && entry.webhookSecret) {
+        config.channels.telegram.webhookSecret = entry.webhookSecret;
+      }
+    });
+  }
+};
+
+const applyOpenClawWebToolDefaults = (config: any) => {
+  const braveApiKey = String(process.env.BRAVE_API_KEY || '').trim();
+  const braveApiKey2 = String(process.env.BRAVE_API_KEY_2 || '').trim();
+  const firecrawlApiKey = String(process.env.FIRECRAWL_API_KEY || '').trim();
+  // Use key 2 as fallback if key 1 is absent
+  const activeBraveKey = braveApiKey || braveApiKey2;
+  if (!activeBraveKey && !firecrawlApiKey) return;
+  config.tools = config.tools || {};
+  config.tools.web = config.tools.web || {};
+  if (activeBraveKey) {
+    config.tools.web.search = config.tools.web.search || {};
+    if (!config.tools.web.search.provider) {
+      config.tools.web.search.provider = 'brave';
+    }
+    if (!config.tools.web.search.apiKey) {
+      config.tools.web.search.apiKey = activeBraveKey;
+    }
+    if (config.tools.web.search.enabled === undefined) {
+      config.tools.web.search.enabled = true;
+    }
+  }
+  if (firecrawlApiKey) {
+    config.tools.web.fetch = config.tools.web.fetch || {};
+    config.tools.web.fetch.firecrawl = config.tools.web.fetch.firecrawl || {};
+    if (!config.tools.web.fetch.firecrawl.apiKey) {
+      config.tools.web.fetch.firecrawl.apiKey = firecrawlApiKey;
+    }
+    if (config.tools.web.fetch.firecrawl.enabled === undefined) {
+      config.tools.web.fetch.firecrawl.enabled = true;
+    }
+  }
+};
+
+const applyOpenClawMemoryDefaults = (config: any) => {
+  config.agents = config.agents || {};
+  config.agents.defaults = config.agents.defaults || {};
+  config.agents.defaults.memorySearch = config.agents.defaults.memorySearch || {};
+  if (config.agents.defaults.memorySearch.enabled === undefined) {
+    config.agents.defaults.memorySearch.enabled = true;
+  }
+  if (!Array.isArray(config.agents.defaults.memorySearch.sources)) {
+    config.agents.defaults.memorySearch.sources = ['memory'];
+  }
+};
+
+const applyOpenClawContextDefaults = (config: any) => {
+  config.agents = config.agents || {};
+  config.agents.defaults = config.agents.defaults || {};
+  config.agents.defaults.contextPruning = config.agents.defaults.contextPruning || {};
+  if (!config.agents.defaults.contextPruning.mode) {
+    config.agents.defaults.contextPruning.mode = 'cache-ttl';
+  }
+  if (!config.agents.defaults.contextPruning.ttl) {
+    config.agents.defaults.contextPruning.ttl = '90m';
+  }
+  if (typeof config.agents.defaults.contextPruning.keepLastAssistants !== 'number') {
+    config.agents.defaults.contextPruning.keepLastAssistants = 2;
+  }
+};
+
+// Global concurrency for agent sessions in the gateway. Each session task
+// (heartbeat, chat.mention, etc.) acquires a slot in `lane=main` before
+// the LLM call runs. With clawdbot's default of 4, one degraded LLM hour
+// (slow Vertex / OpenRouter retries) produces queueAhead=20+ and cascading
+// 200s+ lane waits — the bottleneck observed during the agent-dm smoke
+// test at 23:39Z. We're not LLM-rate-limit-bound (LiteLLM has its own
+// rotator + per-key throttles), so a higher session-level concurrency is
+// fine. 16 lets all ~20 active dev agents process their heartbeats in
+// parallel; on healthy LLM each session is short, so 16 in flight is well
+// under what the proxy can absorb.
+const applyOpenClawConcurrencyDefaults = (config: any) => {
+  config.agents = config.agents || {};
+  config.agents.defaults = config.agents.defaults || {};
+  if (typeof config.agents.defaults.maxConcurrent !== 'number'
+    || config.agents.defaults.maxConcurrent < 16) {
+    config.agents.defaults.maxConcurrent = 16;
+  }
+  config.agents.defaults.subagents = config.agents.defaults.subagents || {};
+  if (typeof config.agents.defaults.subagents.maxConcurrent !== 'number'
+    || config.agents.defaults.subagents.maxConcurrent < 4) {
+    // Subagents are nested calls inside a parent agent's task — keeping
+    // these tighter (default is 4) avoids fan-out blowups when a long
+    // task spawns many sub-tasks.
+    config.agents.defaults.subagents.maxConcurrent = 4;
+  }
+};
+
+// Direct Gemini provider fallbacks (google/ prefix, not via OpenRouter).
+// Requires a valid GEMINI_API_KEY in the gateway's api-keys secret.
+const GEMINI_FALLBACKS = [
+  'google/gemini-2.5-flash',
+  'google/gemini-2.5-flash-lite',
+  'google/gemini-2.0-flash',
+];
+
+// Default dev agent IDs — overridden by DB openclaw.devAgentIds if set.
+const DEFAULT_DEV_AGENT_IDS = ['theo', 'nova', 'pixel', 'ops'];
+
+const applyOpenClawAcpxPluginDefaults = (config: any) => {
+  config.plugins = config.plugins || {};
+  config.plugins.entries = config.plugins.entries || {};
+  if (!config.plugins.entries.acpx) {
+    config.plugins.entries.acpx = {
+      enabled: true,
+      config: {
+        permissionMode: 'approve-all',
+      },
+    };
+  } else if (config.plugins.entries.acpx.enabled === undefined) {
+    config.plugins.entries.acpx.enabled = true;
+  }
+};
+
+/**
+ * Issue (or re-issue) a LiteLLM virtual key for the given agent.
+ * Returns the key string (sk-...) on success, null if LiteLLM is not configured.
+ * Keys are not deduplicated — re-provisioning creates a new key each time.
+ * Old keys remain valid in LiteLLM DB (harmless orphans).
+ */
+const issueLiteLLMVirtualKey = async (agentId: any) => {
+  const baseUrl = process.env.LITELLM_BASE_URL;
+  const masterKey = (process.env.LITELLM_MASTER_KEY || '').trim();
+  if (!baseUrl || !masterKey) return null;
+  try {
+    const axios = require('axios');
+    const headers = { Authorization: `Bearer ${masterKey}` };
+
+    // Read current key from PVC. If it is still valid in LiteLLM, reuse it — this makes
+    // the function idempotent so concurrent provisioning calls don't race-delete each other.
+    let existingKey = null;
+    try {
+      const gwPod = await waitForReadyGatewayPod(10000, 2000);
+      if (gwPod) {
+        const readScript = `node -e "try{const s=JSON.parse(require('fs').readFileSync('/state/agents/${agentId}/agent/auth-profiles.json','utf8'));const p=s.profiles&&s.profiles['openai-codex:codex-cli'];process.stdout.write(p&&p.access?p.access:'');} catch (e: any) {}"`;
+        const out = await new Promise((resolve) => {
+          const chunks: any[] = [];
+          const s = new stream.PassThrough();
+          s.on('data', (d: any) => chunks.push(d));
+          k8sExec.exec(NAMESPACE, gwPod.metadata.name, 'clawdbot-gateway',
+            ['sh', '-c', readScript], s, null, null, false,
+            () => resolve(Buffer.concat(chunks).toString().trim()),
+          ).catch(() => resolve(''));
+        });
+        if (out && (out as any).startsWith('sk-')) existingKey = out;
+      }
+    } catch (_: any) { /* best-effort */ }
+
+    // Check if existing key is still valid in LiteLLM DB AND belongs to this agent.
+    // Without the ownership check, a key mistakenly written to the wrong agent's PVC
+    // would be perpetually reused across reprovisions.
+    if (existingKey) {
+      try {
+        const check = await axios.get(`${baseUrl}/key/info?key=${existingKey}`, { headers });
+        const info = check.data?.info;
+        if (info && (info.metadata?.agent_id === agentId || info.user_id === agentId)) {
+          return existingKey; // still valid and owned by this agent
+        }
+        // Key exists in DB but is invalid or belongs to another agent — delete it so it
+        // doesn't accumulate as an orphan, then fall through to issue a fresh one.
+        if (info) {
+          await axios.delete(`${baseUrl}/key/delete`, { headers, data: { keys: [existingKey] } }).catch(() => {});
+          console.log(`[litellm] Deleted stale/misowned key for ${agentId}`);
+        }
+      } catch (_: any) { /* key not in DB — fall through to issue a new one */ }
+    }
+
+    const resp = await axios.post(
+      `${baseUrl}/key/generate`,
+      {
+        user_id: agentId,
+        // Grant access to all models the agent may use.
+        // OpenClaw strips "openrouter/" prefix when using openrouter:default profile,
+        // so we allow both prefixed and un-prefixed variants.
+        models: [
+          'gpt-5.4',
+          'openai-codex/gpt-5.4',
+          'gpt-5.4-mini',
+          'openai-codex/gpt-5.4-mini',
+          'google/gemini-2.5-flash',
+          'google/gemini-2.5-flash-lite',
+          'google/gemini-2.0-flash',
+          'gemini-2.5-flash',
+          'openrouter/nvidia/nemotron-3-super-120b-a12b:free',
+          'nvidia/nemotron-3-super-120b-a12b:free',
+        ],
+        // Abuse circuit-breakers — generous for legit sequential heartbeat use,
+        // trips only on runaway flooding (see constant comment).
+        max_parallel_requests: LITELLM_KEY_MAX_PARALLEL_REQUESTS,
+        rpm_limit: LITELLM_KEY_RPM_LIMIT,
+        metadata: { agent_id: agentId, provisioned_at: new Date().toISOString() },
+      },
+      { headers },
+    );
+    const newKey = resp.data?.key || null;
+    if (newKey) console.log(`[litellm] Issued new virtual key for ${agentId}`);
+    return newKey;
+  } catch (err: any) {
+    console.warn(`[litellm] Virtual key generation failed for ${agentId}: ${err.message}`);
+    return null;
+  }
+};
+
+/**
+ * Issue a LiteLLM virtual key for a community agent. Community agents'
+ * runtime primary is `openrouter/nvidia/nemotron-3-super-120b-a12b:free`
+ * (set as the gateway default in applyOpenClawModelDefaults); they never
+ * get openai-codex credentials injected. The allowlist on this key still
+ * permits the gpt-5.4-{nano,mini,full} model names as a safety net so the
+ * default can be flipped back without per-key re-issuance — calls to
+ * those models will fail at the auth layer (no Codex creds), not at
+ * LiteLLM's allowlist check.
+ */
+const issueLiteLLMOpenRouterKey = async (agentId: any) => {
+  const baseUrl = process.env.LITELLM_BASE_URL;
+  const masterKey = (process.env.LITELLM_MASTER_KEY || '').trim();
+  if (!baseUrl || !masterKey) return null;
+  try {
+    const axios = require('axios');
+    const headers = { Authorization: `Bearer ${masterKey}` };
+
+    // Read existing key from openai-codex:codex-cli.access on the agent PVC.
+    // We read from codex-cli.access (not openrouter:default.key) because openrouter:default
+    // may hold the real OpenRouter API key (sk-or-v1-...) which is not a LiteLLM virtual key.
+    let existingKey = null;
+    try {
+      const gwPod = await waitForReadyGatewayPod(10000, 2000);
+      if (gwPod) {
+        const readScript = `node -e "try{const s=JSON.parse(require('fs').readFileSync('/state/agents/${agentId}/agent/auth-profiles.json','utf8'));const p=s.profiles&&s.profiles['openai-codex:codex-cli'];process.stdout.write(p&&p.access?p.access:'');} catch (e: any) {}"`;
+        const out = await new Promise((resolve) => {
+          const chunks: any[] = [];
+          const s = new stream.PassThrough();
+          s.on('data', (d: any) => chunks.push(d));
+          k8sExec.exec(NAMESPACE, gwPod.metadata.name, 'clawdbot-gateway',
+            ['sh', '-c', readScript], s, null, null, false,
+            () => resolve(Buffer.concat(chunks).toString().trim()),
+          ).catch(() => resolve(''));
+        });
+        if (out && (out as any).startsWith('sk-')) existingKey = out;
+      }
+    } catch (_: any) { /* best-effort */ }
+
+    if (existingKey && existingKey !== masterKey) {
+      // Safety: never delete the master key even if found on PVC
+      try {
+        const check = await axios.get(`${baseUrl}/key/info?key=${existingKey}`, { headers });
+        const info = check.data?.info;
+        const ownedByAgent = info && (info.metadata?.agent_id === agentId || info.user_id === agentId);
+        // Sentinel for "key was issued with the current allowlist." We use
+        // gpt-5.4-mini as the marker because it joined the allowlist in the
+        // nano→mini switch and stayed in for the codex-restricted-to-dev
+        // change; pre-switch keys lack it and would 401 on any retry, so
+        // we force re-issue.
+        const allowsMini = Array.isArray(info?.models) && info.models.includes('gpt-5.4-mini');
+        if (ownedByAgent && allowsMini) {
+          return existingKey;
+        }
+        if (info) {
+          await axios.delete(`${baseUrl}/key/delete`, { headers, data: { keys: [existingKey] } }).catch(() => {});
+          console.log(`[litellm] Deleted ${ownedByAgent ? 'stale-allowlist' : 'misowned'} OpenRouter key for ${agentId}`);
+        }
+      } catch (_: any) { /* key not in DB — fall through */ }
+    }
+
+    const resp = await axios.post(
+      `${baseUrl}/key/generate`,
+      {
+        user_id: agentId,
+        models: [
+          'gpt-5.4-nano',
+          'openai-codex/gpt-5.4-nano',
+          'gpt-5.4-mini',
+          'openai-codex/gpt-5.4-mini',
+          'gpt-5.4',
+          'openai-codex/gpt-5.4',
+          'openrouter/nvidia/nemotron-3-super-120b-a12b:free',
+          'nvidia/nemotron-3-super-120b-a12b:free',
+          'google/gemini-2.5-flash',
+          'google/gemini-2.5-flash-lite',
+          'google/gemini-2.0-flash',
+          'gemini-2.5-flash',
+        ],
+        // Abuse circuit-breakers — generous for legit sequential heartbeat use,
+        // trips only on runaway flooding (see constant comment).
+        max_parallel_requests: LITELLM_KEY_MAX_PARALLEL_REQUESTS,
+        rpm_limit: LITELLM_KEY_RPM_LIMIT,
+        metadata: { agent_id: agentId, key_type: 'openrouter', provisioned_at: new Date().toISOString() },
+      },
+      { headers },
+    );
+    const newKey = resp.data?.key || null;
+    if (newKey) console.log(`[litellm] Issued OpenRouter virtual key for ${agentId}`);
+    return newKey;
+  } catch (err: any) {
+    console.warn(`[litellm] OpenRouter virtual key generation failed for ${agentId}: ${err.message}`);
+    return null;
+  }
+};
+
+/**
+ * Inject LiteLLM virtual key and real OpenRouter key into the agent PVC auth-profiles.
+ * - openai-codex:codex-cli.access = LiteLLM sk-xxx key (read by acpx_run / readAgentLiteLLMKey)
+ * - openrouter:default.key = real OpenRouter API key (sk-or-v1-...) so gateway heartbeat
+ *   fallbacks that route directly to OpenRouter work correctly
+ * The init container runs in patch mode and does NOT update these profiles, so injections
+ * persist across gateway restarts.
+ */
+const injectOpenRouterKeyToAgentAuthProfiles = async (deploymentName: any, agentId: any, virtualKey: any) => {
+  if (!virtualKey) return;
+  const escaped = virtualKey.replace(/'/g, "\\'");
+  // OpenRouter calls are proxied through LiteLLM (openrouter.baseUrl = http://litellm:4000/v1).
+  // LiteLLM expects a virtual key for authorization — always use the LiteLLM key for openrouter:default.
+  // LiteLLM uses its own litellm_params.api_key (the real OR key) when forwarding to OpenRouter.
+  const orDefaultKey = escaped;
+  // When CODEX_BYPASS_LITELLM is on, openai-codex:codex-cli.access must hold
+  // the real ChatGPT OAuth JWT (written by injectCodexTokenToAgentAuthProfiles),
+  // NOT a LiteLLM virtual key — OpenClaw's native codex-responses handler
+  // decodes it as a JWT to extract chatgpt-account-id and 500s on a virtual key.
+  const codexBypassLiteLLM = /^(1|true|yes)$/i.test(process.env.CODEX_BYPASS_LITELLM || '');
+  const codexAssignLine = codexBypassLiteLLM
+    ? ''
+    : `  store.profiles['openai-codex:codex-cli'] = Object.assign({}, store.profiles['openai-codex:codex-cli'] || {}, { type: 'api_key', provider: 'openai-codex', key: '${escaped}', apiKey: '${escaped}', access: '${escaped}' });`;
+  const codexOrderLine = codexBypassLiteLLM
+    ? ''
+    : `  store.order['openai-codex'] = ['openai-codex:codex-cli'];`;
+  const script = [
+    `const fs = require('fs');`,
+    `const p = '/state/agents/${agentId}/agent/auth-profiles.json';`,
+    `try {`,
+    `  const store = JSON.parse(fs.readFileSync(p, 'utf8'));`,
+    // type:"api_key" + provider are REQUIRED — without them OpenClaw's
+    // resolveApiKeyForProfile (auth-profiles/oauth.ts:334) treats the profile
+    // as type-incompatible and falls through to the env var, sending the
+    // real OPENROUTER_API_KEY (sk-or-v1-...) to LiteLLM and 401-ing.
+    `  store.profiles['openrouter:default'] = Object.assign({}, store.profiles['openrouter:default'] || {}, { type: 'api_key', provider: 'openrouter', key: '${orDefaultKey}', apiKey: '${orDefaultKey}' });`,
+    codexAssignLine,
+    `  store.order = store.order || {};`,
+    codexOrderLine,
+    `  fs.writeFileSync(p, JSON.stringify(store, null, 2));`,
+    `  process.stdout.write('ok');`,
+    `} catch (e: any) { process.stdout.write('skip:' + e.message); }`,
+  ].filter(Boolean).join(' ');
+
+  const execOnPod = async (podName: any) => new Promise<void>((resolve, reject) => {
+    const stdoutStream = new stream.PassThrough();
+    k8sExec.exec(
+      NAMESPACE,
+      podName,
+      'clawdbot-gateway',
+      ['node', '-e', script],
+      stdoutStream,
+      stdoutStream,
+      null,
+      false,
+      (status: any) => {
+        if (status.status === 'Success') resolve();
+        else reject(new Error(status.message || 'exec failed'));
+      },
+    ).catch(reject);
+  });
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const gwPod = await waitForReadyGatewayPod(90000, 5000);
+      if (!gwPod) {
+        console.warn(`[k8s-provisioner] openrouter key inject skipped for ${agentId}: no ready gateway pod`);
+        return;
+      }
+      await execOnPod(gwPod.metadata.name);
+      console.log(`[k8s-provisioner] openrouter key injected for ${agentId}`);
+      return;
+    } catch (err: any) {
+      if (attempt < 2) {
+        console.warn(`[k8s-provisioner] openrouter key inject attempt ${attempt} failed for ${agentId}: ${err.message} — retrying`);
+        await new Promise((r) => setTimeout(r, 10000));
+      } else {
+        console.warn(`[k8s-provisioner] openrouter key inject skipped for ${agentId}: ${err.message}`);
+      }
+    }
+  }
+};
+
+const applyOpenClawCodexProviderConfig = async (config: any) => {
+  config.models = config.models || {};
+  config.models.providers = config.models.providers || {};
+
+  // CODEX_BYPASS_LITELLM is the permanent escape hatch from the LiteLLM
+  // proxy — when set, the gateway points openai-codex straight at chatgpt.com
+  // and seeds raw OAuth tokens into per-agent auth profiles. Default behavior
+  // (flag unset, LITELLM_BASE_URL set) routes Codex through LiteLLM with
+  // per-agent virtual keys; gateway-level OAuth is not seeded because every
+  // agent already has its virtual key written by
+  // injectOpenRouterKeyToAgentAuthProfiles.
+  const codexBypassLiteLLM = /^(1|true|yes)$/i.test(process.env.CODEX_BYPASS_LITELLM || '');
+  const litellmBase = codexBypassLiteLLM ? null : process.env.LITELLM_BASE_URL;
+  if (litellmBase) {
+    // Route Codex through LiteLLM: OpenClaw uses openai-completions format, LiteLLM routes
+    // to chatgpt/gpt-5.4 using OAuth tokens seeded by the codex-auth-seed init container.
+    // The daily refresh job (refreshCodexOAuthTokenIfNeeded) keeps the token fresh and
+    // triggers a LiteLLM pod restart so the init container re-reads the updated secret.
+    if (!config.models.providers['openai-codex']) {
+      config.models.providers['openai-codex'] = {
+        baseUrl: litellmBase,
+        api: 'openai-completions',
+        models: [
+          { id: 'gpt-5.4', name: 'gpt-5.4' },
+          { id: 'gpt-5.3-codex', name: 'gpt-5.3-codex' },
+        ],
+      };
+    } else {
+      config.models.providers['openai-codex'].baseUrl = litellmBase;
+      config.models.providers['openai-codex'].api = 'openai-completions';
+    }
+  } else {
+    // Direct Codex API (no LiteLLM)
+    const codexBaseUrl = 'https://chatgpt.com/backend-api';
+    if (!config.models.providers['openai-codex']) {
+      config.models.providers['openai-codex'] = {
+        baseUrl: codexBaseUrl,
+        api: 'openai-codex-responses',
+        models: [{ id: 'gpt-5.3-codex', name: 'gpt-5.3-codex' }],
+      };
+    } else {
+      config.models.providers['openai-codex'].baseUrl = codexBaseUrl;
+      config.models.providers['openai-codex'].api = 'openai-codex-responses';
+    }
+  }
+  config.auth = config.auth || {};
+  config.auth.profiles = config.auth.profiles || {};
+  config.auth.order = config.auth.order || {};
+
+  // moltbot.json schema requires the canonical openai-codex:codex-cli profile
+  // stub regardless of which auth path is active. The `access` field is
+  // overlaid per-agent later: LiteLLM virtual key (default) or real OAuth
+  // (CODEX_BYPASS_LITELLM=true).
+  // mode MUST match the per-agent profile shape — OpenClaw's
+  // isProfileConfigCompatible filters profiles whose `type` doesn't match the
+  // configured `mode`. LiteLLM-routed path uses api_key (virtual key as
+  // Bearer); bypass path uses oauth (raw JWT).
+  const codexProfileMode = litellmBase ? 'api_key' : 'oauth';
+  if (!config.auth.profiles['openai-codex:codex-cli']) {
+    config.auth.profiles['openai-codex:codex-cli'] = { provider: 'openai-codex', mode: codexProfileMode };
+  } else {
+    config.auth.profiles['openai-codex:codex-cli'].mode = codexProfileMode;
+  }
+
+  if (litellmBase) {
+    // LiteLLM is the proxy. Every agent authenticates with its per-agent
+    // LiteLLM virtual key (sk-xxx), written to openai-codex:codex-cli.access
+    // by injectOpenRouterKeyToAgentAuthProfiles. Seeding gateway-level OAuth
+    // credentials here was the source of `[openai-codex] Token refresh
+    // failed: 401` lines in the gateway logs — refresh attempts that never
+    // produce a usable token because the LiteLLM-routed path doesn't need
+    // them. Skip the secret read entirely.
+    config.auth.order['openai-codex'] = ['openai-codex:codex-cli'];
+    return null;
+  }
+
+  // Direct chatgpt.com — gateway needs real OAuth tokens seeded into
+  // moltbot.json. Reached when CODEX_BYPASS_LITELLM is set OR LITELLM_BASE_URL
+  // is unset (the provider URL above falls back to chatgpt.com in either
+  // case). Account order enables OpenClaw's rate-limit rotation;
+  // openai-codex:codex-cli is the canonical slot for account-1 (suffix '').
+  const CODEX_ACCOUNTS = [
+    { suffix: '-2', profileId: 'openai-codex:account-2' },
+    { suffix: '-3', profileId: 'openai-codex:account-3' },
+    { suffix: '', profileId: 'openai-codex:codex-cli' },
+  ];
+
+  const credentials = [];
+  try {
+    const secretResponse = await k8sApi.readNamespacedSecret('api-keys', NAMESPACE);
+    const secretData = secretResponse.body.data || {};
+    const decode = (key: any) => (secretData[key] ? Buffer.from(secretData[key], 'base64').toString('utf8') : null);
+
+    for (const { suffix, profileId } of CODEX_ACCOUNTS) {
+      const access = decode(`openai-codex-access-token${suffix}`);
+      if (!access) continue; // account not configured
+      const refresh = decode(`openai-codex-refresh-token${suffix}`);
+      const expiresAt = decode(`openai-codex-expires-at${suffix}`);
+      if (!config.auth.profiles[profileId]) {
+        config.auth.profiles[profileId] = { provider: 'openai-codex', mode: 'oauth' };
+      }
+      // expires must be stored in MILLISECONDS — OpenClaw compares against
+      // Date.now(). The secret stores Unix seconds (10-digit) from the
+      // OAuth device-auth flow; multiply by 1000 to get ms. If the secret
+      // ever changes to ISO format (would parse via Date.parse), the else
+      // branch still handles it.
+      let expiresMs: number | null = null;
+      if (expiresAt) {
+        const n = Number(expiresAt);
+        if (Number.isFinite(n) && n > 0) {
+          // 10-digit = seconds; 13-digit = already ms
+          expiresMs = n < 10_000_000_000 ? n * 1000 : n;
+        } else {
+          const parsed = new Date(expiresAt).getTime();
+          if (Number.isFinite(parsed)) expiresMs = parsed;
+        }
+      }
+      credentials.push({
+        profileId,
+        credential: {
+          type: 'oauth',
+          provider: 'openai-codex',
+          access,
+          ...(refresh && { refresh }),
+          ...(expiresMs && { expires: expiresMs }),
+        },
+      });
+    }
+  } catch (_err: any) {
+    // Not in k8s mode or secret unavailable
+  }
+
+  config.auth.order['openai-codex'] = credentials.length > 0
+    ? credentials.map((c) => c.profileId)
+    : ['openai-codex:codex-cli'];
+
+  return credentials.length > 0 ? credentials : null;
+};
+
+// Returns a gateway pod that is fully Ready (init containers done, main container running).
+// Polls up to timeoutMs (default 90s) so injections survive a gateway rolling restart.
+const waitForReadyGatewayPod = async (timeoutMs = 90000, pollIntervalMs = 5000) => {
+  const isReady = (pod: any) => {
+    if (pod.status?.phase !== 'Running') return false;
+    const conditions = pod.status?.conditions || [];
+    return conditions.some((c: any) => c.type === 'Ready' && c.status === 'True');
+  };
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const gwPods = await k8sApi.listNamespacedPod(
+      NAMESPACE, undefined, undefined, undefined, undefined, 'app=clawdbot-gateway',
+    );
+    const pod = gwPods.body.items.find(isReady);
+    if (pod) return pod;
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+  }
+  return null;
+};
+
+/**
+ * Strip the openrouter:default profile from an agent's auth-profiles.json.
+ * After moving OR routing direct to openrouter.ai (no LiteLLM virtual key
+ * indirection), the per-agent OR profile becomes wrong — its `key` field
+ * holds a stale LiteLLM virtual key, which OpenClaw would prefer over the
+ * gateway's OPENROUTER_API_KEY env var (real sk-or-v1-...) and send to
+ * openrouter.ai for an "invalid api key" rejection. Clear so env-var auth
+ * takes over.
+ */
+const clearOpenRouterFromAgentAuthProfiles = async (deploymentName: any, agentId: any) => {
+  const script = [
+    `const fs = require('fs');`,
+    `const p = '/state/agents/${agentId}/agent/auth-profiles.json';`,
+    `try {`,
+    `  const store = JSON.parse(fs.readFileSync(p, 'utf8'));`,
+    `  store.profiles = store.profiles || {};`,
+    `  let removed = 0;`,
+    `  for (const k of Object.keys(store.profiles)) {`,
+    `    if (k.startsWith('openrouter:')) { delete store.profiles[k]; removed++; }`,
+    `  }`,
+    `  if (store.order && store.order.openrouter) { delete store.order.openrouter; }`,
+    `  fs.writeFileSync(p, JSON.stringify(store, null, 2));`,
+    `  process.stdout.write('cleared:' + removed);`,
+    `} catch (e) { process.stdout.write('skip:' + e.message); }`,
+  ].join(' ');
+
+  const execOnPod = async (podName: any) => new Promise<void>((resolve, reject) => {
+    const stdoutStream = new stream.PassThrough();
+    k8sExec.exec(NAMESPACE, podName, 'clawdbot-gateway', ['node', '-e', script],
+      stdoutStream, stdoutStream, null, false,
+      (status: any) => { if (status.status === 'Success') resolve(); else reject(new Error(status.message || 'exec failed')); },
+    ).catch(reject);
+  });
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const gwPod = await waitForReadyGatewayPod(90000, 5000);
+      if (!gwPod) return;
+      await execOnPod(gwPod.metadata.name);
+      console.log(`[k8s-provisioner] openrouter profiles cleared for ${agentId}`);
+      return;
+    } catch (err: any) {
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 10000));
+      else console.warn(`[k8s-provisioner] openrouter clear skipped for ${agentId}: ${err.message}`);
+    }
+  }
+};
+
+/**
+ * Strip every openai-codex:* profile + the openai-codex order from an
+ * agent's auth-profiles.json on the gateway PVC. Used when reprovisioning
+ * a community agent so leftover Codex JWTs from earlier (buggy) provisions
+ * don't keep burning shared Codex quota. Idempotent.
+ */
+const clearCodexFromAgentAuthProfiles = async (deploymentName: any, agentId: any) => {
+  const script = [
+    `const fs = require('fs');`,
+    `const p = '/state/agents/${agentId}/agent/auth-profiles.json';`,
+    `try {`,
+    `  const store = JSON.parse(fs.readFileSync(p, 'utf8'));`,
+    `  store.profiles = store.profiles || {};`,
+    `  let removed = 0;`,
+    `  for (const k of Object.keys(store.profiles)) {`,
+    `    if (k.startsWith('openai-codex:')) { delete store.profiles[k]; removed++; }`,
+    `  }`,
+    `  if (store.order && store.order['openai-codex']) { delete store.order['openai-codex']; }`,
+    `  fs.writeFileSync(p, JSON.stringify(store, null, 2));`,
+    `  process.stdout.write('cleared:' + removed);`,
+    `} catch (e) { process.stdout.write('skip:' + e.message); }`,
+  ].join(' ');
+
+  const execOnPod = async (podName: any) => new Promise<void>((resolve, reject) => {
+    const stdoutStream = new stream.PassThrough();
+    k8sExec.exec(
+      NAMESPACE,
+      podName,
+      'clawdbot-gateway',
+      ['node', '-e', script],
+      stdoutStream,
+      stdoutStream,
+      null,
+      false,
+      (status: any) => {
+        if (status.status === 'Success') resolve();
+        else reject(new Error(status.message || 'exec failed'));
+      },
+    ).catch(reject);
+  });
+
+  const MAX_ATTEMPTS = 2;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const gwPod = await waitForReadyGatewayPod(90000, 5000);
+      if (!gwPod) {
+        console.warn(`[k8s-provisioner] codex clear skipped for ${agentId}: no ready gateway pod after 90s`);
+        return;
+      }
+      await execOnPod(gwPod.metadata.name);
+      console.log(`[k8s-provisioner] codex profiles cleared for community agent ${agentId}`);
+      return;
+    } catch (err: any) {
+      if (attempt < MAX_ATTEMPTS) {
+        console.warn(`[k8s-provisioner] codex clear attempt ${attempt} failed for ${agentId}: ${err.message} — retrying`);
+        await new Promise((r) => setTimeout(r, 10000));
+      } else {
+        console.warn(`[k8s-provisioner] codex clear skipped for ${agentId}: ${err.message}`);
+      }
+    }
+  }
+};
+
+const injectCodexTokenToAgentAuthProfiles = async (deploymentName: any, agentId: any, credentials: any) => {
+  // credentials: array of { profileId, credential } or null
+  if (!credentials || credentials.length === 0) return;
+  const assignments = credentials
+    .map(({ profileId, credential }: any) => `store.profiles['${profileId}'] = ${JSON.stringify(credential).replace(/'/g, "'\\''")};`)
+    .join(' ');
+  const profileIds = JSON.stringify(credentials.map((c: any) => c.profileId));
+  const script = [
+    `const fs = require('fs');`,
+    `const p = '/state/agents/${agentId}/agent/auth-profiles.json';`,
+    `try {`,
+    `  const store = JSON.parse(fs.readFileSync(p, 'utf8'));`,
+    `  ${assignments}`,
+    `  store.order = store.order || {};`,
+    `  const existing = store.order['openai-codex'] || [];`,
+    `  const injected = ${profileIds};`,
+    `  store.order['openai-codex'] = Array.from(new Set([...injected, ...existing]));`,
+    `  fs.writeFileSync(p, JSON.stringify(store, null, 2));`,
+    `  process.stdout.write('ok');`,
+    `} catch (e: any) { process.stdout.write('skip:' + e.message); }`,
+  ].join(' ');
+
+  const execOnPod = async (podName: any) => new Promise<void>((resolve, reject) => {
+    // stdout captures script output. stdin MUST be null — passing any stream (even an
+    // ended PassThrough) keeps the stdin WebSocket channel open and stalls the status
+    // callback, causing the Promise to never settle.
+    const stdoutStream = new stream.PassThrough();
+    k8sExec.exec(
+      NAMESPACE,
+      podName,
+      'clawdbot-gateway',
+      ['node', '-e', script],
+      stdoutStream,
+      stdoutStream,
+      null,
+      false,
+      (status: any) => {
+        if (status.status === 'Success') resolve();
+        else reject(new Error(status.message || 'exec failed'));
+      },
+    ).catch(reject);
+  });
+
+  // Reprovision-all restarts the gateway mid-flow; the injection may run while the new pod
+  // is still initialising. Wait up to 90s for a Ready pod, then retry the exec once on
+  // failure so transient 500s during pod startup don't permanently skip the order update.
+  const MAX_ATTEMPTS = 2;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const gwPod = await waitForReadyGatewayPod(90000, 5000);
+      if (!gwPod) {
+        console.warn(`[k8s-provisioner] codex token inject skipped for ${agentId}: no ready gateway pod after 90s`);
+        return;
+      }
+      const podName = gwPod.metadata.name;
+      await execOnPod(podName);
+      console.log(`[k8s-provisioner] codex token injected for ${agentId} into ${podName}`);
+      return;
+    } catch (err: any) {
+      if (attempt < MAX_ATTEMPTS) {
+        console.warn(`[k8s-provisioner] codex token inject attempt ${attempt} failed for ${agentId}: ${err.message} — retrying`);
+        await new Promise((r) => setTimeout(r, 10000));
+      } else {
+        console.warn(`[k8s-provisioner] codex token inject skipped for ${agentId}: ${err.message}`);
+      }
+    }
+  }
+};
+
+const applyOpenClawModelDefaults = async (config: any) => {
+  config.agents = config.agents || {};
+  config.agents.defaults = config.agents.defaults || {};
+  config.agents.defaults.model = config.agents.defaults.model || {};
+  let modelConfig = null;
+  try {
+    modelConfig = await GlobalModelConfigService.getConfig({ includeSecrets: false });
+  } catch (error: any) {
+    modelConfig = null;
+  }
+  // OpenRouter fallbacks: free models only, explicit list enforced on every provision.
+  // Trinity removed 2026-05-03 — endpoint was deregistered at OpenRouter (404 No
+  // endpoints found), so every fallback hop into trinity errored out and broke
+  // the chain. Nemotron is the only working free model right now.
+  const OPENROUTER_FREE_FALLBACKS = [
+    'openrouter/nvidia/nemotron-3-super-120b-a12b:free',
+  ];
+
+  // Global default for non-dev (community) agents: free OpenRouter models
+  // only. Codex quota is finite and shared; reserving it for dev agents
+  // keeps heartbeat orchestration responsive without burning weekly quota
+  // on community agents. Community agents are NOT issued openai-codex
+  // credentials (see provisionOpenClawAccount), so even a misconfigured
+  // primary would 401 rather than burn — but the assertion below makes
+  // this guarantee explicit at the config layer too. Dev agents bypass
+  // this default via the per-agent override (see devAgentModel below) —
+  // they still get openai-codex/gpt-5.4-mini.
+  config.agents.defaults.model.primary = 'openrouter/nvidia/nemotron-3-super-120b-a12b:free';
+  // Gemini entries are kept as inert placeholders — current GEMINI_API_KEY
+  // is revoked so they're no-ops today; reinstating the key restores the
+  // chain without a code change. If nemotron 429s while gemini is dead,
+  // community agents fail loud (silent for that minute, retry on next
+  // heartbeat) — that's the intended behavior. Better than burning Codex.
+  config.agents.defaults.model.fallbacks = Array.from(new Set([
+    'google/gemini-2.5-flash',
+    'google/gemini-2.5-flash-lite',
+    'google/gemini-2.0-flash',
+  ]));
+
+  // HARD GUARDRAIL: community fallback chain MUST NOT include any
+  // openai-codex/* model. Codex quota is paid and shared across the
+  // dev-agent fleet; a single community agent in a Codex fallback loop
+  // would burn the weekly quota in hours. The split is: dev agents
+  // (devAgentModel below) explicitly opt in to Codex; community agents
+  // never touch it, even on fallback. This assertion ensures any future
+  // edit that accidentally re-introduces Codex into the community chain
+  // fails the next provisioner run instead of silently burning quota.
+  const communityChain = [
+    config.agents.defaults.model.primary,
+    ...config.agents.defaults.model.fallbacks,
+  ];
+  const codexLeak = communityChain.find((m: string) => typeof m === 'string' && m.startsWith('openai-codex/'));
+  if (codexLeak) {
+    throw new Error(
+      `applyOpenClawModelDefaults: community fallback chain includes "${codexLeak}". `
+      + 'Codex models are reserved for dev-agent overrides (devAgentModel). '
+      + 'Remove from defaults.model.{primary,fallbacks} — community agents must never burn Codex quota.',
+    );
+  }
+
+  // Always set up Codex provider config so dev agents can use it via per-agent override.
+  const codexCredentials = await applyOpenClawCodexProviderConfig(config);
+
+  // OpenRouter provider catalog — free models only, no paid models.
+  // `api: "openai-completions"` is required: pi-ai uses it to route to the correct provider.
+  // `reasoning`, `input`, `cost` are required fields in ModelDefinitionConfig.
+  config.models = config.models || {};
+  config.models.providers = config.models.providers || {};
+  config.models.providers.openrouter = {
+    // Route through LiteLLM when available so all OpenRouter calls share
+    // the same observability + spend logs as Codex, and so dev agents can
+    // reuse a single virtual key across both providers. Falls back to
+    // direct OpenRouter if LiteLLM isn't deployed.
+    baseUrl: process.env.LITELLM_BASE_URL || 'https://openrouter.ai/api/v1',
+    api: 'openai-completions',
+    models: [
+      {
+        id: 'nvidia/nemotron-3-super-120b-a12b:free',
+        name: 'Nemotron Super 120B (free)',
+        reasoning: false,
+        input: ['text'],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        maxTokens: 8000,
+        contextWindow: 128000,
+      },
+    ],
+  };
+
+  // Resolve dev agent IDs from DB (fallback to defaults if not set).
+  const devAgentIds = Array.isArray(modelConfig?.openclaw?.devAgentIds) && modelConfig.openclaw.devAgentIds.length
+    ? modelConfig.openclaw.devAgentIds
+    : DEFAULT_DEV_AGENT_IDS;
+
+  // Dev agents use openai-codex/gpt-5.4-mini for heartbeat orchestration.
+  // gpt-5.4-mini uses ~30% of weekly Codex quota vs full gpt-5.4, making
+  // it ideal for heartbeat orchestration (list pods, check tasks, post
+  // updates). acpx_run coding tasks still use full gpt-5.4 via LiteLLM
+  // (hardcoded in tools.ts).
+  const devAgentModel = {
+    primary: 'openai-codex/gpt-5.4-mini',
+    fallbacks: Array.from(new Set([...OPENROUTER_FREE_FALLBACKS, ...GEMINI_FALLBACKS])),
+  };
+
+  return { codexCredentials, devAgentIds, devAgentModel };
+};
+
+/**
+ * Provision OpenClaw (moltbot) account in Kubernetes
+ */
+const provisionOpenClawAccount = async ({
+  accountId,
+  runtimeToken,
+  userToken,
+  agentName,
+  instanceId,
+  baseUrl,
+  displayName,
+  heartbeat,
+  authProfiles,
+  skillEnv,
+  integrationChannels,
+  configMapName = 'clawdbot-config',
+  gateway,
+}: any) => {
+  const configKey = 'moltbot.json';
+
+  // Read existing config
+  const config = await readConfigMap(configMapName, configKey);
+
+  // Update config structure (same logic as Docker version)
+  config.channels = config.channels || {};
+  config.channels.commonly = config.channels.commonly || {};
+  config.channels.commonly.enabled = true;
+  config.channels.commonly.baseUrl = config.channels.commonly.baseUrl || baseUrl || BACKEND_SERVICE_URL;
+  config.channels.commonly.accounts = config.channels.commonly.accounts || {};
+  // Enable thread-bound ACP sessions via the Commonly subagent-hooks
+  if (!config.channels.commonly.threadBindings) {
+    config.channels.commonly.threadBindings = { enabled: true, spawnSubagentSessions: true };
+  }
+  config.skills = config.skills || {};
+
+  // Required since upstream v2026.2.26: non-loopback gateway requires either
+  // allowedOrigins or dangerouslyAllowHostHeaderOriginFallback on controlUi.
+  config.gateway = config.gateway || {};
+  config.gateway.controlUi = config.gateway.controlUi || {};
+  if (!config.gateway.controlUi.allowedOrigins && !config.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback) {
+    config.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true;
+  }
+
+  const existingAccount = config.channels.commonly.accounts[accountId] || {};
+  const resolvedRuntimeToken = runtimeToken || existingAccount.runtimeToken;
+  const resolvedUserToken = userToken || existingAccount.userToken;
+  if (!resolvedRuntimeToken) {
+    throw new Error('Missing runtime token for OpenClaw account provisioning');
+  }
+
+  const normalizeKey = (value: any, fallback: any) => {
+    const normalized = String(value ?? fallback ?? '').trim().toLowerCase();
+    return normalized || String(fallback || '').trim().toLowerCase();
+  };
+  const targetAgent = normalizeKey(agentName, '');
+  const targetInstance = normalizeKey(instanceId, 'default');
+  const removedAccountIds: any[] = [];
+
+  // Remove duplicate accounts
+  Object.entries(config.channels.commonly.accounts).forEach(([key, entry]) => {
+    if (!entry || key === accountId) return;
+    const entryAgent = normalizeKey((entry as any).agentName, '');
+    const entryInstance = normalizeKey((entry as any).instanceId, 'default');
+    if (entryAgent === targetAgent && entryInstance === targetInstance) {
+      delete config.channels.commonly.accounts[key];
+      removedAccountIds.push(key);
+    }
+  });
+
+  // Add/update account
+  config.channels.commonly.accounts[accountId] = {
+    runtimeToken: resolvedRuntimeToken,
+    userToken: resolvedUserToken,
+    agentName,
+    instanceId,
+    ...(authProfiles ? { authProfiles } : {}),
+  };
+  applyOpenClawIntegrationChannels(config, integrationChannels);
+  applyOpenClawWebToolDefaults(config);
+  applyOpenClawMemoryDefaults(config);
+  applyOpenClawContextDefaults(config);
+  applyOpenClawConcurrencyDefaults(config);
+  applyOpenClawAcpxPluginDefaults(config);
+  const { codexCredentials, devAgentIds, devAgentModel } = await applyOpenClawModelDefaults(config);
+
+  const isDevAgent = devAgentIds.includes(accountId);
+  const codexBypassLiteLLM = /^(1|true|yes)$/i.test(process.env.CODEX_BYPASS_LITELLM || '');
+  let codexVirtualKey = null;
+  if (codexBypassLiteLLM) {
+    // Bypass mode: openai-codex provider points at chatgpt.com directly and
+    // OpenClaw's native handler decodes access as a JWT. Only DEV agents get
+    // raw OAuth tokens — community agents must NOT have openai-codex:*
+    // profiles or they'll burn the shared Codex weekly quota whenever they
+    // resolve gpt-5.4-mini (e.g. from a stale session or an explicit
+    // override). Earlier versions of this branch injected for everyone,
+    // leaking real JWTs onto every community agent's PVC.
+    if (isDevAgent) {
+      await injectCodexTokenToAgentAuthProfiles('clawdbot-gateway', accountId, codexCredentials);
+    } else {
+      await clearCodexFromAgentAuthProfiles('clawdbot-gateway', accountId);
+    }
+  } else if (isDevAgent) {
+    // Only dev agents get Codex credentials. Community agents use OpenRouter/Gemini only
+    // and must NOT have openai-codex:codex-cli keys — acpx_run uses that profile and would
+    // burn shared Codex rate limits if community agents have access.
+    if (process.env.LITELLM_BASE_URL) {
+      // Issue a per-agent LiteLLM virtual key and inject it as the openai-codex Bearer token.
+      // LiteLLM authenticates the virtual key and routes to chatgpt/gpt-5.4 using its own
+      // stored OAuth tokens — no raw OAuth token injection into per-agent PVC files needed.
+      codexVirtualKey = await issueLiteLLMVirtualKey(accountId);
+      if (codexVirtualKey) {
+        // Inject the same virtual key into all 3 codex profiles. All 3 route to the same
+        // LiteLLM model (openai-codex/gpt-5.4) which has 3 deployments (one per account);
+        // LiteLLM's least-busy routing distributes and falls back between accounts
+        // transparently. The gateway's profile rotation serves as a secondary fallback.
+        // Far-future expires prevents clawdbot-auth-seed from overwriting virtual keys
+        // with raw JWTs on gateway restarts (init container only overwrites if its token
+        // expiry is later than the existing profile's expires field).
+        const codexCredential = {
+          type: 'oauth',
+          provider: 'openai-codex',
+          access: codexVirtualKey,
+          expires: Date.now() + 365 * 24 * 3600 * 1000,
+        };
+        await injectCodexTokenToAgentAuthProfiles('clawdbot-gateway', accountId, [
+          { profileId: 'openai-codex:codex-cli', credential: codexCredential },
+          { profileId: 'openai-codex:account-2', credential: codexCredential },
+          { profileId: 'openai-codex:account-3', credential: codexCredential },
+        ]);
+      } else {
+        // LiteLLM key generation failed (e.g. DB disabled) — use master key so agents
+        // still route through LiteLLM instead of burning raw Codex OAuth tokens directly.
+        const masterKey = (process.env.LITELLM_MASTER_KEY || '').trim();
+        if (masterKey) {
+          const masterCredential = {
+            type: 'oauth',
+            provider: 'openai-codex',
+            access: masterKey,
+            expires: Date.now() + 365 * 24 * 3600 * 1000,
+          };
+          await injectCodexTokenToAgentAuthProfiles('clawdbot-gateway', accountId, [
+            { profileId: 'openai-codex:codex-cli', credential: masterCredential },
+            { profileId: 'openai-codex:account-2', credential: masterCredential },
+            { profileId: 'openai-codex:account-3', credential: masterCredential },
+          ]);
+        } else {
+          // No master key either. Under LiteLLM-proxy mode, codexCredentials
+          // is null (gateway-level OAuth seeding is intentionally skipped),
+          // so this inject is a no-op — the agent ends up with the stub
+          // openai-codex:codex-cli profile and no usable Codex auth.
+          // Calls will fail until LITELLM_MASTER_KEY is set or LiteLLM
+          // virtual-key issuance starts succeeding again. Loud-warn so the
+          // condition is diagnosable without trawling gateway 401 logs.
+          console.warn(
+            `[k8s-provisioner] no Codex auth available for ${accountId}: `
+            + 'LiteLLM virtual-key issuance failed and LITELLM_MASTER_KEY is unset. '
+            + 'Agent will have no Codex access until one of those is restored.',
+          );
+          await injectCodexTokenToAgentAuthProfiles('clawdbot-gateway', accountId, codexCredentials);
+        }
+      }
+    } else {
+      await injectCodexTokenToAgentAuthProfiles('clawdbot-gateway', accountId, codexCredentials);
+    }
+  } else {
+    // Non-bypass community agent — clear any leftover Codex profiles. Earlier
+    // (buggy) provisions injected JWTs onto everyone, and reprovision-all
+    // inherits state from the PVC. Without an explicit clear, those
+    // profiles would re-enable Codex routing forever.
+    await clearCodexFromAgentAuthProfiles('clawdbot-gateway', accountId);
+  }
+
+  // Route OpenRouter calls through LiteLLM when available (everything-via-LiteLLM
+  // mode). Dev agents reuse their Codex virtual key (already grants OpenRouter
+  // model access); community agents get a separate OR-only key. If virtual-key
+  // issuance fails (e.g. LiteLLM DB down), fall back to LITELLM_MASTER_KEY so
+  // the agent still routes through LiteLLM rather than burning raw keys direct.
+  if (process.env.LITELLM_BASE_URL) {
+    const masterKey = (process.env.LITELLM_MASTER_KEY || '').trim();
+    const openRouterKey = isDevAgent
+      ? codexVirtualKey
+      : (await issueLiteLLMOpenRouterKey(accountId)) || masterKey || null;
+    if (openRouterKey) {
+      await injectOpenRouterKeyToAgentAuthProfiles('clawdbot-gateway', accountId, openRouterKey);
+    }
+  }
+  applySkillEnvEntriesToConfig(config, skillEnv);
+
+  // Update agents list
+  config.agents = config.agents || {};
+  config.agents.list = Array.isArray(config.agents.list) ? config.agents.list : [];
+  if (removedAccountIds.length) {
+    config.agents.list = config.agents.list.filter(
+      (agent: any) => !removedAccountIds.includes(agent?.id),
+    );
+  }
+
+  // Workspace path for K8s
+  const desiredWorkspace = `/workspace/${accountId}`;
+
+  const normalizeHeartbeat = (payload: any) => {
+    if (!payload || payload.enabled === false) return null;
+    const minutes = Number(payload.everyMinutes || payload.every || payload.intervalMinutes);
+    const every = Number.isFinite(minutes) && minutes > 0 ? `${minutes}m` : payload.every;
+    const session = String(payload.session || '').trim() || 'heartbeat';
+    return {
+      every: every || '60m',
+      prompt: payload.prompt || DEFAULT_HEARTBEAT_PROMPT,
+      target: payload.target || 'commonly',
+      session,
+      // NOTE: do NOT emit `global`/`fixedPod` here. openclaw's HeartbeatSchema
+      // (v2026.3.7) is `.strict()` and has no `global` key — emitting it makes
+      // the gateway fail config validation and crash-loop ("Unrecognized key:
+      // global"). The heartbeat runner already fires once per agent
+      // (`for (const agent of state.agents.values())`), so there is no per-pod
+      // fan-out to suppress; the earlier carry-through (commit b3f0fb5c) was
+      // based on a false premise and took the whole fleet down on 2026-06-28.
+    };
+  };
+
+  const agentEntry = config.agents.list.find((agent: any) => agent?.id === accountId);
+  const heartbeatConfig = normalizeHeartbeat(heartbeat);
+
+  // Per-agent model override: dev agents get explicit Codex config.
+  // Community agents use global default (nemotron) — no per-agent entry needed.
+  const perAgentModel = devAgentIds.includes(accountId) ? devAgentModel : null;
+
+  if (agentEntry) {
+    if (agentEntry.workspace !== desiredWorkspace) {
+      agentEntry.workspace = desiredWorkspace;
+    }
+    if (!agentEntry.name) {
+      agentEntry.name = displayName || agentName || accountId;
+    }
+    if (heartbeatConfig) {
+      agentEntry.heartbeat = heartbeatConfig;
+    } else if (!heartbeat && agentEntry.heartbeat) {
+      // Only remove gateway-autonomous heartbeat when heartbeat is entirely absent (null),
+      // not when it is explicitly disabled (enabled: false) — prevents per-pod disabled
+      // installations from clobbering the shared gateway heartbeat entry during reprovision-all.
+      delete agentEntry.heartbeat;
+    }
+    if (perAgentModel) {
+      agentEntry.model = perAgentModel;
+    } else {
+      delete agentEntry.model; // community agents: use global default (nemotron)
+    }
+  } else {
+    config.agents.list.push({
+      id: accountId,
+      name: displayName || agentName || accountId,
+      workspace: desiredWorkspace,
+      ...(heartbeatConfig ? { heartbeat: heartbeatConfig } : {}),
+      ...(perAgentModel ? { model: perAgentModel } : {}),
+    });
+  }
+
+  // Update bindings
+  config.bindings = Array.isArray(config.bindings) ? config.bindings : [];
+  if (removedAccountIds.length) {
+    config.bindings = config.bindings.filter(
+      (binding: any) => !removedAccountIds.includes(binding?.match?.accountId),
+    );
+  }
+  const bindingExists = config.bindings.some(
+    (binding: any) => binding?.match?.channel === 'commonly' && binding?.match?.accountId === accountId,
+  );
+  if (!bindingExists) {
+    config.bindings.push({
+      agentId: accountId,
+      match: { channel: 'commonly', accountId },
+    });
+  }
+
+  // Write updated config to ConfigMap
+  await writeConfigMap(configMapName, configKey, config);
+
+  // Also sync to /state/moltbot.json on the gateway PVC so the init container
+  // (clawdbot-auth-seed) picks up the account on next gateway restart.
+  try {
+    const accountEntry = config.channels.commonly.accounts[accountId];
+    const agentEntry = config.agents.list.find((a: any) => a?.id === accountId) || null;
+    const bindingEntry = config.bindings.find((b: any) => b?.match?.accountId === accountId) || null;
+    await syncAccountToStateMoltbot(accountId, accountEntry, agentEntry, bindingEntry, {
+      gateway,
+      // Persist applyOpenClawModelDefaults' work to the gateway PVC. Without
+      // this, the global default (e.g. nemotron) lives only in the in-memory
+      // config and the persisted file keeps a stale primary forever.
+      agentsDefaults: config.agents?.defaults || null,
+      // Same for the model providers (openai-codex + openrouter→LiteLLM).
+      // Relying on the init container to copy these from the ConfigMap races
+      // the ConfigMap-volume propagation lag on reprovision-then-restart.
+      modelsProviders: config.models?.providers || null,
+    });
+    console.log(`[k8s-provisioner] synced ${accountId} to /state/moltbot.json`);
+  } catch (err: any) {
+    console.warn('[k8s-provisioner] Failed to sync account to /state/moltbot.json:', err.message);
+  }
+
+  // Customization protection: skip overwriting SOUL.md / HEARTBEAT.md when the
+  // user has marked them as customized. The `customizations` flags are set by
+  // the UI when the user edits the files directly; provisioner preserves them
+  // unless explicitly reset (force=true forces overwrite regardless).
+  const customizations = heartbeat?.customizations || {};
+  const skipHeartbeat = customizations.heartbeat === true && !heartbeat?.forceOverwrite;
+  const skipSoul = customizations.soul === true && !heartbeat?.forceOverwrite;
+  try {
+    if (skipHeartbeat) {
+      console.log(`[k8s-provisioner] skipping HEARTBEAT.md for ${accountId} (user-customized)`);
+    } else {
+      const heartbeatPath = await ensureHeartbeatTemplate(accountId, heartbeat, {
+        gateway,
+        customContent: heartbeat?.customContent || null,
+        // Force-overwrite only when explicitly declared via presetId (not just instanceId match)
+        forceOverwrite: Boolean(heartbeat?.forceOverwrite),
+      });
+      if (heartbeatPath) {
+        console.log(`[k8s-provisioner] ensured heartbeat template for ${accountId}: ${heartbeatPath}`);
+      }
+    }
+  } catch (error: any) {
+    console.warn('[k8s-provisioner] Failed to ensure HEARTBEAT.md template:', (error as Error).message);
+  }
+  try {
+    if (skipSoul) {
+      console.log(`[k8s-provisioner] skipping SOUL.md for ${accountId} (user-customized)`);
+    } else {
+      const soulPath = await ensureWorkspaceSoulFile(accountId, heartbeat?.soulContent, { gateway });
+      if (soulPath) {
+        console.log(`[k8s-provisioner] wrote SOUL.md for ${accountId}: ${soulPath}`);
+      }
+    }
+  } catch (error: any) {
+    console.warn('[k8s-provisioner] Failed to write SOUL.md:', (error as Error).message);
+  }
+  try {
+    const normalizedPath = await normalizeWorkspaceDocs(accountId, { gateway });
+    if (normalizedPath) {
+      console.log(`[k8s-provisioner] normalized workspace docs for ${accountId}: ${normalizedPath}`);
+    }
+  } catch (error: any) {
+    console.warn('[k8s-provisioner] Failed to normalize workspace docs:', (error as Error).message);
+  }
+  try {
+    const memoryPath = await ensureWorkspaceMemoryFiles(accountId, { gateway });
+    if (memoryPath) {
+      console.log(`[k8s-provisioner] ensured memory files for ${accountId}: ${memoryPath}`);
+    }
+  } catch (error: any) {
+    console.warn('[k8s-provisioner] Failed to ensure workspace memory files:', (error as Error).message);
+  }
+  try {
+    const gitPath = await ensureWorkspaceGitRepo(accountId, { gateway });
+    if (gitPath) {
+      console.log(`[k8s-provisioner] ensured git repo for ${accountId}: ${gitPath}`);
+    }
+  } catch (error: any) {
+    console.warn('[k8s-provisioner] Failed to ensure workspace git repo:', (error as Error).message);
+  }
+
+  return {
+    configMap: configMapName,
+    accountId,
+    restartRequired: true,
+  };
+};
+
+/**
+ * Provision Commonly Bot (internal) account in Kubernetes
+ */
+const provisionCommonlyBotAccount = async ({
+  accountId,
+  runtimeToken,
+  userToken,
+  agentName,
+  instanceId,
+}: any) => {
+  const configMapName = 'commonly-bot-config';
+  const configKey = 'runtime.json';
+
+  const config = await readConfigMap(configMapName, configKey);
+  config.accounts = config.accounts || {};
+  config.accounts[accountId] = {
+    runtimeToken,
+    userToken,
+    agentName,
+    instanceId,
+  };
+
+  await writeConfigMap(configMapName, configKey, config);
+
+  return {
+    configMap: configMapName,
+    accountId,
+    restartRequired: false,
+  };
+};
+
+/**
+ * Build Kubernetes Deployment manifest for agent runtime
+ */
+const buildAgentDeploymentManifest = ({
+  runtimeType,
+  accountId,
+  agentName,
+  instanceId,
+}: any) => {
+  const labels = {
+    app: `agent-${runtimeType}`,
+    'agent-type': runtimeType,
+    'agent-name': agentName,
+    'agent-instance': instanceId,
+    'agent-account': accountId,
+  };
+
+  const deploymentName = `agent-${runtimeType}-${accountId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+
+  let containerSpec;
+  let volumes: any[] = [];
+
+  if (runtimeType === 'moltbot') {
+    containerSpec = {
+      name: 'clawdbot-gateway',
+      image: process.env.CLAWDBOT_IMAGE || 'clawdbot:latest',
+      imagePullPolicy: 'IfNotPresent',
+      env: [
+        { name: 'CLAWDBOT_GATEWAY_PORT', value: '18789' },
+        { name: 'CLAWDBOT_BRIDGE_PORT', value: '18790' },
+        {
+          name: 'CLAWDBOT_GATEWAY_TOKEN',
+          valueFrom: {
+            secretKeyRef: {
+              name: 'api-keys',
+              key: 'clawdbot-gateway-token',
+            },
+          },
+        },
+        { name: 'CLAWDBOT_CONFIG_DIR', value: '/config' },
+        { name: 'CLAWDBOT_WORKSPACE_DIR', value: '/workspace' },
+        { name: 'COMMONLY_API_URL', value: BACKEND_SERVICE_URL },
+        {
+          name: 'BRAVE_API_KEY',
+          valueFrom: {
+            secretKeyRef: {
+              name: 'api-keys',
+              key: 'brave-api-key',
+              optional: true,
+            },
+          },
+        },
+        {
+          name: 'FIRECRAWL_API_KEY',
+          valueFrom: {
+            secretKeyRef: {
+              name: 'api-keys',
+              key: 'firecrawl-api-key',
+              optional: true,
+            },
+          },
+        },
+        {
+          name: 'DEEPGRAM_API_KEY',
+          valueFrom: {
+            secretKeyRef: {
+              name: 'api-keys',
+              key: 'deepgram-api-key',
+              optional: true,
+            },
+          },
+        },
+      ],
+      ports: [
+        { containerPort: 18789, name: 'gateway' },
+        { containerPort: 18790, name: 'bridge' },
+      ],
+      volumeMounts: [
+        { name: 'clawdbot-config', mountPath: '/config', readOnly: true },
+        { name: 'clawdbot-workspace', mountPath: '/workspace' },
+      ],
+      resources: {
+        requests: { memory: '256Mi', cpu: '200m' },
+        limits: { memory: '1Gi', cpu: '1000m' },
+      },
+    };
+
+    volumes = [
+      {
+        name: 'clawdbot-config',
+        configMap: { name: 'clawdbot-config' },
+      },
+      {
+        name: 'clawdbot-workspace',
+        persistentVolumeClaim: { claimName: 'clawdbot-workspace-pvc' },
+      },
+    ];
+  } else if (runtimeType === 'internal') {
+    containerSpec = {
+      name: 'commonly-bot',
+      image: 'node:20-alpine',
+      imagePullPolicy: 'IfNotPresent',
+      workingDir: '/app/external/commonly-agent-services/commonly-bot',
+      env: [
+        { name: 'COMMONLY_BASE_URL', value: BACKEND_SERVICE_URL },
+        {
+          name: 'COMMONLY_AGENT_TOKEN',
+          valueFrom: {
+            secretKeyRef: {
+              name: 'api-keys',
+              key: 'commonly-bot-runtime-token',
+            },
+          },
+        },
+        { name: 'COMMONLY_AGENT_POLL_MS', value: '5000' },
+        { name: 'NODE_ENV', value: 'production' },
+      ],
+      volumeMounts: [
+        { name: 'agent-services', mountPath: '/app/external/commonly-agent-services', readOnly: true },
+        { name: 'commonly-bot-config', mountPath: '/app/config', readOnly: true },
+      ],
+      command: ['node', 'index.js'],
+      resources: {
+        requests: { memory: '128Mi', cpu: '100m' },
+        limits: { memory: '512Mi', cpu: '500m' },
+      },
+    };
+
+    volumes = [
+      {
+        name: 'agent-services',
+        emptyDir: {}, // Will be populated by init container or ConfigMap
+      },
+      {
+        name: 'commonly-bot-config',
+        configMap: { name: 'commonly-bot-config' },
+      },
+    ];
+  }
+
+  return {
+    apiVersion: 'apps/v1',
+    kind: 'Deployment',
+    metadata: {
+      name: deploymentName,
+      namespace: NAMESPACE,
+      labels,
+    },
+    spec: {
+      replicas: 1,
+      selector: { matchLabels: labels },
+      template: {
+        metadata: { labels },
+        spec: {
+          serviceAccountName: 'agent-provisioner',
+          ...(AGENT_NODE_SELECTOR ? { nodeSelector: AGENT_NODE_SELECTOR } : {}),
+          ...(AGENT_TOLERATIONS ? { tolerations: AGENT_TOLERATIONS } : {}),
+          containers: [containerSpec],
+          volumes,
+        },
+      },
+    },
+  };
+};
+
+/**
+ * Provision agent runtime in Kubernetes
+ */
+const provisionAgentRuntime = async ({
+  runtimeType,
+  agentName,
+  instanceId,
+  runtimeToken,
+  userToken,
+  baseUrl,
+  displayName,
+  heartbeat,
+  authProfiles,
+  skillEnv,
+  integrationChannels,
+  gateway,
+}: any) => {
+  console.log(`[k8s-provisioner] Provisioning ${runtimeType} agent: ${agentName}/${instanceId}`);
+
+  let result;
+  let accountId;
+  let deploymentName = null;
+
+  if (runtimeType === 'moltbot') {
+    accountId = resolveOpenClawAccountId({ agentName, instanceId });
+    result = await provisionOpenClawAccount({
+      accountId,
+      runtimeToken,
+      userToken,
+      agentName,
+      instanceId,
+      baseUrl,
+      displayName,
+      heartbeat,
+      authProfiles,
+      skillEnv,
+      integrationChannels,
+      configMapName: resolveGatewayConfigMapName(gateway),
+      gateway,
+    });
+    // Use the shared clawdbot gateway deployment (no per-agent runtime pods).
+    deploymentName = resolveGatewayDeploymentName(gateway);
+  } else if (runtimeType === 'internal') {
+    accountId = instanceId;
+    result = await provisionCommonlyBotAccount({
+      accountId,
+      runtimeToken,
+      userToken,
+      agentName,
+      instanceId,
+    });
+    deploymentName = `agent-${runtimeType}-${accountId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    await cleanupLegacyInternalDeployment(deploymentName);
+  } else if (runtimeType === 'webhook' || runtimeType === 'claude-code') {
+    // External runtimes — no K8s deployment; agent manages its own compute
+    return { provisioned: true, external: true, runtimeType };
+  } else if (runtimeType === 'native') {
+    // Native agents run in-process inside the backend pod via
+    // nativeRuntimeService. No K8s deployment, no gateway, no tokens — the
+    // event dispatcher picks them up directly on enqueue.
+    return { provisioned: true, runtimeType: 'native', inProcess: true };
+  } else if (runtimeType === 'managed-agents') {
+    // Delegate to the managed-agents adapter for provisioning.
+    // The adapter handles beta.agents.create() + beta.environments.create()
+    // and (in the full flow) stores the returned ids on the installation config.
+    //
+    // Scaffolding only — actual provision flow (creating agent, environment,
+    // storing ids on the installation) is a follow-up track. For now we
+    // verify configuration and throw a typed error so the route surfaces a
+    // clear 501-ish response if someone tries to use this runtimeType before
+    // it's finished.
+    //
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
+    const { isManagedAgentsAvailable, ManagedAgentsError } = require('./managedAgentsAdapter');
+    if (!isManagedAgentsAvailable()) {
+      throw new ManagedAgentsError(
+        'Cannot provision managed-agents runtime: ANTHROPIC_API_KEY is missing or set to placeholder. '
+        + 'Land a real key in GCP Secret Manager and restart the backend pod.',
+        'not_configured',
+      );
+    }
+    throw new ManagedAgentsError(
+      'managed-agents runtime adapter is scaffolded but provision flow is not yet implemented. Track B follow-up.',
+      'not_configured',
+    );
+  } else {
+    throw new Error(`Provisioning not supported for runtime: ${runtimeType}`);
+  }
+
+  return {
+    ...result,
+    deployment: deploymentName,
+    namespace: NAMESPACE,
+    sharedGateway: runtimeType === 'moltbot',
+  };
+};
+
+const resolveRuntimeDeploymentName = (runtimeType: any, instanceId: any, gateway: any) => {
+  if (runtimeType === 'moltbot') {
+    return resolveGatewayDeploymentName(gateway);
+  }
+  const accountId = instanceId;
+  return `agent-${runtimeType}-${accountId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+};
+
+const cleanupLegacyInternalDeployment = async (deploymentName: any) => {
+  if (!deploymentName) return;
+  try {
+    await k8sAppsApi.deleteNamespacedDeployment(deploymentName, NAMESPACE);
+    console.log(`[k8s-provisioner] Removed legacy internal deployment: ${deploymentName}`);
+  } catch (error: any) {
+    if (error?.response?.statusCode !== 404) {
+      console.warn(`[k8s-provisioner] Failed to remove legacy internal deployment ${deploymentName}:`, (error as Error).message);
+    }
+  }
+};
+
+/**
+ * Start agent runtime (scale to 1 replica)
+ */
+const startAgentRuntime = async (runtimeType: any, instanceId: any, options = {}) => {
+  if (runtimeType === 'moltbot') {
+    const deploymentName = resolveRuntimeDeploymentName(runtimeType, instanceId, (options as any).gateway);
+    return { started: true, deployment: deploymentName, sharedGateway: true };
+  }
+  if (runtimeType === 'internal') {
+    return { started: true, managedExternally: true, reason: 'internal runtime is config-only on k8s' };
+  }
+  if (runtimeType === 'webhook' || runtimeType === 'claude-code') {
+    return { started: false, external: true, reason: 'external runtime — agent manages its own process' };
+  }
+  if (runtimeType === 'native') {
+    return { started: true, inProcess: true, reason: 'native runtime is in-process — nothing to start' };
+  }
+  const deploymentName = resolveRuntimeDeploymentName(runtimeType, instanceId, (options as any).gateway);
+
+  try {
+    const response = await k8sAppsApi.readNamespacedDeployment(deploymentName, NAMESPACE);
+    const deployment = response.body;
+
+    deployment.spec.replicas = 1;
+    await k8sAppsApi.replaceNamespacedDeployment(deploymentName, NAMESPACE, deployment);
+
+    console.log(`[k8s-provisioner] Started agent runtime: ${deploymentName}`);
+    return { started: true, deployment: deploymentName };
+  } catch (error: any) {
+    console.error(`[k8s-provisioner] Failed to start ${deploymentName}:`, (error as Error).message);
+    return { started: false, reason: (error as Error).message };
+  }
+};
+
+/**
+ * Stop agent runtime (scale to 0 replicas)
+ */
+const stopAgentRuntime = async (runtimeType: any, instanceId: any, options = {}) => {
+  if (runtimeType === 'moltbot') {
+    const deploymentName = resolveRuntimeDeploymentName(runtimeType, instanceId, (options as any).gateway);
+    return { stopped: true, deployment: deploymentName, sharedGateway: true };
+  }
+  if (runtimeType === 'internal') {
+    return { stopped: true, managedExternally: true, reason: 'internal runtime is config-only on k8s' };
+  }
+  if (runtimeType === 'webhook' || runtimeType === 'claude-code') {
+    return { stopped: false, external: true, reason: 'external runtime — agent manages its own process' };
+  }
+  if (runtimeType === 'native') {
+    return { stopped: true, inProcess: true, reason: 'native runtime is in-process — nothing to stop' };
+  }
+  const deploymentName = resolveRuntimeDeploymentName(runtimeType, instanceId, (options as any).gateway);
+
+  try {
+    const response = await k8sAppsApi.readNamespacedDeployment(deploymentName, NAMESPACE);
+    const deployment = response.body;
+
+    deployment.spec.replicas = 0;
+    await k8sAppsApi.replaceNamespacedDeployment(deploymentName, NAMESPACE, deployment);
+
+    console.log(`[k8s-provisioner] Stopped agent runtime: ${deploymentName}`);
+    return { stopped: true, deployment: deploymentName };
+  } catch (error: any) {
+    console.error(`[k8s-provisioner] Failed to stop ${deploymentName}:`, (error as Error).message);
+    return { stopped: false, reason: (error as Error).message };
+  }
+};
+
+/**
+ * Restart agent runtime (trigger rolling restart)
+ */
+const restartAgentRuntime = async (runtimeType: any, instanceId: any, options = {}) => {
+  if (runtimeType === 'internal') {
+    return { restarted: true, managedExternally: true, reason: 'internal runtime is config-only on k8s' };
+  }
+  if (runtimeType === 'native') {
+    return { restarted: true, inProcess: true, reason: 'native runtime is in-process — nothing to restart' };
+  }
+  const deploymentName = resolveRuntimeDeploymentName(runtimeType, instanceId, (options as any).gateway);
+
+  try {
+    const response = await k8sAppsApi.readNamespacedDeployment(deploymentName, NAMESPACE);
+    const deployment = response.body;
+
+    // Add restart annotation to trigger rolling restart
+    deployment.spec.template.metadata = deployment.spec.template.metadata || {};
+    deployment.spec.template.metadata.annotations = deployment.spec.template.metadata.annotations || {};
+    deployment.spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt'] = new Date().toISOString();
+
+    await k8sAppsApi.replaceNamespacedDeployment(deploymentName, NAMESPACE, deployment);
+
+    console.log(`[k8s-provisioner] Restarted agent runtime: ${deploymentName}`);
+    return { restarted: true, deployment: deploymentName, sharedGateway: runtimeType === 'moltbot' };
+  } catch (error: any) {
+    console.error(`[k8s-provisioner] Failed to restart ${deploymentName}:`, (error as Error).message);
+    return { restarted: false, reason: (error as Error).message, sharedGateway: runtimeType === 'moltbot' };
+  }
+};
+
+/**
+ * Get agent runtime status
+ */
+const getAgentRuntimeStatus = async (runtimeType: any, instanceId: any, options = {}) => {
+  if (runtimeType === 'webhook' || runtimeType === 'claude-code') {
+    return { status: 'external', reason: 'agent manages its own compute' };
+  }
+  if (runtimeType === 'native') {
+    return { status: 'in-process', reason: 'native runtime runs inside the backend process' };
+  }
+  if (runtimeType === 'moltbot') {
+    const deploymentName = resolveRuntimeDeploymentName(runtimeType, instanceId, (options as any).gateway);
+    try {
+      const response = await k8sAppsApi.readNamespacedDeployment(deploymentName, NAMESPACE);
+      const deployment = response.body;
+      const replicas = deployment.spec.replicas || 0;
+      const availableReplicas = deployment.status.availableReplicas || 0;
+      const readyReplicas = deployment.status.readyReplicas || 0;
+
+      let status = 'unknown';
+      if (replicas === 0) status = 'stopped';
+      else if (availableReplicas === replicas && readyReplicas === replicas) status = 'running';
+      else if (availableReplicas > 0) status = 'starting';
+      else status = 'pending';
+
+      return {
+        status,
+        deployment: deploymentName,
+        replicas,
+        availableReplicas,
+        readyReplicas,
+        sharedGateway: true,
+      };
+    } catch (error: any) {
+      return { status: 'not_found', deployment: deploymentName, sharedGateway: true };
+    }
+  }
+  if (runtimeType === 'internal') {
+    return {
+      status: 'managed-externally',
+      deployment: null,
+      replicas: 0,
+      availableReplicas: 0,
+      readyReplicas: 0,
+      reason: 'internal runtime is config-only on k8s',
+    };
+  }
+  const deploymentName = resolveRuntimeDeploymentName(runtimeType, instanceId, (options as any).gateway);
+
+  try {
+    const response = await k8sAppsApi.readNamespacedDeployment(deploymentName, NAMESPACE);
+    const deployment = response.body;
+
+    const replicas = deployment.spec.replicas || 0;
+    const availableReplicas = deployment.status.availableReplicas || 0;
+    const readyReplicas = deployment.status.readyReplicas || 0;
+
+    let status = 'unknown';
+    if (replicas === 0) {
+      status = 'stopped';
+    } else if (availableReplicas === replicas && readyReplicas === replicas) {
+      status = 'running';
+    } else if (availableReplicas > 0) {
+      status = 'starting';
+    } else {
+      status = 'pending';
+    }
+
+    return {
+      status,
+      deployment: deploymentName,
+      replicas,
+      availableReplicas,
+      readyReplicas,
+    };
+  } catch (error: any) {
+    if ((error as any).response && (error as any).response.statusCode === 404) {
+      return { status: 'not-found', deployment: deploymentName };
+    }
+    return { status: 'error', reason: (error as Error).message };
+  }
+};
+
+/**
+ * Get agent runtime logs
+ */
+const getDeploymentLogs = async ({ deploymentName, lines, filterTokens = [] }: any) => {
+  try {
+    const deploymentResponse = await k8sAppsApi.readNamespacedDeployment(deploymentName, NAMESPACE);
+    const matchLabels = deploymentResponse.body?.spec?.selector?.matchLabels || {};
+    const labelSelector = Object.entries(matchLabels)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(',');
+
+    const podsResponse = await k8sApi.listNamespacedPod(
+      NAMESPACE,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      labelSelector || undefined,
+    );
+    const pods = podsResponse.body.items || [];
+    if (!pods.length) {
+      return { logs: '', reason: 'No pods found for deployment' };
+    }
+    const pod = pods[0];
+    const logsResponse = await k8sApi.readNamespacedPodLog(
+      pod.metadata.name,
+      NAMESPACE,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      lines,
+    );
+    let logs = logsResponse.body || '';
+    const tokens = (filterTokens || []).map((t: any) => String(t || '').trim()).filter(Boolean);
+    if (tokens.length) {
+      logs = logs
+        .split('\n')
+        .filter((line: any) => {
+          if (!line) return false;
+          if (tokens.some((token: any) => line.includes(`[commonly] [${token}]`))) return true;
+          if (tokens.some((token: any) => line.includes(token))) return true;
+          return false;
+        })
+        .join('\n');
+    }
+    return { logs, pod: pod.metadata.name, deployment: deploymentName };
+  } catch (error: any) {
+    console.error(`[k8s-provisioner] Failed to get logs for ${deploymentName}:`, (error as Error).message);
+    return { logs: '', reason: (error as Error).message };
+  }
+};
+
+const getAgentRuntimeLogs = async (
+  runtimeType: any,
+  instanceId: any,
+  lines = 200,
+  options = {},
+) => {
+  if (runtimeType === 'moltbot') {
+    const deploymentName = resolveRuntimeDeploymentName(runtimeType, instanceId, (options as any).gateway);
+    const filterTokens = (options as any).filterTokens || [];
+    return getDeploymentLogs({ deploymentName, lines, filterTokens });
+  }
+  if (runtimeType === 'internal') {
+    return {
+      logs: 'No deployment logs: internal runtime is config-only on k8s.',
+      status: 'managed-externally',
+    };
+  }
+  const deploymentName = resolveRuntimeDeploymentName(runtimeType, instanceId, (options as any).gateway);
+
+  try {
+    // Find pods for this deployment
+    return getDeploymentLogs({ deploymentName, lines });
+  } catch (error: any) {
+    console.error(`[k8s-provisioner] Failed to get logs for ${deploymentName}:`, (error as Error).message);
+    return { logs: '', reason: (error as Error).message };
+  }
+};
+
+/**
+ * Returns session directory sizes in bytes for all agents on the gateway.
+ * @returns {Promise<Array<{accountId: string, bytes: number}>>}
+ */
+const getAgentSessionSizes = async (options = {}) => {
+  const podName = await resolveGatewayPodNameWithRetry((options as any).gateway);
+  const script = [
+    'set -eu',
+    'for dir in /state/agents/*/sessions; do',
+    '  [ -d "$dir" ] || continue',
+    '  id=$(echo "$dir" | sed "s|/state/agents/||;s|/sessions||")',
+    '  size=$(du -sk "$dir" 2>/dev/null | cut -f1)',
+    '  echo "$id $size"',
+    'done',
+  ].join('\n');
+
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+
+  return String(result.stdout || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [accountId, kb] = line.split(/\s+/);
+      return { accountId, bytes: Number(kb || 0) * 1024 };
+    })
+    .filter((entry) => entry.accountId && Number.isFinite(entry.bytes));
+};
+
+const clearAgentRuntimeSessions = async (runtimeType: any, instanceId: any, options = {}) => {
+  if (runtimeType !== 'moltbot') {
+    return {
+      cleared: false,
+      reason: 'Session clearing is only supported for OpenClaw runtimes.',
+      runtimeType,
+    };
+  }
+
+  const accountId = String((options as any).accountId || instanceId || '').trim();
+  if (!accountId) {
+    throw new Error('accountId is required to clear runtime sessions');
+  }
+
+  const podName = await resolveGatewayPodNameWithRetry((options as any).gateway);
+  const targets = [
+    `/state/agents/${accountId}/sessions`,
+    `/state/agents/${accountId}/sessions.json`,
+    `/state/agents/${accountId}/sessions.jsonl`,
+  ];
+
+  const script = [
+    'set -eu',
+    'removed=""',
+    ...targets.map((target) => [
+      `if [ -e "${target}" ]; then`,
+      `  rm -rf "${target}"`,
+      `  removed="${target}\\n$removed"`,
+      'fi',
+    ].join('\n')),
+    // Recreate sessions dir so any in-flight session writes don't ENOENT-crash the gateway
+    `mkdir -p "/state/agents/${accountId}/sessions"`,
+    'printf "%s" "$removed"',
+  ].join('\n');
+
+  const result = await execInPod({
+    podName,
+    containerName: 'clawdbot-gateway',
+    command: ['sh', '-lc', script],
+  });
+
+  const removed = String(result.stdout || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return {
+    cleared: true,
+    accountId,
+    removed,
+    pod: podName,
+    deployment: resolveRuntimeDeploymentName(runtimeType, instanceId, (options as any).gateway),
+  };
+};
+
+/**
+ * Refresh a single Codex OAuth account by its secret key suffix.
+ * suffix='' → account 1 (keys: openai-codex-*, profile: openai-codex:codex-cli)
+ * suffix='-2' → account 2 (keys: openai-codex-*-2, profile: openai-codex:account-2)
+ */
+const refreshCodexOAuthTokenForAccount = async (secretData: any, suffix: any) => {
+  const decode = (key: any) => (secretData[key] ? Buffer.from(secretData[key], 'base64').toString('utf8') : null);
+  const profileId = suffix === '-2' ? 'openai-codex:account-2' : 'openai-codex:codex-cli';
+  const refreshToken = decode(`openai-codex-refresh-token${suffix}`);
+  const clientId = decode('openai-codex-client-id') || process.env.OPENAI_CODEX_CLIENT_ID;
+
+  if (!refreshToken) return null; // No token configured for this account
+
+  const axios = require('axios');
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    ...(clientId && { client_id: clientId }),
+  });
+
+  let tokenResponse;
+  try {
+    tokenResponse = await axios.post('https://auth.openai.com/oauth/token', body.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+  } catch (err: any) {
+    const status = err.response?.status;
+    const detail = JSON.stringify(err.response?.data || err.message);
+    throw new Error(`[codex-refresh${suffix}] Token refresh failed (${status}): ${detail}`);
+  }
+
+  const { access_token, refresh_token: newRefreshToken, expires_in } = tokenResponse.data;
+  if (!access_token) {
+    throw new Error(`[codex-refresh${suffix}] No access_token in refresh response`);
+  }
+
+  const expiresAt = Date.now() + (expires_in || 3600) * 1000;
+  const encode = (s: any) => Buffer.from(s).toString('base64');
+
+  // Patch the k8s secret with new tokens for this account
+  const patch = {
+    data: {
+      [`openai-codex-access-token${suffix}`]: encode(access_token),
+      [`openai-codex-expires-at${suffix}`]: encode(String(expiresAt)),
+      ...(newRefreshToken && { [`openai-codex-refresh-token${suffix}`]: encode(newRefreshToken) }),
+    },
+  };
+  try {
+    await k8sApi.patchNamespacedSecret('api-keys', NAMESPACE, patch, undefined, undefined, undefined, undefined, undefined, {
+      headers: { 'Content-Type': 'application/merge-patch+json' },
+    });
+    console.log(`[codex-refresh${suffix}] Secret patched. Expires at ${new Date(expiresAt).toISOString()}`);
+  } catch (err: any) {
+    throw new Error(`[codex-refresh${suffix}] Failed to patch api-keys secret: ${err.message}`);
+  }
+
+  // Also update GCP Secret Manager so ESO doesn't overwrite k8s secret on next sync
+  try {
+    const { SecretManagerServiceClient } = require('@google-cloud/secret-manager');
+    const smClient = new SecretManagerServiceClient();
+    const project = process.env.GCP_PROJECT_ID || 'YOUR_GCP_PROJECT_ID';
+    const toUpdate = {
+      [`openai-codex-access-token${suffix}`]: access_token,
+      [`openai-codex-expires-at${suffix}`]: String(expiresAt),
+      ...(newRefreshToken && { [`openai-codex-refresh-token${suffix}`]: newRefreshToken }),
+    };
+    await Promise.all(
+      Object.entries(toUpdate).map(([key, value]) =>
+        smClient.addSecretVersion({
+          parent: `projects/${project}/secrets/commonly-dev-${key}`,
+          payload: { data: Buffer.from(value as string) },
+        }),
+      ),
+    );
+    console.log(`[codex-refresh${suffix}] GCP Secret Manager updated.`);
+  } catch (err: any) {
+    // Re-throw so the caller knows GCP SM failed — silent swallow causes ESO to revert
+    // the k8s secret to the old (consumed) refresh token on next 1h sync, permanently
+    // breaking the refresh chain.
+    console.error(`[codex-refresh${suffix}] GCP Secret Manager update FAILED: ${err.message}`);
+    throw err;
+  }
+
+  // Re-inject into all agent auth-profiles.json on the gateway PVC.
+  // NOTE: Do NOT patch CODEX_API_KEY — forces codex-api-key mode which lacks api.responses.write scope.
+  const credential = {
+    type: 'oauth',
+    provider: 'openai-codex',
+    access: access_token,
+    refresh: newRefreshToken || refreshToken,
+    expires: expiresAt,
+  };
+  const credJson = JSON.stringify(credential).replace(/'/g, "'\\''");
+
+  // Account 1 also updates ~/.codex/auth.json used by acpx chatgpt auth mode.
+  const isAccount1 = suffix === '';
+  const codexAuthJson = isAccount1
+    ? JSON.stringify({
+        auth_mode: 'chatgpt',
+        OPENAI_API_KEY: null,
+        tokens: {
+          access_token,
+          refresh_token: newRefreshToken || refreshToken,
+        },
+        last_refresh: new Date().toISOString(),
+      }).replace(/'/g, "'\\''")
+    : null;
+
+  // When LiteLLM proxies Codex, agents' auth-profiles.json contains a stable virtual key —
+  // do NOT overwrite it with the raw OAuth token. Only update .codex/auth.json (needed by
+  // the acpx coding tool which authenticates directly, not via LiteLLM).
+  const useLiteLLM = !!process.env.LITELLM_BASE_URL;
+
+  try {
+    const gwPods = await k8sApi.listNamespacedPod(NAMESPACE, undefined, undefined, undefined, undefined, 'app=clawdbot-gateway');
+    const gwPod = gwPods.body.items.find((p: any) => p.status?.phase === 'Running');
+    // When using LiteLLM, only account 1 needs to run (for .codex/auth.json); accounts 2/3 skip.
+    if (gwPod && (!useLiteLLM || isAccount1)) {
+      const script = [
+        `const fs = require('fs'), path = require('path');`,
+        `const base = '/state/agents';`,
+        `let count = 0;`,
+        `try {`,
+        `  const agents = fs.readdirSync(base);`,
+        `  for (const a of agents) {`,
+        // Skip auth-profiles.json update when LiteLLM is enabled (virtual keys are stable)
+        ...(!useLiteLLM
+          ? [
+              `    try {`,
+              `      const p = path.join(base, a, 'agent', 'auth-profiles.json');`,
+              `      const store = JSON.parse(fs.readFileSync(p, 'utf8'));`,
+              `      store.profiles['${profileId}'] = ${credJson};`,
+              `      fs.writeFileSync(p, JSON.stringify(store, null, 2));`,
+              `      count++;`,
+              `    } catch (_: any) {}`,
+            ]
+          : []),
+        ...(isAccount1
+          ? [
+              `    try {`,
+              `      const d = path.join(base, a, '.codex');`,
+              `      fs.mkdirSync(d, { recursive: true });`,
+              `      fs.writeFileSync(path.join(d, 'auth.json'), '${codexAuthJson}');`,
+              `    } catch (_: any) {}`,
+            ]
+          : []),
+        `  }`,
+        `} catch (_: any) {}`,
+        ...(isAccount1
+          ? [
+              `try { fs.mkdirSync('/state/.codex', { recursive: true }); fs.writeFileSync('/state/.codex/auth.json', '${codexAuthJson}'); } catch (_: any) {}`,
+              `try { fs.mkdirSync('/home/node/.codex', { recursive: true }); fs.writeFileSync('/home/node/.codex/auth.json', '${codexAuthJson}'); } catch (_: any) {}`,
+            ]
+          : []),
+        `process.stdout.write('updated:' + count);`,
+      ].join(' ');
+      await new Promise<void>((resolve, reject) => {
+        k8sExec.exec(
+          NAMESPACE,
+          gwPod.metadata.name,
+          'clawdbot-gateway',
+          ['node', '-e', script],
+          null,
+          process.stderr,
+          process.stdin,
+          false,
+          (status: any) => {
+            console.log(`[codex-refresh${suffix}] auth files re-inject: ${status.status}`);
+            resolve();
+          },
+        ).catch(reject);
+      });
+    }
+  } catch (err: any) {
+    console.warn(`[codex-refresh${suffix}] auth files re-inject skipped: ${err.message}`);
+  }
+
+  // When LiteLLM proxies Codex, restart it so it picks up the freshly patched api-keys secret.
+  // All accounts need this since all 3 accounts now use api_key from env vars directly (no auth.json).
+  if (useLiteLLM) {
+    try {
+      await k8sAppsApi.patchNamespacedDeployment(
+        'litellm',
+        NAMESPACE,
+        { spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() } } } } },
+        undefined, undefined, undefined, undefined, undefined,
+        { headers: { 'Content-Type': 'application/strategic-merge-patch+json' } },
+      );
+      console.log('[codex-refresh] Triggered LiteLLM rollout restart to pick up refreshed token.');
+    } catch (err: any) {
+      console.warn(`[codex-refresh] LiteLLM restart skipped: ${err.message}`);
+    }
+  }
+
+  return { expiresAt };
+};
+
+const refreshCodexOAuthToken = async () => {
+  let secretData;
+  try {
+    const secretResponse = await k8sApi.readNamespacedSecret('api-keys', NAMESPACE);
+    secretData = secretResponse.body.data || {};
+  } catch (err: any) {
+    throw new Error(`[codex-refresh] Failed to read api-keys secret: ${err.message}`);
+  }
+  return refreshCodexOAuthTokenForAccount(secretData, '');
+};
+
+/**
+ * Refresh any Codex OAuth account whose token expires within the threshold.
+ * Checks account-1 and account-2 independently. Safe to call from a daily cron.
+ */
+const refreshCodexOAuthTokenIfNeeded = async ({ thresholdDays = 3 } = {}) => {
+  let secretData;
+  try {
+    const secretResponse = await k8sApi.readNamespacedSecret('api-keys', NAMESPACE);
+    secretData = secretResponse.body.data || {};
+  } catch (_err: any) {
+    return null; // Not in k8s mode
+  }
+
+  const decode = (key: any) => (secretData[key] ? Buffer.from(secretData[key], 'base64').toString('utf8') : null);
+  const thresholdMs = thresholdDays * 24 * 60 * 60 * 1000;
+  const results = [];
+
+  for (const suffix of ['', '-2', '-3']) {
+    const expiresAtRaw = decode(`openai-codex-expires-at${suffix}`);
+    if (!expiresAtRaw) continue; // No token configured for this account
+    const expiresAt = Number(expiresAtRaw);
+    if (expiresAt - Date.now() > thresholdMs) continue; // Still fresh
+    try {
+      const result = await refreshCodexOAuthTokenForAccount(secretData, suffix);
+      if (result) results.push({ suffix: suffix || '1', ...result });
+    } catch (err: any) {
+      console.error(`[codex-refresh${suffix}] ${err.message}`);
+    }
+  }
+
+  return results.length > 0 ? results : null;
+};
+
+module.exports = {
+  getAgentSessionSizes,
+  provisionAgentRuntime,
+  startAgentRuntime,
+  stopAgentRuntime,
+  restartAgentRuntime,
+  getAgentRuntimeStatus,
+  getAgentRuntimeLogs,
+  clearAgentRuntimeSessions,
+  resolveOpenClawAccountId,
+  writeOpenClawHeartbeatFile,
+  readOpenClawHeartbeatFile,
+  readOpenClawIdentityFile,
+  writeWorkspaceIdentityFile,
+  ensureWorkspaceIdentityFile,
+  ensureWorkspaceSoulFile,
+  ensureHeartbeatTemplate,
+  syncOpenClawSkills,
+  getGatewaySkillEntries,
+  syncGatewaySkillEnv,
+  listOpenClawBundledSkills,
+  listOpenClawPlugins,
+  installOpenClawPlugin,
+  refreshCodexOAuthToken,
+  refreshCodexOAuthTokenIfNeeded,
+};

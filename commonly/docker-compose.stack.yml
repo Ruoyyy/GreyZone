@@ -1,0 +1,229 @@
+# Commonly — self-contained local stack.
+#
+#   cp docker/stack/.env.example .env     # fill MODEL_BASE_URL / MODEL_API_KEY / MODEL_NAME
+#   docker compose up -d --build          # .env sets COMPOSE_FILE to this file
+#
+# First start on empty volumes seeds admin + ruoyu and the pod "Pod" (see
+# backend/scripts/seed-local-stack.ts). Internal secrets are generated into
+# Docker volumes; nothing secret is written to the host. Start over with
+# `docker compose down -v`.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Read generated secrets into the environment, then start the real process.
+x-core-secrets-env: &core-secrets-env |
+  export JWT_SECRET="$$(cat /run/core/jwt_secret)"
+  export PG_PASSWORD="$$(cat /run/core/pg_password)"
+  export LITELLM_MASTER_KEY="$$(cat /run/core/litellm_master_key)"
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  PORT: "5000"
+  MONGO_URI: mongodb://mongo:27017/commonly
+  FRONTEND_URL: http://localhost:3000
+  REGISTRATION_INVITE_ONLY: "false"
+  PG_HOST: postgres
+  PG_PORT: "5432"
+  PG_USER: commonly
+  PG_DATABASE: commonly
+  PG_SSL_ENABLED: "false"
+  LITELLM_BASE_URL: http://litellm:4000
+  LITELLM_CHAT_MODEL: deepseek-v4-flash
+  NATIVE_RUNTIME_GUARDRAILS: injection-guard
+  LLMSERVICE_GUARDRAILS: injection-guard
+
+services:
+  secrets:
+    logging: *default-logging
+    image: alpine:3.20
+    command: ["sh", "/stack/init-secrets.sh"]
+    volumes:
+      - ./docker/stack/init-secrets.sh:/stack/init-secrets.sh:ro
+      - core-secrets:/run/core
+      - kai-secrets:/run/kai
+    restart: "no"
+
+  mongo:
+    logging: *default-logging
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    networks: [commonly]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 })"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    logging: *default-logging
+    image: postgres:17
+    restart: unless-stopped
+    depends_on:
+      secrets: { condition: service_completed_successfully }
+    environment:
+      POSTGRES_USER: commonly
+      POSTGRES_DB: commonly
+      POSTGRES_PASSWORD_FILE: /run/core/pg_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - core-secrets:/run/core:ro
+    networks: [commonly]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U commonly -d commonly"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  litellm:
+    logging: *default-logging
+    image: ghcr.io/berriai/litellm:v1.88.0-rc.1
+    restart: unless-stopped
+    depends_on:
+      secrets: { condition: service_completed_successfully }
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        export LITELLM_MASTER_KEY="$$(cat /run/core/litellm_master_key)"
+        exec litellm --config /app/config.yaml --port 4000
+    environment:
+      MODEL_BASE_URL: ${MODEL_BASE_URL:?Set MODEL_BASE_URL in .env (an OpenAI-compatible base URL)}
+      MODEL_API_KEY: ${MODEL_API_KEY:?Set MODEL_API_KEY in .env}
+      LITELLM_UPSTREAM_MODEL: openai/${MODEL_NAME:?Set MODEL_NAME in .env}
+    volumes:
+      - ./docker/stack/litellm.yaml:/app/config.yaml:ro
+      - core-secrets:/run/core:ro
+    networks: [commonly, agent-net]
+
+  backend:
+    logging: *default-logging
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: commonly-stack/backend:local
+    restart: unless-stopped
+    depends_on:
+      mongo: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      litellm: { condition: service_started }
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        eval "$$CORE_SECRETS"
+        exec /bin/bash /app/start.sh
+    environment:
+      <<: *backend-env
+      CORE_SECRETS: *core-secrets-env
+    volumes:
+      - core-secrets:/run/core:ro
+    ports:
+      - "127.0.0.1:5000:5000"
+    networks: [commonly, agent-net]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  seed:
+    logging: *default-logging
+    image: commonly-stack/backend:local
+    pull_policy: never
+    depends_on:
+      backend: { condition: service_healthy }
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        eval "$$CORE_SECRETS"
+        exec node dist/scripts/seed-local-stack.js
+    environment:
+      <<: *backend-env
+      CORE_SECRETS: *core-secrets-env
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin}
+      SEED_RUOYU_PASSWORD: ${SEED_RUOYU_PASSWORD:-ruoyu}
+    volumes:
+      - core-secrets:/run/core:ro
+      - kai-secrets:/run/kai
+      - mcp-secrets:/run/mcp
+    networks: [commonly]
+    restart: "no"
+
+  # Claude Code seat "kai". Only on agent-net (internal: no route out) — it can
+  # reach backend + litellm and nothing else. It sees only its own token and the
+  # LiteLLM key, never the core secrets.
+  agent-kai:
+    logging: *default-logging
+    build: ./docker/stack/agent
+    image: commonly-stack/agent-claude:local
+    restart: unless-stopped
+    depends_on:
+      seed: { condition: service_completed_successfully }
+      litellm: { condition: service_started }
+    environment:
+      AGENT_NAME: kai
+      COMMONLY_API_URL: http://backend:5000
+      ANTHROPIC_BASE_URL: http://litellm:4000
+      ANTHROPIC_MODEL: agent-model
+      ANTHROPIC_DEFAULT_OPUS_MODEL: agent-model
+      ANTHROPIC_DEFAULT_SONNET_MODEL: agent-model
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: agent-model
+      CLAUDE_CODE_SUBAGENT_MODEL: agent-model
+    volumes:
+      - kai-secrets:/run/kai:ro
+      - kai-workspace:/workspace
+      - kai-home:/home/node
+    networks: [agent-net]
+
+  # The user MCP — your own agent acts as ruoyu through it. Connect with
+  #   docker exec -i commonly-user-mcp node src/user-index.js
+  # (stdio; no port). It sees only ruoyu's token, which the seed issued.
+  user-mcp:
+    logging: *default-logging
+    build:
+      context: ./commonly-mcp
+      dockerfile: ../docker/stack/user-mcp/Dockerfile
+    image: commonly-stack/user-mcp:local
+    container_name: commonly-user-mcp
+    init: true
+    restart: unless-stopped
+    depends_on:
+      seed: { condition: service_completed_successfully }
+    environment:
+      COMMONLY_API_URL: http://backend:5000
+      COMMONLY_USER_TOKEN_FILE: /run/mcp/user_token
+    volumes:
+      - mcp-secrets:/run/mcp:ro
+    networks: [commonly]
+
+  frontend:
+    logging: *default-logging
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_URL=http://localhost:5000
+    image: commonly-stack/frontend:local
+    restart: unless-stopped
+    depends_on: [backend]
+    ports:
+      - "127.0.0.1:3000:80"
+    networks: [commonly]
+
+networks:
+  commonly:
+  agent-net:
+    internal: true
+
+volumes:
+  mongo-data:
+  postgres-data:
+  core-secrets:
+  kai-secrets:
+  mcp-secrets:
+  kai-workspace:
+  kai-home:

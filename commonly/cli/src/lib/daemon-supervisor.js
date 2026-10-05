@@ -1,0 +1,471 @@
+import { isDeepStrictEqual } from 'node:util';
+import { homedir } from 'node:os';
+import { isAbsolute, resolve as pathResolve } from 'node:path';
+import { auditDeclaredMcp, installedStdioEntries } from './declared-mcp-guard.js';
+
+import { seatBaseline } from './default-environment.js';
+import { withholdGrantBroker } from './grant-broker-guard.js';
+
+/**
+ * ADR-026 Phase 2, slice 2: the resident supervision loop behind
+ * `commonly daemon run`.
+ *
+ * The server's work list (GET /api/agent-binding/assigned) is the source of
+ * truth (D2): a row `requested` gets adopted (the D3 CAS — the server refuses
+ * the loser of a race cleanly), a row `bound` gets provisioned (token file)
+ * and supervised (a `commonly agent run <name>` child), and a supervised
+ * agent that leaves the list gets stopped. Per-agent state rides every
+ * machine heartbeat (D5).
+ *
+ * D6 discipline: a replacement child is only ever scheduled from the previous
+ * child's 'exit' event — there is no code path that spawns a second runner
+ * for an agent whose child has not exited.
+ *
+ * All side effects (client, spawn, token file I/O, adapter detection, timers)
+ * are injected so the loop's decisions are testable without processes.
+ */
+
+export const DEFAULT_POLL_MS = 30_000;
+export const DEFAULT_HEARTBEAT_MS = 30_000;
+export const BACKOFF_BASE_MS = 5_000;
+export const BACKOFF_MAX_MS = 60_000;
+
+const workspacePathFor = (environment) => {
+  const declared = environment?.workspace?.path;
+  if (typeof declared !== 'string' || !declared.trim()) return null;
+  const expanded = declared === '~'
+    ? homedir()
+    : (declared.startsWith('~/') ? `${homedir()}/${declared.slice(2)}` : declared);
+  return isAbsolute(expanded) ? expanded : pathResolve(expanded);
+};
+
+export const backoffMs = (restarts) => Math.min(
+  BACKOFF_MAX_MS,
+  BACKOFF_BASE_MS * 2 ** Math.max(0, Math.min(restarts, 10)),
+);
+
+const identityKey = (agentName, instanceId) => `${agentName} ${instanceId || 'default'}`;
+
+export const createDaemonSupervisor = ({
+  record,
+  client,
+  spawnChild, // (agentName) => child emitting 'exit'; must expose .kill()
+  loadToken, // (agentName) => token record | null
+  saveToken, // (agentName, record) => void
+  resolveAdapter, // async (runtime) => adapter name for THIS machine
+  persistState = () => {}, // (agentStates) => void; must not persist secrets
+  log = () => {},
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+}) => {
+  // key → { agentName, instanceId, child, state, restarts, backoffTimer, desired }
+  const seats = new Map();
+  let stopped = false;
+
+  const persist = () => {
+    try {
+      persistState(agentStates());
+    } catch (error) {
+      // A diagnostic state file must never take the daemon down. The log is
+      // still useful, and the next state transition retries the write.
+      log(`could not persist local daemon state: ${error.message}`);
+    }
+  };
+
+  const agentStates = () => Array.from(seats.values()).map((s) => ({
+    agentName: s.agentName,
+    instanceId: s.instanceId,
+    state: s.state,
+    restarts: s.restarts,
+    adapter: s.adapter || null,
+    model: s.model || null,
+    effort: s.effort || null,
+    pid: Number.isInteger(s.pid) ? s.pid : null,
+    lastTurnAt: s.lastTurnAt || null,
+    lastError: s.lastError || null,
+  }));
+
+  const startChild = (seat) => {
+    if (stopped || !seat.desired || seat.child) return;
+    seat.child = spawnChild(seat.agentName);
+    seat.state = 'running';
+    seat.pid = Number.isInteger(seat.child?.pid) ? seat.child.pid : null;
+    seat.lastTurnAt = new Date().toISOString();
+    seat.lastError = null;
+    persist();
+    log(`[${seat.agentName}] supervising (restarts so far: ${seat.restarts})`);
+    seat.child.on('exit', (code) => {
+      seat.child = null;
+      seat.pid = null;
+      if (stopped || !seat.desired) {
+        seat.state = 'stopped';
+        persist();
+        return;
+      }
+      seat.state = code === 0 ? 'stopped' : 'crashed';
+      seat.lastError = code === 0 ? null : `child exited with code ${code}`;
+      seat.restarts += 1;
+      const delay = backoffMs(seat.restarts - 1);
+      log(`[${seat.agentName}] exited (code ${code}) — respawn in ${Math.round(delay / 1000)}s`);
+      seat.backoffTimer = setTimeoutFn(() => {
+        seat.backoffTimer = null;
+        startChild(seat);
+      }, delay);
+      persist();
+    });
+  };
+
+  const stopSeat = (seat) => {
+    seat.desired = false;
+    if (seat.backoffTimer) {
+      clearTimeoutFn(seat.backoffTimer);
+      seat.backoffTimer = null;
+    }
+    if (seat.child) {
+      log(`[${seat.agentName}] no longer assigned here — stopping`);
+      seat.child.kill('SIGTERM');
+    } else {
+      seat.state = 'stopped';
+      seat.pid = null;
+      persist();
+    }
+  };
+
+  // Preserve the complete ADR-008 environment when the daemon receives it.
+  // Older installs only expose runtime.model/effort; those fields are a
+  // compatibility overlay and must merge into an existing local environment
+  // rather than erasing its workspace, skills, or MCP declarations.
+  const environmentFor = (row) => {
+    const declared = row.environment && typeof row.environment === 'object'
+      && !Array.isArray(row.environment) ? { ...row.environment } : null;
+    const runtime = row.runtime && typeof row.runtime === 'object' ? row.runtime : {};
+    if (declared) {
+      if (runtime.model && declared.model === undefined) declared.model = String(runtime.model);
+      if (runtime.effort && declared.effort === undefined) declared.effort = String(runtime.effort);
+      return { value: declared, declared: true };
+    }
+    const fallback = {};
+    if (runtime.model) fallback.model = String(runtime.model);
+    if (runtime.effort) fallback.effort = String(runtime.effort);
+    return Object.keys(fallback).length ? { value: fallback, declared: false } : null;
+  };
+
+  // A declared environment runs on THIS machine as the operator. Refuse any
+  // declared stdio command that is not the shipped commonly MCP server or one
+  // the operator already installed here, and any http server that would be
+  // handed the seat token off the instance's origin. Refusal keeps the current
+  // seat (or skips the mint) and says which server was kept off the machine;
+  // it never adopts a partial environment.
+  const admitDeclared = (row, environment, existing) => {
+    const audit = auditDeclaredMcp(environment, {
+      instanceUrl: existing?.instanceUrl || record.instanceUrl,
+      allowedStdioEntries: installedStdioEntries(existing),
+    });
+    if (audit.ok) return true;
+    log(`[${row.agentName}] refusing the declared environment — it would not stay on this machine's terms:`);
+    for (const refusal of audit.refusals) log(`[${row.agentName}]   ${refusal}`);
+    return false;
+  };
+
+  // The mint refuses to clobber an existing token (409 token_exists); the
+  // binding to THIS machine is the owner's explicit takeover choice (D3), so
+  // that refusal is answered with rotate:true — loudly.
+  // Returns 'ready' | 'changed' (record updated — the seat must restart to
+  // load it) | false.
+  const ensureToken = async (row) => {
+    // One derive for this seat, so the broker refusal cannot be applied at three
+    // of four sites: `seatBaseline` is where an environment becomes the one the
+    // seat RUNS under, and `withholdGrantBroker` asks the same question the
+    // server asks (`can this seat confine a granter's authority?`) for the cases
+    // the server cannot see — a row naming no adapter, a backend older than the
+    // refusal, a record written by hand. Entry-level per wren 69829: the broker
+    // entry is withheld and the seat still starts, because it was never promised
+    // confinement. `record.instanceUrl` is what makes the injected url
+    // identifiable at all — the record holds the UNRESOLVED
+    // `${COMMONLY_API_URL}/api/mcp/grants/<id>` placeholder.
+    const derive = (environment, adapter, options) => withholdGrantBroker(
+      seatBaseline(environment, adapter, options),
+      adapter,
+      {
+        instanceUrl: record.instanceUrl,
+        onRefuse: (refusal, names) => log(
+          `[${row.agentName}] ${refusal.code} (${refusal.reason}) — withholding ${names.join(', ')}: ${refusal.detail}`,
+        ),
+      },
+    );
+
+    const existing = loadToken(row.agentName);
+    if (existing) {
+      // A model changed in the UI reaches the seat here: update the record,
+      // and let the caller restart the child (`agent run` reads its record
+      // once at boot). A row with NO declared model leaves the record alone —
+      // never strip an operator's hand-set environment.
+      const wanted = environmentFor(row);
+      if (wanted?.declared && !admitDeclared(row, wanted.value, existing)) return false;
+      const declaredAdapter = row.runtime && typeof row.runtime === 'object'
+        && typeof row.runtime.adapter === 'string'
+        ? row.runtime.adapter.trim().toLowerCase()
+        : null;
+      let adapterChanged = false;
+      let nextAdapter = existing.adapter;
+      if (declaredAdapter) {
+        const detectedAdapter = await resolveAdapter(row.runtime || null);
+        // resolveAdapterForRuntime historically probes fallbacks when a
+        // declared adapter is absent. A configuration edit must never accept
+        // that fallback: it would report claude while running codex (or vice
+        // versa). Keep the existing child/token untouched until the exact
+        // requested adapter is detected locally.
+        if (detectedAdapter !== declaredAdapter) {
+          log(`[${row.agentName}] requested adapter '${declaredAdapter}' is not available on this machine — keeping the current seat`);
+          return false;
+        }
+        nextAdapter = declaredAdapter;
+        adapterChanged = existing.adapter !== nextAdapter;
+      }
+      if (wanted) {
+        const merged = wanted.declared
+          ? wanted.value
+          : { ...(existing.environment || {}), ...wanted.value };
+        // A server-declared environment replaces the local one, so a seat whose
+        // declaration carries no mcp[] would come back tool-less. Re-apply the
+        // shipped default here and below, or the seat silently loses every
+        // commonly_* tool the next time the UI edits its model (TASK-048).
+        //
+        // A DECLARED environment also gets the sandbox default when it names
+        // none: the declaration is not the operator's, and `sandbox.mode`
+        // defaults to 'none' in the adapters, so an omitted block is an
+        // unconfined seat (TASK-052). A local record with no environment at
+        // all is in the same position — nobody has authored anything.
+        const nextEnvironment = derive(merged, nextAdapter, {
+          sandbox: wanted.declared || !existing.environment,
+        });
+        const workspacePath = workspacePathFor(nextEnvironment);
+        const nextRecord = {
+          ...existing,
+          ...(adapterChanged ? { adapter: nextAdapter } : {}),
+          environment: nextEnvironment,
+          ...(workspacePath ? { workspacePath } : {}),
+        };
+        if (adapterChanged
+          || !isDeepStrictEqual(existing.environment || null, nextEnvironment)
+          || (workspacePath && existing.workspacePath !== workspacePath)) {
+          saveToken(row.agentName, nextRecord);
+          log('runtime config changed — restarting the seat to load it');
+          return 'changed';
+        }
+      }
+      if (adapterChanged) {
+        // An adapter that consumes mcp[] must not be started on a record that
+        // declares none, even when only the adapter itself changed.
+        const nextEnvironment = derive(existing.environment, nextAdapter, {
+          sandbox: !existing.environment,
+        });
+        saveToken(row.agentName, {
+          ...existing,
+          adapter: nextAdapter,
+          ...(nextEnvironment ? { environment: nextEnvironment } : {}),
+        });
+        log('runtime adapter changed — restarting the seat to load it');
+        return 'changed';
+      }
+      if (!wanted) {
+        // A record written by a CLI older than the shipped default carries no
+        // mcp[] — the c4-smoke record was exactly this, and the operator had to
+        // hand-add the entry. Behind a row that declares nothing there is no
+        // other write path: the record is never touched again, so the seat
+        // stays tool-less for as long as it runs. Heal it here, and only when
+        // the environment actually changed — otherwise every tick rewrites the
+        // file and restarts the seat forever.
+        const nextEnvironment = derive(existing.environment, existing.adapter, {
+          sandbox: !existing.environment,
+        });
+        if (!isDeepStrictEqual(existing.environment || null, nextEnvironment || null)) {
+          saveToken(row.agentName, { ...existing, environment: nextEnvironment });
+          log('record predates the commonly MCP baseline — restarting the seat to load it');
+          return 'changed';
+        }
+      }
+      return 'ready';
+    }
+    const requestedAdapter = row.runtime && typeof row.runtime === 'object'
+      && typeof row.runtime.adapter === 'string'
+      ? row.runtime.adapter.trim().toLowerCase()
+      : null;
+    let adapter = null;
+    if (requestedAdapter) {
+      adapter = await resolveAdapter(row.runtime || null);
+      if (adapter !== requestedAdapter) {
+        log(`[${row.agentName}] requested adapter '${requestedAdapter}' is not available on this machine — skipping token mint`);
+        return false;
+      }
+    }
+    const declaredAtMint = environmentFor(row);
+    if (declaredAtMint?.declared && !admitDeclared(row, declaredAtMint.value, null)) return false;
+    const body = { agentName: row.agentName, instanceId: row.instanceId };
+    let minted;
+    try {
+      minted = await client.post('/api/agent-binding/runtime-token', body);
+    } catch (error) {
+      if (error?.status === 409 && error?.body?.code === 'token_exists') {
+        log(`[${row.agentName}] a runtime token exists elsewhere — rotating it to this machine (the old token stops working)`);
+        try {
+          minted = await client.post('/api/agent-binding/runtime-token', { ...body, rotate: true });
+        } catch (rotateError) {
+          log(`[${row.agentName}] token rotation failed: ${rotateError.message}`);
+          return false;
+        }
+      } else {
+        log(`[${row.agentName}] token mint failed: ${error.message}`);
+        return false;
+      }
+    }
+    if (!minted?.token) {
+      log(`[${row.agentName}] mint returned no token — skipping`);
+      return false;
+    }
+    if (!adapter) adapter = await resolveAdapter(row.runtime || null);
+    if (!adapter) {
+      log(`[${row.agentName}] no usable CLI adapter on this machine — install claude or codex, or attach manually`);
+      return false;
+    }
+    const environment = environmentFor(row);
+    // A seat installed server-side (no local `agent attach`) arrives with no
+    // mcp[] at all: without the default it spawns a CLI that has no commonly_*
+    // tools and cannot post. See lib/default-environment.js. Nothing here is
+    // operator-authored, so this seat also gets the sandbox default — the
+    // self-serve install's seat used to be born unconfined (TASK-052).
+    const recordEnvironment = derive(
+      environment ? environment.value : null,
+      adapter,
+      { sandbox: true },
+    );
+    saveToken(row.agentName, {
+      agentName: row.agentName,
+      instanceId: row.instanceId,
+      runtimeToken: minted.token,
+      instanceUrl: record.instanceUrl,
+      podId: row.podIds?.[0] || null,
+      adapter,
+      ...(recordEnvironment ? { environment: recordEnvironment } : {}),
+      ...(recordEnvironment ? (() => {
+        const workspacePath = workspacePathFor(recordEnvironment);
+        return workspacePath ? { workspacePath } : {};
+      })() : {}),
+    });
+    log(`[${row.agentName}] provisioned runtime token (adapter: ${adapter}${environment?.value?.model ? `, model: ${environment.value.model}` : ''})`);
+    return 'ready';
+  };
+
+  const tick = async () => {
+    if (stopped) return;
+    let assigned;
+    try {
+      assigned = await client.get('/api/agent-binding/assigned');
+    } catch (error) {
+      log(`work-list fetch failed: ${error.message}`);
+      return;
+    }
+    const rows = Array.isArray(assigned?.agents) ? assigned.agents : [];
+
+    const bound = [];
+    for (const row of rows) {
+      if (row.state === 'requested') {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await client.post('/api/agent-binding/adopt', {
+            agentName: row.agentName, instanceId: row.instanceId,
+          });
+          log(`[${row.agentName}] adopted onto this machine`);
+          bound.push(row);
+        } catch (error) {
+          // A clean CAS refusal (409) means another machine won — drop it.
+          log(`[${row.agentName}] adopt refused: ${error.message}`);
+        }
+      } else {
+        bound.push(row);
+      }
+    }
+
+    const desiredKeys = new Set();
+    for (const row of bound) {
+      const key = identityKey(row.agentName, row.instanceId);
+      desiredKeys.add(key);
+      let seat = seats.get(key);
+      if (!seat) {
+        seat = {
+          agentName: row.agentName,
+          instanceId: row.instanceId || 'default',
+          child: null,
+          state: 'stopped',
+          restarts: 0,
+          backoffTimer: null,
+          desired: true,
+          adapter: null,
+          model: null,
+          effort: null,
+          pid: null,
+          lastTurnAt: null,
+          lastError: null,
+        };
+        seats.set(key, seat);
+      }
+      seat.desired = true;
+      // eslint-disable-next-line no-await-in-loop
+      const ready = await ensureToken(row);
+      // Report what the seat actually RUNS, which is the record: `agent run`
+      // reads it once at boot, and ensureToken above may have just rewritten it
+      // (a mint, or a config change). Reading it AFTER ensureToken is the point
+      // — the same tick's write is the record the seat starts from, so the very
+      // first heartbeat is already about the running seat.
+      //
+      // The row's runtime is a COMPATIBILITY OVERLAY for a seat with no record
+      // at all, never an override of a declared environment (see the overlay
+      // comment above ensureToken): leading with it here reported a model the
+      // seat was not running, because the spawn path gives the declared
+      // environment precedence over runtime.model/effort (environmentFor, and
+      // the TASK-065 measurement). ensureToken also REFUSES a change it cannot
+      // apply — a requested adapter this machine does not have — so the record
+      // is the honest answer there too: it names the adapter that kept running.
+      const current = loadToken(row.agentName);
+      seat.adapter = current ? (current.adapter || null) : (row.runtime?.adapter || null);
+      seat.model = current ? (current.environment?.model || null) : (row.runtime?.model || null);
+      seat.effort = current ? (current.environment?.effort || null) : (row.runtime?.effort || null);
+      if (ready === 'changed' && seat.child) {
+        // desired stays true, so the exit handler respawns with the updated
+        // record — the restart path IS the D6 path, no second spawner.
+        seat.child.kill('SIGTERM');
+      } else if (ready && !seat.child && !seat.backoffTimer) {
+        startChild(seat);
+      }
+      persist();
+    }
+
+    for (const [key, seat] of seats) {
+      if (!desiredKeys.has(key) && seat.desired) stopSeat(seat);
+    }
+    persist();
+  };
+
+  const heartbeat = async () => {
+    if (stopped) return;
+    try {
+      await client.post(`/api/machines/${record.machineDbId}/heartbeat`, { agents: agentStates() });
+    } catch (error) {
+      log(`heartbeat failed: ${error.message}`);
+    }
+  };
+
+  const stop = () => {
+    stopped = true;
+    for (const seat of seats.values()) {
+      stopSeat(seat);
+      seat.state = 'stopped';
+      seat.pid = null;
+    }
+    persist();
+  };
+
+  return {
+    tick, heartbeat, stop, agentStates,
+  };
+};

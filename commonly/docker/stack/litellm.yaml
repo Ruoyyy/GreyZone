@@ -1,0 +1,39 @@
+# Every model name the stack requests goes to the ONE model set in .env
+# (MODEL_BASE_URL / MODEL_API_KEY / MODEL_NAME, any OpenAI-compatible API).
+model_list:
+  # task-clerk / pod-summarizer / pod-welcomer
+  - model_name: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+    litellm_params: &upstream
+      model: os.environ/LITELLM_UPSTREAM_MODEL
+      api_base: os.environ/MODEL_BASE_URL
+      api_key: os.environ/MODEL_API_KEY
+  # Scout / recorder, and LITELLM_CHAT_MODEL for platform features
+  - model_name: "deepseek-v4-flash"
+    litellm_params: *upstream
+  # Kai (Claude Code speaks the Anthropic Messages API; LiteLLM translates)
+  - model_name: "agent-model"
+    litellm_params: *upstream
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 120
+  # Kai's Anthropic-format requests would otherwise be bridged to the OpenAI
+  # Responses API (/responses), which most OpenAI-compatible providers do not
+  # serve (404). Chat Completions is the endpoint every one of them has.
+  use_chat_completions_url_for_anthropic_messages: true
+
+guardrails:
+  # Keyless prompt-injection guard used by the native runtime.
+  - guardrail_name: "injection-guard"
+    litellm_params:
+      guardrail: litellm_content_filter
+      mode: "pre_call"
+      default_on: false
+      severity_threshold: "high"
+      categories:
+        - { category: "prompt_injection_jailbreak", action: "BLOCK" }
+        - { category: "prompt_injection_system_prompt", action: "BLOCK" }
+        - { category: "prompt_injection_data_exfiltration", action: "BLOCK" }
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

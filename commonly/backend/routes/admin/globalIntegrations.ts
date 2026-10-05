@@ -1,0 +1,838 @@
+const express = require('express');
+const rateLimit = require('express-rate-limit');
+const crypto: any = require('crypto');
+const axios = require('axios');
+const auth = require('../../middleware/auth');
+const adminAuth = require('../../middleware/adminAuth');
+const { cloudflareIpRateLimitKeyGenerator } = require('../../middleware/ipRateLimit');
+const { platformIpRateLimit } = require('../../middleware/platformRateLimit');
+const Integration = require('../../models/Integration');
+const OAuthState = require('../../models/OAuthState');
+const Pod = require('../../models/Pod');
+const registry = require('../../integrations');
+const SocialPolicyService = require('../../services/socialPolicyService');
+const GlobalModelConfigService = require('../../services/globalModelConfigService');
+// eslint-disable-next-line global-require
+const { isListedPodMember } = require('../../utils/isPodMember');
+const externalFeedService = require('../../services/externalFeedService');
+
+let PGPod = null;
+if (process.env.PG_HOST) {
+  // eslint-disable-next-line global-require
+  PGPod = require('../../models/pg/Pod');
+}
+
+const router = express.Router();
+const getUserId = (req: any) => req.userId || req.user?.id || req.user?.userId || null;
+const X_OAUTH_AUTHORIZE_URL = process.env.X_OAUTH_AUTHORIZE_URL || 'https://x.com/i/oauth2/authorize';
+const X_OAUTH_TOKEN_URL = process.env.X_OAUTH_TOKEN_URL || 'https://api.x.com/2/oauth2/token';
+const X_API_BASE = process.env.X_API_BASE_URL || 'https://api.x.com/2';
+const clamp = (value: any, min: any, max: any, fallback: any) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.trunc(parsed), min), max);
+};
+
+const buildFrontendRedirect = (status: any, detail: any, redirectPath = '/admin/integrations/global') => {
+  const frontend = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const safePath = String(redirectPath || '/admin/integrations/global').startsWith('/')
+    ? String(redirectPath || '/admin/integrations/global')
+    : '/admin/integrations/global';
+  const base = `${frontend}${safePath}`;
+  const params = new URLSearchParams({ xOAuth: status });
+  if (detail) params.set('detail', String(detail));
+  return `${base}?${params.toString()}`;
+};
+
+const buildXRedirectUri = () => (
+  process.env.X_OAUTH_REDIRECT_URI
+  || `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/admin/integrations/global/x/oauth/callback`
+);
+
+const getXClientConfig = () => ({
+  clientId: process.env.X_OAUTH_CLIENT_ID || process.env.X_CLIENT_ID || '',
+  clientSecret: process.env.X_OAUTH_CLIENT_SECRET || process.env.X_CLIENT_SECRET || '',
+});
+
+const encodeBase64Url = (buffer: any) => buffer
+  .toString('base64')
+  .replace(/\+/g, '-')
+  .replace(/\//g, '_')
+  .replace(/=+$/g, '');
+
+const createPkcePair = () => {
+  const verifier = encodeBase64Url(crypto.randomBytes(48));
+  const challenge = encodeBase64Url(crypto.createHash('sha256').update(verifier).digest());
+  return { verifier, challenge };
+};
+
+const buildTokenHeaders = ({ clientId, clientSecret }: { clientId: any; clientSecret: any }) => {
+  const headers: any = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  if (clientId && clientSecret) {
+    headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`;
+  }
+  return headers;
+};
+
+const getDefaultXScopes = () => (
+  String(
+    process.env.X_OAUTH_SCOPES
+    || 'tweet.read users.read follows.read offline.access tweet.write',
+  )
+    .split(/\s+/)
+    .map((scope) => scope.trim())
+    .filter(Boolean)
+);
+
+const ensureGlobalPodPostgresSync = async ({ pod, userId }: { pod: any; userId: any }) => {
+  if (!PGPod || !pod?._id || !userId) return;
+  const podId = String(pod._id);
+  try {
+    const existing = await PGPod.findById(podId);
+    if (!existing) {
+      await PGPod.create(
+        pod.name || 'Global Social Feed',
+        pod.description || "Commonly's curated social media feeds",
+        pod.type || 'chat',
+        userId,
+        podId,
+      );
+      return;
+    }
+    await PGPod.addMember(podId, userId);
+  } catch (error: unknown) {
+    console.warn('[global-integrations] PostgreSQL pod sync failed:', (error as Error).message);
+  }
+};
+
+const ensureGlobalSocialFeedPod = async (userId: any) => {
+  let globalPod = await Pod.findOne({ name: 'Global Social Feed' });
+
+  if (!globalPod) {
+    globalPod = await Pod.create({
+      name: 'Global Social Feed',
+      description: 'Commonly\'s curated social media feeds',
+      type: 'chat',
+      members: [userId],
+      createdBy: userId,
+      tags: ['social', 'global', 'feeds'],
+    });
+  } else if (!isListedPodMember(globalPod, userId)) {
+    // The requester is about to own a feed integration in this pod, and the
+    // sync refuses to write for an owner the pod does not list (TASK-164).
+    // Only the FIRST requester became a Mongo member (at creation); a second
+    // admin configuring the other feed type was mirrored into PG alone, so
+    // their first sync would pause a supported setup. Mongo `members` is what
+    // the predicate reads and what the pod's own write paths enforce; the PG
+    // mirror follows below. `createdBy` is deliberately untouched — it is the
+    // row's owner, not a membership record.
+    await Pod.updateOne({ _id: globalPod._id }, { $addToSet: { members: userId } });
+    globalPod = await Pod.findById(globalPod._id);
+  }
+
+  await ensureGlobalPodPostgresSync({ pod: globalPod, userId });
+  return globalPod;
+};
+
+const normalizeList = (value: any) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim().replace(/^@/, '')).filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((item) => item.trim().replace(/^@/, ''))
+      .filter(Boolean);
+  }
+  return [];
+};
+
+const normalizeBoolean = (value: any, fallback = false) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  }
+  return fallback;
+};
+
+// The two admin saves below read the stored row before writing. Generous
+// for a human operator, bounded against token-stuffing on the admin surface
+// (CodeQL js/missing-rate-limiting); same shape as routes/admin/users.ts.
+const adminWriteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'test',
+  keyGenerator: cloudflareIpRateLimitKeyGenerator,
+  handler: (_req: any, res: any) => res.status(429).json({
+    message: 'rate limit exceeded: 60 admin writes per 15 minutes',
+    code: 'rate_limited',
+  }),
+});
+
+/**
+ * The admin forms send accessToken only when a new one is typed; a blank
+ * field keeps the token already on file. A new integration still needs one.
+ */
+const keepOrReplaceAccessToken = (typed: unknown, existing: any): string => (
+  typed ? String(typed) : String(existing?.config?.accessToken || '')
+);
+
+const upsertXIntegration = async ({
+  requesterId,
+  globalPodId,
+  enabled = true,
+  accessToken,
+  refreshToken,
+  tokenType,
+  tokenExpiresAt,
+  oauthScopes,
+  username,
+  userId,
+  followUsernames,
+  followUserIds,
+  followFromAuthenticatedUser,
+  followingWhitelistUserIds,
+  followingMaxUsers,
+  existing,
+}: {
+  requesterId: any;
+  globalPodId: any;
+  enabled?: any;
+  accessToken: any;
+  refreshToken?: any;
+  tokenType?: any;
+  tokenExpiresAt?: any;
+  oauthScopes?: any;
+  username: any;
+  userId: any;
+  followUsernames?: any;
+  followUserIds?: any;
+  followFromAuthenticatedUser?: any;
+  followingWhitelistUserIds?: any;
+  followingMaxUsers?: any;
+  existing?: any;
+}) => {
+  let xIntegration = existing === undefined
+    ? await Integration.findOne({ type: 'x', podId: globalPodId })
+    : existing;
+  const hasFollowUsernames = followUsernames !== undefined;
+  const hasFollowUserIds = followUserIds !== undefined;
+  const normalizedFollowUsernames = hasFollowUsernames
+    ? Array.from(new Set(normalizeList(followUsernames)))
+    : null;
+  const normalizedFollowUserIds = hasFollowUserIds
+    ? Array.from(new Set(normalizeList(followUserIds)))
+    : null;
+  const hasFollowingWhitelistUserIds = followingWhitelistUserIds !== undefined;
+  const normalizedFollowingWhitelistUserIds = hasFollowingWhitelistUserIds
+    ? Array.from(new Set(normalizeList(followingWhitelistUserIds)))
+    : null;
+
+  const normalizedScopes = Array.isArray(oauthScopes)
+    ? oauthScopes.map((entry) => String(entry || '').trim()).filter(Boolean)
+    : [];
+  const nextConfig = {
+    ...(xIntegration?.config || {}),
+    accessToken,
+    refreshToken: refreshToken || xIntegration?.config?.refreshToken || '',
+    tokenType: tokenType || xIntegration?.config?.tokenType || 'bearer',
+    tokenExpiresAt: tokenExpiresAt || xIntegration?.config?.tokenExpiresAt || null,
+    oauthScopes: normalizedScopes.length ? normalizedScopes : (xIntegration?.config?.oauthScopes || []),
+    username,
+    userId,
+    followUsernames: hasFollowUsernames
+      ? normalizedFollowUsernames
+      : (xIntegration?.config?.followUsernames || []),
+    followUserIds: hasFollowUserIds
+      ? normalizedFollowUserIds
+      : (xIntegration?.config?.followUserIds || []),
+    followFromAuthenticatedUser: normalizeBoolean(
+      followFromAuthenticatedUser,
+      Boolean(xIntegration?.config?.followFromAuthenticatedUser),
+    ),
+    followingWhitelistUserIds: hasFollowingWhitelistUserIds
+      ? normalizedFollowingWhitelistUserIds
+      : (xIntegration?.config?.followingWhitelistUserIds || []),
+    followingMaxUsers: clamp(
+      followingMaxUsers,
+      1,
+      100,
+      clamp(xIntegration?.config?.followingMaxUsers, 1, 100, 5),
+    ),
+    category: 'Social',
+    maxResults: 5,
+    exclude: 'retweets,replies',
+    apiBase: X_API_BASE,
+    agentAccessEnabled: true,
+    globalAgentAccess: true,
+  };
+
+  if (xIntegration) {
+    xIntegration.config = nextConfig;
+    xIntegration.status = enabled ? 'connected' : 'disconnected';
+    xIntegration.isActive = enabled;
+    await xIntegration.save();
+  } else {
+    xIntegration = await Integration.create({
+      podId: globalPodId,
+      type: 'x',
+      status: enabled ? 'connected' : 'disconnected',
+      isActive: enabled,
+      config: nextConfig,
+      createdBy: requesterId,
+    });
+  }
+
+  return xIntegration;
+};
+
+/**
+ * Start X OAuth (PKCE)
+ * POST /api/admin/integrations/global/x/oauth/start
+ */
+router.post('/x/oauth/start', auth, adminAuth, async (req: any, res: any) => {
+  try {
+    const requesterId = getUserId(req);
+    if (!requesterId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const { clientId } = getXClientConfig();
+    if (!clientId) {
+      return res.status(400).json({ error: 'X OAuth client id is not configured' });
+    }
+
+    const requestedScopes = Array.isArray(req.body?.scopes) && req.body.scopes.length
+      ? req.body.scopes
+      : getDefaultXScopes();
+    const scopes = requestedScopes
+      .map((scope: any) => String(scope || '').trim())
+      .filter(Boolean);
+    const { verifier, challenge } = createPkcePair();
+    const state = encodeBase64Url(crypto.randomBytes(24));
+    const redirectPath = req.body?.redirectPath || '/admin/integrations/global';
+    const expiresAt = new Date(Date.now() + (10 * 60 * 1000));
+
+    await OAuthState.create({
+      provider: 'x',
+      state,
+      userId: requesterId,
+      codeVerifier: verifier,
+      redirectPath,
+      expiresAt,
+    });
+
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: buildXRedirectUri(),
+      scope: scopes.join(' '),
+      state,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+
+    return res.json({
+      success: true,
+      authorizeUrl: `${X_OAUTH_AUTHORIZE_URL}?${params.toString()}`,
+      state,
+      expiresAt,
+    });
+  } catch (error) {
+    console.error('Error starting X OAuth:', error);
+    return res.status(500).json({ error: 'Failed to start X OAuth flow' });
+  }
+});
+
+/**
+ * X OAuth callback
+ * GET /api/admin/integrations/global/x/oauth/callback
+ *
+ * TASK-108 (triage doc §6): a third-party redirect target, so it is public by
+ * construction and gets the IP tier with the token tier off. 600/60s is the
+ * ruled budget — the same as `/stats/public`, and for the same class of
+ * caller: a browser following a redirect, plus whatever walks the endpoint
+ * without following one.
+ */
+const xOauthCallbackLimit = platformIpRateLimit({
+  windowMs: 60_000,
+  limit: 600,
+  label: '600 X OAuth callback hits per 60s per IP',
+});
+router.get('/x/oauth/callback', xOauthCallbackLimit, async (req: any, res: any) => {
+  try {
+    const {
+      state,
+      code,
+      error: oauthError,
+      error_description: errorDescription,
+    } = req.query || {};
+
+    if (!state) {
+      return res.redirect(buildFrontendRedirect('error', 'missing_oauth_state'));
+    }
+
+    const oauthState = await OAuthState.findOneAndUpdate(
+      {
+        provider: 'x',
+        state: String(state),
+        usedAt: null,
+        expiresAt: { $gt: new Date() },
+      },
+      {
+        $set: { usedAt: new Date() },
+      },
+      { new: true },
+    );
+
+    if (!oauthState) {
+      return res.redirect(buildFrontendRedirect('error', 'oauth_state_expired_or_used'));
+    }
+
+    if (oauthError) {
+      return res.redirect(buildFrontendRedirect(
+        'error',
+        errorDescription || oauthError,
+        oauthState.redirectPath,
+      ));
+    }
+    if (!code) {
+      return res.redirect(buildFrontendRedirect('error', 'missing_oauth_code', oauthState.redirectPath));
+    }
+
+    const { clientId, clientSecret } = getXClientConfig();
+    if (!clientId) {
+      return res.redirect(buildFrontendRedirect('error', 'missing_x_client_id', oauthState.redirectPath));
+    }
+
+    const tokenBody = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: String(code),
+      redirect_uri: buildXRedirectUri(),
+      code_verifier: oauthState.codeVerifier,
+      client_id: clientId,
+    });
+    const tokenResponse = await axios.post(
+      X_OAUTH_TOKEN_URL,
+      tokenBody.toString(),
+      { headers: buildTokenHeaders({ clientId, clientSecret }) },
+    );
+
+    const accessToken = tokenResponse?.data?.access_token;
+    const refreshToken = tokenResponse?.data?.refresh_token || '';
+    const tokenType = tokenResponse?.data?.token_type || 'bearer';
+    const expiresIn = Number(tokenResponse?.data?.expires_in || 0);
+    const tokenExpiresAt = Number.isFinite(expiresIn) && expiresIn > 0
+      ? new Date(Date.now() + (expiresIn * 1000))
+      : null;
+    const oauthScopes = String(tokenResponse?.data?.scope || '')
+      .split(/\s+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+
+    if (!accessToken) {
+      return res.redirect(buildFrontendRedirect('error', 'missing_x_access_token', oauthState.redirectPath));
+    }
+
+    const meResponse = await axios.get(`${X_API_BASE}/users/me`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      params: { 'user.fields': 'id,username,name' },
+    });
+    const me = meResponse?.data?.data || {};
+    if (!me?.id || !me?.username) {
+      return res.redirect(buildFrontendRedirect('error', 'x_user_profile_lookup_failed', oauthState.redirectPath));
+    }
+
+    const globalPod = await ensureGlobalSocialFeedPod(oauthState.userId);
+    await upsertXIntegration({
+      requesterId: oauthState.userId,
+      globalPodId: globalPod._id,
+      enabled: true,
+      accessToken,
+      refreshToken,
+      tokenType,
+      tokenExpiresAt,
+      oauthScopes,
+      username: me.username,
+      userId: me.id,
+    });
+
+    return res.redirect(buildFrontendRedirect('success', `connected_${me.username}`, oauthState.redirectPath));
+  } catch (error: unknown) {
+    const err = error as any;
+    const detail = err?.response?.data?.error_description
+      || err?.response?.data?.error
+      || err?.response?.data?.detail
+      || err?.response?.data?.title
+      || err?.message
+      || 'oauth_callback_failed';
+    console.error('Error handling X OAuth callback:', err?.response?.data || err);
+    return res.redirect(buildFrontendRedirect('error', detail));
+  }
+});
+
+/**
+ * Get global integrations (X and Instagram)
+ * GET /api/admin/integrations/global
+ */
+router.get('/', auth, adminAuth, async (req: any, res: any) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    // Find or create global pod
+    const globalPod = await ensureGlobalSocialFeedPod(userId);
+
+    // Fetch X and Instagram integrations
+    const xIntegration = await Integration.findOne({
+      type: 'x',
+      podId: globalPod._id,
+    });
+
+    const instagramIntegration = await Integration.findOne({
+      type: 'instagram',
+      podId: globalPod._id,
+    });
+
+    res.json({
+      x: xIntegration || null,
+      instagram: instagramIntegration || null,
+      socialPolicy: await SocialPolicyService.getPolicy(),
+      modelPolicy: await GlobalModelConfigService.getConfig({ includeSecrets: false }),
+      globalPodId: globalPod._id,
+    });
+  } catch (error) {
+    console.error('Error fetching global integrations:', error);
+    res.status(500).json({ error: 'Failed to fetch global integrations' });
+  }
+});
+
+/**
+ * Save global model policy (backend llm + openclaw defaults)
+ * POST /api/admin/integrations/global/model-policy
+ */
+router.post('/model-policy', auth, adminAuth, async (req: any, res: any) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (!GlobalModelConfigService.isSupportedLlmServiceProvider(req.body?.llmService?.provider)) {
+      return res.status(400).json({
+        error: 'Unsupported backend LLM provider. Use auto, gemini, litellm, or openrouter.',
+      });
+    }
+    const modelPolicy = await GlobalModelConfigService.setConfig(req.body || {}, userId);
+    return res.json({ success: true, modelPolicy });
+  } catch (error) {
+    console.error('Error saving global model policy:', error);
+    return res.status(500).json({ error: 'Failed to save model policy' });
+  }
+});
+
+/**
+ * Save global social publish policy
+ * POST /api/admin/integrations/global/policy
+ */
+router.post('/policy', auth, adminAuth, async (req: any, res: any) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const policy = await SocialPolicyService.setPolicy(req.body || {}, userId);
+    return res.json({ success: true, policy });
+  } catch (error) {
+    console.error('Error saving global social policy:', error);
+    return res.status(500).json({ error: 'Failed to save social policy' });
+  }
+});
+
+/**
+ * Save X global integration
+ * POST /api/admin/integrations/global/x
+ */
+router.post('/x', adminWriteLimiter, auth, adminAuth, async (req: any, res: any) => {
+  try {
+    const requesterId = getUserId(req);
+    if (!requesterId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const {
+      enabled,
+      accessToken,
+      username,
+      userId,
+      followUsernames,
+      followUserIds,
+      followFromAuthenticatedUser,
+      followingWhitelistUserIds,
+      followingMaxUsers,
+    } = req.body;
+
+    // Validate required fields
+    if (!username || !userId) {
+      return res.status(400).json({ error: 'Username, userId, and accessToken are required' });
+    }
+
+    // Find or create global pod
+    const globalPod = await ensureGlobalSocialFeedPod(requesterId);
+    const existing = await Integration.findOne({ type: 'x', podId: globalPod._id });
+    const effectiveAccessToken = keepOrReplaceAccessToken(accessToken, existing);
+    if (!effectiveAccessToken) {
+      return res.status(400).json({ error: 'Username, userId, and accessToken are required' });
+    }
+    const xIntegration = await upsertXIntegration({
+      requesterId,
+      globalPodId: globalPod._id,
+      enabled,
+      accessToken: effectiveAccessToken,
+      existing,
+      username,
+      userId,
+      followUsernames,
+      followUserIds,
+      followFromAuthenticatedUser,
+      followingWhitelistUserIds,
+      followingMaxUsers,
+    });
+
+    res.json({
+      success: true,
+      integration: xIntegration,
+    });
+  } catch (error) {
+    console.error('Error saving X integration:', error);
+    res.status(500).json({ error: 'Failed to save X integration' });
+  }
+});
+
+/**
+ * Save Instagram global integration
+ * POST /api/admin/integrations/global/instagram
+ */
+router.post('/instagram', adminWriteLimiter, auth, adminAuth, async (req: any, res: any) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    const {
+      enabled, accessToken, username, igUserId,
+    } = req.body;
+
+    // Validate required fields
+    if (!username || !igUserId) {
+      return res.status(400).json({ error: 'Username, igUserId, and accessToken are required' });
+    }
+
+    // Find or create global pod
+    const globalPod = await ensureGlobalSocialFeedPod(userId);
+
+    // Find or create Instagram integration
+    let instagramIntegration = await Integration.findOne({
+      type: 'instagram',
+      podId: globalPod._id,
+    });
+    const effectiveAccessToken = keepOrReplaceAccessToken(accessToken, instagramIntegration);
+    if (!effectiveAccessToken) {
+      return res.status(400).json({ error: 'Username, igUserId, and accessToken are required' });
+    }
+
+    if (instagramIntegration) {
+      // Update existing
+      instagramIntegration.config = {
+        ...instagramIntegration.config,
+        accessToken: effectiveAccessToken,
+        username,
+        igUserId,
+        category: 'Social',
+        apiBase: process.env.INSTAGRAM_GRAPH_API_BASE || 'https://graph.facebook.com/v19.0',
+        agentAccessEnabled: true,
+        globalAgentAccess: true,
+      };
+      instagramIntegration.status = enabled ? 'connected' : 'disconnected';
+      instagramIntegration.isActive = enabled;
+      await instagramIntegration.save();
+    } else {
+      // Create new
+      instagramIntegration = await Integration.create({
+        podId: globalPod._id,
+        type: 'instagram',
+        status: enabled ? 'connected' : 'disconnected',
+        isActive: enabled,
+        config: {
+          accessToken: effectiveAccessToken,
+          username,
+          igUserId,
+          category: 'Social',
+          apiBase: process.env.INSTAGRAM_GRAPH_API_BASE || 'https://graph.facebook.com/v19.0',
+          agentAccessEnabled: true,
+          globalAgentAccess: true,
+        },
+        createdBy: userId,
+      });
+    }
+
+    res.json({
+      success: true,
+      integration: instagramIntegration,
+    });
+  } catch (error) {
+    console.error('Error saving Instagram integration:', error);
+    res.status(500).json({ error: 'Failed to save Instagram integration' });
+  }
+});
+
+/**
+ * Test X connection
+ * POST /api/admin/integrations/global/x/test
+ */
+router.post('/x/test', auth, adminAuth, async (req: any, res: any) => {
+  try {
+    const globalPod = await Pod.findOne({ name: 'Global Social Feed' });
+    if (!globalPod) {
+      return res.status(404).json({ error: 'Global pod not found' });
+    }
+
+    const xIntegration = await Integration.findOne({
+      type: 'x',
+      podId: globalPod._id,
+    });
+
+    if (!xIntegration) {
+      return res.status(404).json({ error: 'X integration not found' });
+    }
+
+    const provider = registry.get(xIntegration.type, xIntegration);
+    await provider.validateConfig();
+    const health = await provider.health();
+    if (!health?.ok) {
+      return res.status(400).json({
+        error: health?.error || 'X connection failed',
+        status: health?.status || null,
+      });
+    }
+
+    res.json({ success: true, message: 'X connection successful' });
+  } catch (error: unknown) {
+    console.error('X connection test failed:', error);
+    res.status(500).json({ error: (error as Error).message || 'Connection test failed' });
+  }
+});
+
+/**
+ * Trigger external social feed sync now (admin debug helper)
+ * POST /api/admin/integrations/global/sync
+ */
+router.post('/sync', auth, adminAuth, async (req: any, res: any) => {
+  try {
+    const results = await externalFeedService.syncExternalFeeds();
+    return res.json({
+      success: true,
+      count: Array.isArray(results) ? results.length : 0,
+      results: Array.isArray(results) ? results : [],
+    });
+  } catch (error: unknown) {
+    console.error('Manual external feed sync failed:', error);
+    return res.status(500).json({ error: (error as Error).message || 'Failed to sync external feeds' });
+  }
+});
+
+/**
+ * List following accounts for authenticated global X OAuth integration
+ * GET /api/admin/integrations/global/x/following?limit=100
+ */
+router.get('/x/following', auth, adminAuth, async (req: any, res: any) => {
+  try {
+    const globalPod = await Pod.findOne({ name: 'Global Social Feed' });
+    if (!globalPod) {
+      return res.status(404).json({ error: 'Global pod not found' });
+    }
+
+    const xIntegration = await Integration.findOne({
+      type: 'x',
+      podId: globalPod._id,
+      status: 'connected',
+      isActive: true,
+    });
+
+    if (!xIntegration) {
+      return res.status(404).json({ error: 'X integration not found' });
+    }
+
+    const accessToken = xIntegration?.config?.accessToken;
+    const userId = xIntegration?.config?.userId;
+    if (!accessToken || !userId) {
+      return res.status(400).json({ error: 'X integration missing OAuth user context' });
+    }
+
+    const limit = clamp(req.query?.limit, 1, 200, 100);
+    const response = await axios.get(`${X_API_BASE}/users/${encodeURIComponent(String(userId))}/following`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      params: {
+        max_results: limit,
+        'user.fields': 'id,username,name',
+      },
+    });
+    const users = Array.isArray(response?.data?.data) ? response.data.data : [];
+
+    return res.json({
+      success: true,
+      count: users.length,
+      users: users.map((user: any) => ({
+        id: String(user?.id || ''),
+        username: String(user?.username || ''),
+        name: String(user?.name || ''),
+      })).filter((user: any) => user.id),
+    });
+  } catch (error: unknown) {
+    const err = error as any;
+    console.error('Failed to fetch X following list:', err?.response?.data || err);
+    const status = err?.response?.status;
+    const detail = err?.response?.data?.detail
+      || err?.response?.data?.title
+      || err?.response?.data?.error
+      || err?.message
+      || 'Failed to fetch following list from X';
+    return res.status(status && status >= 400 ? status : 500).json({ error: detail });
+  }
+});
+
+/**
+ * Test Instagram connection
+ * POST /api/admin/integrations/global/instagram/test
+ */
+router.post('/instagram/test', auth, adminAuth, async (req: any, res: any) => {
+  try {
+    const globalPod = await Pod.findOne({ name: 'Global Social Feed' });
+    if (!globalPod) {
+      return res.status(404).json({ error: 'Global pod not found' });
+    }
+
+    const instagramIntegration = await Integration.findOne({
+      type: 'instagram',
+      podId: globalPod._id,
+    });
+
+    if (!instagramIntegration) {
+      return res.status(404).json({ error: 'Instagram integration not found' });
+    }
+
+    const provider = registry.get(instagramIntegration.type, instagramIntegration);
+    await provider.validateConfig();
+
+    res.json({ success: true, message: 'Instagram connection successful' });
+  } catch (error: unknown) {
+    console.error('Instagram connection test failed:', error);
+    res.status(500).json({ error: (error as Error).message || 'Connection test failed' });
+  }
+});
+
+module.exports = router;
+
+export {};

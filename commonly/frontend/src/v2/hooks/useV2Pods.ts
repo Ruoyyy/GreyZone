@@ -1,0 +1,150 @@
+import { useCallback, useEffect, useState } from 'react';
+import { useV2Api } from './useV2Api';
+
+export interface V2PodMember {
+  _id?: string;
+  username?: string;
+  profilePicture?: string | null;
+  isBot?: boolean;
+}
+
+export interface V2PodLastMessage {
+  content: string;
+  createdAt: string;
+  username: string | null;
+}
+
+export interface V2Pod {
+  _id: string;
+  name: string;
+  description?: string;
+  type?: string;
+  joinPolicy?: string;
+  publicRead?: boolean;
+  // Community placement is an explicit admin-owned pod property. It is
+  // distinct from publicRead, which controls anonymous read access only.
+  communityListed?: boolean;
+  members?: (V2PodMember | string)[];
+  createdBy?: { _id?: string; username?: string };
+  createdAt?: string;
+  updatedAt?: string;
+  lastMessage?: V2PodLastMessage | null;
+}
+
+export interface UseV2PodsResult {
+  pods: V2Pod[];
+  loading: boolean;
+  error: string | null;
+  // `silent` re-reads the list in place: it swaps the data on success without
+  // setting `loading` or an error, so a background poll cannot blink a list
+  // into its spinner or replace the last good rows with a transient failure.
+  // Non-silent is the mount/retry path and owns the loading state. Both modes
+  // clear an existing error on success — see the success path below.
+  refresh: (options?: { silent?: boolean }) => Promise<void>;
+  createPod: (
+    name: string,
+    description?: string,
+    type?: 'team' | 'chat',
+    joinPolicy?: 'open' | 'invite-only',
+  ) => Promise<V2Pod | null>;
+  deletePod: (podId: string) => Promise<boolean>;
+  patchLastMessage: (podId: string, last: V2PodLastMessage) => void;
+}
+
+export const useV2Pods = (): UseV2PodsResult => {
+  const api = useV2Api();
+  const [pods, setPods] = useState<V2Pod[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = Boolean(options?.silent);
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
+    try {
+      const data = await api.get<V2Pod[]>('/api/pods');
+      setPods(Array.isArray(data) ? data : []);
+      // A successful read is evidence the stored error is stale, so it clears
+      // it — in BOTH modes. Without this the silent poll could never recover
+      // the view it was added for: V2PodsSidebar renders the list only on
+      // `!loading && !error`, so a failed first load hid the rows behind an
+      // error that a later successful poll could refresh the data but never
+      // un-hide. Silence still means a poll never SETS a failure.
+      setError(null);
+    } catch (err) {
+      // A failed poll keeps the last good rows and the last error: silence is
+      // the point. Only the mount/retry path may surface a failure.
+      if (silent) return;
+      const e = err as { response?: { data?: { error?: string; msg?: string } }; message?: string };
+      setError(e.response?.data?.error || e.response?.data?.msg || e.message || 'Failed to load pods');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [api]);
+
+  const createPod = useCallback(async (
+    name: string,
+    description?: string,
+    type: 'team' | 'chat' = 'team',
+    joinPolicy: 'open' | 'invite-only' = 'open',
+  ): Promise<V2Pod | null> => {
+    try {
+      const pod = await api.post<V2Pod>('/api/pods', {
+        name,
+        description: description || '',
+        type,
+        joinPolicy,
+      });
+      setPods((prev) => [pod, ...prev]);
+      return pod;
+    } catch (err) {
+      const e = err as { response?: { data?: { error?: string; msg?: string } }; message?: string };
+      setError(e.response?.data?.error || e.response?.data?.msg || e.message || 'Failed to create pod');
+      return null;
+    }
+  }, [api]);
+
+  const patchLastMessage = useCallback((podId: string, last: V2PodLastMessage) => {
+    if (!podId || !last) return;
+    setPods((prev) => {
+      const idx = prev.findIndex((p) => p._id === podId);
+      if (idx < 0) return prev;
+      const existing = prev[idx];
+      const existingTs = existing.lastMessage?.createdAt
+        ? new Date(existing.lastMessage.createdAt).getTime()
+        : 0;
+      const incomingTs = last.createdAt ? new Date(last.createdAt).getTime() : 0;
+      // Only patch when strictly newer — avoids overwriting an in-place
+      // optimistic message with an older socket event of the same row.
+      if (incomingTs && existingTs && incomingTs <= existingTs) return prev;
+      const next = prev.slice();
+      next[idx] = {
+        ...existing,
+        lastMessage: last,
+        updatedAt: last.createdAt || existing.updatedAt,
+      };
+      return next;
+    });
+  }, []);
+
+  const deletePod = useCallback(async (podId: string): Promise<boolean> => {
+    if (!podId) return false;
+    try {
+      await api.del(`/api/pods/${podId}`);
+      setPods((prev) => prev.filter((pod) => pod._id !== podId));
+      return true;
+    } catch (err) {
+      const e = err as { response?: { data?: { error?: string; msg?: string } }; message?: string };
+      setError(e.response?.data?.error || e.response?.data?.msg || e.message || 'Failed to delete pod');
+      return false;
+    }
+  }, [api]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  return { pods, loading, error, refresh, createPod, deletePod, patchLastMessage };
+};

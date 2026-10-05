@@ -1,0 +1,558 @@
+const express = require('express');
+// eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
+const rateLimit = require('express-rate-limit');
+const Integration = require('../../models/Integration');
+const Pod = require('../../models/Pod');
+const Summary = require('../../models/Summary');
+const registry = require('../../integrations');
+const IntegrationSummaryService = require('../../services/integrationSummaryService');
+const AgentEventService = require('../../services/agentEventService');
+const telegramService = require('../../services/telegramService');
+const { escapeHtml } = telegramService;
+const deliveryFailures = require('../../services/connectorDeliveryFailureService');
+const {
+  isConnectCodeShape, isConnectCodeExpired, registerEnableAttempt,
+} = require('../../services/telegramConnectCode');
+const {
+  claimDelivery: claimWebhookDelivery,
+  releaseDelivery: releaseWebhookDelivery,
+} = require('../../services/webhookDeliveryService');
+// eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
+const { cloudflareIpRateLimitKeyGenerator } = require('../../middleware/ipRateLimit');
+
+const router = express.Router({ mergeParams: true });
+
+const telegramWebhookRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'test',
+  keyGenerator: (req: any) => `telegram:${cloudflareIpRateLimitKeyGenerator(req)}`,
+  handler: (_req: unknown, res: any) => res.status(429).json({ error: 'Too many Telegram webhook requests' }),
+});
+
+const ENABLE_COMMAND = '/commonly-enable';
+// Underscore alias: Telegram's registered-command menu forbids hyphens, so
+// the menu carries /commonly_enable while typed /commonly-enable keeps working.
+const ENABLE_COMMAND_ALIAS = '/commonly_enable';
+const SUMMARY_COMMAND = '/summary';
+const POD_SUMMARY_COMMAND = '/pod_summary';
+const TLDR_COMMAND = '/tldr';
+const MODE_COMMAND = '/mode';
+const STATUS_COMMAND = '/status';
+const MUTE_COMMAND = '/mute';
+const UNMUTE_COMMAND = '/unmute';
+const HELP_COMMAND = '/help';
+
+const normalizeCommand = (raw = '') => raw.split('@')[0].toLowerCase();
+
+const getMessageFromUpdate = (update: any) => update?.message || update?.channel_post || null;
+
+const getChatTitle = (chat: any) => (
+  chat?.title
+  || chat?.username
+  || [chat?.first_name, chat?.last_name].filter(Boolean).join(' ').trim()
+  || 'Telegram chat'
+);
+
+// Fail CLOSED (hardening study 2026-08-31, gap 4): with no TELEGRAM_SECRET_TOKEN
+// configured this used to accept anything — anyone who found the URL could post
+// updates that wake agents and drive /mode //mute. Now a missing secret rejects,
+// unless the operator explicitly opts out (TELEGRAM_WEBHOOK_ALLOW_UNVERIFIED=true,
+// for local dev only). Deploy note: set TELEGRAM_SECRET_TOKEN and re-register the
+// webhook with setWebhook(secret_token=...) BEFORE shipping this to an env with a
+// live bridge, or Telegram's deliveries (sent without the header) will 401.
+let warnedUnverified = false;
+const verifyTelegramHeader = (req: any) => {
+  const expectedToken = process.env.TELEGRAM_SECRET_TOKEN;
+  if (!expectedToken) {
+    if (process.env.TELEGRAM_WEBHOOK_ALLOW_UNVERIFIED === 'true') {
+      if (!warnedUnverified) {
+        warnedUnverified = true;
+        console.warn('Telegram webhook: TELEGRAM_SECRET_TOKEN unset and verification explicitly disabled — accepting unverified updates');
+      }
+      return true;
+    }
+    if (!warnedUnverified) {
+      warnedUnverified = true;
+      console.error('Telegram webhook: TELEGRAM_SECRET_TOKEN is not set — rejecting all updates (set the secret and re-register via setWebhook, or set TELEGRAM_WEBHOOK_ALLOW_UNVERIFIED=true for local dev)');
+    }
+    return false;
+  }
+  const headerToken = req.headers['x-telegram-bot-api-secret-token'];
+  return headerToken && headerToken === expectedToken;
+};
+
+const handleEnableCommand = async (chat: any, code: any) => {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = chat?.id?.toString();
+  if (!botToken || !chatId) return;
+
+  if (!code) {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      'Usage: /commonly-enable &lt;code&gt; (get the code from Commonly)',
+    );
+    return;
+  }
+
+  // A malformed code is a typo, and a typo must not cost one of the chat's five
+  // tries — so this sits BEFORE the attempt counter, which is the whole point of
+  // the check. It does not make guessing free: only a well-formed code can ever
+  // match a minted one, and a well-formed guess still spends an attempt.
+  // Malformed input is left to the route's outer rate limiter
+  // (telegramWebhookRateLimit), because input that costs a regex is not worth a
+  // per-chat counter.
+  if (!isConnectCodeShape(code)) {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      "That doesn't look like a connect code — copy it from Commonly.",
+    );
+    return;
+  }
+
+  // The code is the only proof of ownership this path has (the redeemer is
+  // unauthenticated), so guessing is rate-limited per chat and codes expire.
+  if (!registerEnableAttempt(chatId)) {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      '⚠️ Too many attempts. Wait a few minutes and request a fresh code from Commonly.',
+    );
+    return;
+  }
+
+  const integration = await Integration.findOne({
+    type: 'telegram',
+    isActive: true,
+    'config.connectCode': code,
+  });
+
+  if (!integration || isConnectCodeExpired(integration.config)) {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      '❌ Invalid or expired code. Please request a fresh code from Commonly.',
+    );
+    return;
+  }
+
+  const existingChatId = integration.config?.chatId;
+  if (existingChatId && `${existingChatId}` !== `${chatId}`) {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      '⚠️ This code is already linked to another chat. Request a new code.',
+    );
+    return;
+  }
+
+  const chatClaim = await Integration.findOne({
+    type: 'telegram',
+    isActive: true,
+    'config.chatId': chatId,
+  });
+
+  if (chatClaim && chatClaim._id.toString() !== integration._id.toString()) {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      '⚠️ This chat is already linked to another Commonly pod.',
+    );
+    return;
+  }
+
+  const chatTitle = getChatTitle(chat);
+  const chatType = chat?.type || null;
+
+  // Live relay authors inbound as the linked user and streams the pod's
+  // escalations outbound; both are only honest in a private 1:1 chat.
+  if (integration.config?.liveRelay && chatType !== 'private') {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      '⚠️ Live relay only works from a private chat with this bot. Open a direct chat and send the code there.',
+    );
+    return;
+  }
+
+  // `errorMessage: null` because the working bind is the other state of the
+  // field the failure writes, and only a bind knows the connector works again
+  // (wren 73779). `new: true` is what the confirmation below classifies against:
+  // the chat id it compares is the one this update just stored.
+  const bound = await Integration.findByIdAndUpdate(integration._id, {
+    status: 'connected',
+    errorMessage: null,
+    // The flag goes with the message it describes: a bind clears the reason, so
+    // it clears the claim that the reason was written for a person.
+    errorMessageUserFacing: false,
+    $set: {
+      'config.chatId': chatId,
+      'config.chatTitle': chatTitle,
+      'config.chatType': chatType,
+      'config.webhookListenerEnabled': true,
+    },
+    $unset: {
+      'config.connectCode': '',
+      'config.connectCodeExpiresAt': '',
+    },
+  }, { new: true });
+
+  const pod = await Pod.findById(integration.podId).lean();
+  const podName = pod?.name || 'your pod';
+
+  // Escaped because parse_mode is HTML: a pod named `A <b>` made Telegram reject
+  // this send with 400 "can't parse entities", which is a content failure and
+  // must never undo a bind (wren 73778).
+  const confirmation = await telegramService.sendMessage(
+    botToken,
+    chatId,
+    `✅ Connected this chat to <b>${escapeHtml(podName)}</b> in Commonly.\n`
+    + 'Agent messages from the pod will appear here. Too chatty? Send '
+    + '/mode attention to only get what needs you. /help lists the rest.',
+  );
+  // The one receive-side send that may flip: it targets the chat that was just
+  // bound, so a permanent failure means this bind is unusable. Undoing it clears
+  // the chat id, which is what lets the user mint a fresh code and reconnect.
+  await deliveryFailures.noteBoundChatDeliveryFailure(bound, chatId, confirmation);
+};
+
+const handleSummaryCommand = async (chat: any, integration: any) => {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken || !chat?.id) return;
+  const chatId = chat.id.toString();
+
+  if (!integration) {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      'This chat is not linked. Use /commonly-enable &lt;code&gt; first.',
+    );
+    return;
+  }
+  if (!integration.podId) {
+    await telegramService.sendMessage(botToken, chatId, 'This connector has no active pod. Choose one in Commonly first.');
+    return;
+  }
+
+  const latest = await Integration.findById(integration._id).lean();
+  const buffer = latest?.config?.messageBuffer || [];
+  if (!buffer.length) {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      'No recent Telegram activity to summarize.',
+    );
+    return;
+  }
+
+  const summary = await IntegrationSummaryService.createSummary(
+    latest,
+    buffer,
+  );
+
+  const { AgentInstallation } = require('../../models/AgentRegistry');
+  let installations = [];
+  try {
+    installations = await AgentInstallation.find({
+      agentName: 'commonly-bot',
+      podId: latest.podId,
+      status: 'active',
+    }).lean();
+  } catch (err: unknown) {
+    console.warn('telegram agent lookup failed', (err as Error).message);
+  }
+
+  const targets = installations.length > 0 ? installations : [{ instanceId: 'default' }];
+
+  await Promise.all(
+    targets.map((installation: any) => (
+      AgentEventService.enqueue({
+        agentName: 'commonly-bot',
+        instanceId: installation.instanceId || 'default',
+        podId: latest.podId,
+        type: 'integration.summary',
+        payload: {
+          summary,
+          integrationId: latest._id.toString(),
+          source: 'telegram',
+        },
+      })
+    )),
+  );
+
+  await Integration.findByIdAndUpdate(integration._id, {
+    'config.messageBuffer': [],
+    'config.lastSummaryAt': new Date(),
+  });
+  await telegramService.sendMessage(
+    botToken,
+    chatId,
+    '✅ Queued Telegram summary for Commonly Bot.',
+  );
+};
+
+const handlePodSummaryCommand = async (chat: any, integration: any) => {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken || !chat?.id) return;
+  const chatId = chat.id.toString();
+
+  if (!integration) {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      'This chat is not linked. Use /commonly-enable &lt;code&gt; first.',
+    );
+    return;
+  }
+  if (!integration.podId) {
+    await telegramService.sendMessage(botToken, chatId, 'This connector has no active pod. Choose one in Commonly first.');
+    return;
+  }
+
+  const latestSummary = await Summary.findOne({
+    type: 'chats',
+    podId: integration.podId,
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  if (!latestSummary) {
+    await telegramService.sendMessage(
+      botToken,
+      chatId,
+      '📝 No recent pod summaries available yet.',
+    );
+    return;
+  }
+
+  const title = latestSummary.title || 'Pod Summary';
+  // Summary text is generated from pod messages, so it is untrusted here for
+  // the same reason a pod name is: parse_mode is HTML (vera 73812).
+  await telegramService.sendMessage(
+    botToken,
+    chatId,
+    `${escapeHtml(title)}\n\n${escapeHtml(latestSummary.content)}`,
+  );
+};
+
+const sendToChat = async (chatId: string, text: string) => {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken || !chatId) return;
+  await telegramService.sendMessage(botToken, chatId, text);
+};
+
+const NOT_LINKED = 'This chat is not linked. Use /commonly-enable &lt;code&gt; first.';
+
+const HELP_TEXT = [
+  '<b>Commonly bridge commands</b>',
+  '/mode — show the relay mode; /mode mirror | attention to switch',
+  '  • <b>mirror</b>: every agent message in the pod is copied here',
+  '  • <b>attention</b>: only escalations and the lead agent reach you',
+  '/status — pod, mode, and mute state for this chat',
+  '/mute [minutes] — pause relay to this chat (default 60); /unmute to resume',
+  '/tldr — latest pod summary',
+  '/summary — summarize recent chat here into the pod',
+].join('\n');
+
+// /mode [mirror|attention] — the two relay modes are one stored flag:
+// mirror ⇔ config.relayAllAgentMessages. Attention mode leaves the
+// escalation gate (markers + lead agent) as the only path to the phone.
+const handleModeCommand = async (chat: any, integration: any, arg?: string) => {
+  const chatId = chat?.id?.toString();
+  if (!integration) return sendToChat(chatId, NOT_LINKED);
+  const current = integration.config?.relayAllAgentMessages === true ? 'mirror' : 'attention';
+  const wanted = (arg || '').toLowerCase();
+  if (!wanted) {
+    return sendToChat(chatId, `Relay mode: <b>${current}</b>. Switch with /mode mirror or /mode attention.`);
+  }
+  if (wanted !== 'mirror' && wanted !== 'attention') {
+    return sendToChat(chatId, 'Usage: /mode mirror | attention');
+  }
+  await Integration.findByIdAndUpdate(integration._id, {
+    $set: { 'config.relayAllAgentMessages': wanted === 'mirror' },
+  });
+  return sendToChat(chatId, wanted === 'mirror'
+    ? 'Mode: <b>mirror</b> — every agent message in the pod is copied here.'
+    : 'Mode: <b>attention</b> — only escalations and the lead agent reach you.');
+};
+
+const handleStatusCommand = async (chat: any, integration: any) => {
+  const chatId = chat?.id?.toString();
+  if (!integration) return sendToChat(chatId, NOT_LINKED);
+  if (!integration.podId) return sendToChat(chatId, 'This connector has no active pod. Choose one in Commonly first.');
+  const pod = await Pod.findById(integration.podId).lean();
+  const mode = integration.config?.relayAllAgentMessages === true ? 'mirror' : 'attention';
+  const mutedUntil = integration.config?.relayMutedUntil;
+  const muted = mutedUntil && new Date(mutedUntil) > new Date()
+    ? `muted until ${new Date(mutedUntil).toISOString().slice(11, 16)} UTC`
+    : 'not muted';
+  const lead = integration.config?.leadAgentUsername;
+  return sendToChat(chatId, [
+    `Pod: <b>${escapeHtml(pod?.name || 'unknown')}</b>`,
+    `Mode: <b>${mode}</b> · Relay: ${integration.config?.liveRelay ? 'on' : 'off'} · ${muted}`,
+    lead ? `Lead agent: ${escapeHtml(lead)}` : null,
+  ].filter(Boolean).join('\n'));
+};
+
+const handleMuteCommand = async (chat: any, integration: any, arg?: string) => {
+  const chatId = chat?.id?.toString();
+  if (!integration) return sendToChat(chatId, NOT_LINKED);
+  const minutes = Math.min(Math.max(parseInt(arg || '60', 10) || 60, 1), 24 * 60);
+  const until = new Date(Date.now() + minutes * 60_000);
+  await Integration.findByIdAndUpdate(integration._id, {
+    $set: { 'config.relayMutedUntil': until },
+  });
+  return sendToChat(chatId, `Muted for ${minutes} min — nothing relays here until then. /unmute to resume.`);
+};
+
+const handleUnmuteCommand = async (chat: any, integration: any) => {
+  const chatId = chat?.id?.toString();
+  if (!integration) return sendToChat(chatId, NOT_LINKED);
+  await Integration.findByIdAndUpdate(integration._id, {
+    $unset: { 'config.relayMutedUntil': '' },
+  });
+  return sendToChat(chatId, 'Unmuted — relay resumes.');
+};
+
+// Dedup TTL: Telegram redelivers an unacked update for well under this window;
+// after it, a reused update_id would be a new update anyway (ids are sequential
+// per bot but survive restarts on Telegram's side).
+const DEDUP_TTL_MS = 10 * 60_000;
+
+// Atomic claim on this update's delivery id (claim-before-run; see
+// models/WebhookDelivery.ts for the contract). Returns 'claimed' | 'duplicate'
+// | 'unavailable'; Telegram intentionally proceeds on the last state.
+// Universal Telegram webhook (single bot, many chats)
+router.post('/', telegramWebhookRateLimit, async (req: any, res: any) => {
+  const updateId = req.body?.update_id;
+  try {
+    if (!verifyTelegramHeader(req)) {
+      return res.status(401).send('invalid secret token');
+    }
+
+    // Redelivery of an update we already claimed (processed, or processing on
+    // a parallel delivery): ack and stop, or it becomes a duplicate pod
+    // message and a duplicate agent wake.
+    if (updateId !== undefined && updateId !== null) {
+      const claim = await claimWebhookDelivery('telegram', String(updateId), DEDUP_TTL_MS);
+      // Telegram historically proceeds when the dedup store is unavailable;
+      // preserve that fail-open contract while HTTP providers return 503.
+      if (claim === 'duplicate') {
+        return res.sendStatus(200);
+      }
+    }
+
+    const message = getMessageFromUpdate(req.body);
+    if (!message) return res.sendStatus(200);
+    if (message.via_bot || message.from?.is_bot) return res.sendStatus(200);
+
+    const { chat } = message;
+    const chatId = chat?.id?.toString();
+    if (!chatId) return res.sendStatus(200);
+
+    const text = (message.text || message.caption || '').replace(/^\uFEFF/, '').trim();
+    const [rawCommand, ...args] = text.split(/\s+/);
+    const command = rawCommand?.startsWith('/') ? normalizeCommand(rawCommand) : null;
+
+    if (command === ENABLE_COMMAND || command === ENABLE_COMMAND_ALIAS) {
+      // Everything after the command is the code, with whitespace removed and
+      // lowercased: the connectors page renders it grouped in fours (`1964 774b
+      // a58c …`) for readability, so a user who types or selects what they see
+      // sends it as several tokens, and a keyboard can capitalise one of them.
+      // Minted codes carry no whitespace of their own
+      // (telegramConnectCode.mintConnectCode), so joining cannot merge two
+      // codes into one — it can only reassemble the one that was displayed.
+      await handleEnableCommand(chat, args.join('').toLowerCase());
+      return res.sendStatus(200);
+    }
+
+    const integration = await Integration.findOne({
+      type: 'telegram',
+      isActive: true,
+      'config.chatId': chatId,
+      'config.adminPause': { $exists: false },
+    });
+
+    if (command === SUMMARY_COMMAND) {
+      await handleSummaryCommand(chat, integration);
+      return res.sendStatus(200);
+    }
+
+    if (command === POD_SUMMARY_COMMAND || command === TLDR_COMMAND) {
+      await handlePodSummaryCommand(chat, integration);
+      return res.sendStatus(200);
+    }
+
+    if (command === MODE_COMMAND) {
+      await handleModeCommand(chat, integration, args[0]);
+      return res.sendStatus(200);
+    }
+
+    if (command === STATUS_COMMAND) {
+      await handleStatusCommand(chat, integration);
+      return res.sendStatus(200);
+    }
+
+    if (command === MUTE_COMMAND) {
+      await handleMuteCommand(chat, integration, args[0]);
+      return res.sendStatus(200);
+    }
+
+    if (command === UNMUTE_COMMAND) {
+      await handleUnmuteCommand(chat, integration);
+      return res.sendStatus(200);
+    }
+
+    if (command === HELP_COMMAND) {
+      await sendToChat(chatId, HELP_TEXT);
+      return res.sendStatus(200);
+    }
+
+    if (!integration) return res.sendStatus(200);
+
+    // Live bridge: linked chats with config.liveRelay relay straight into the
+    // pod as real messages (mentions fire, agents wake). Commands above keep
+    // their legacy handling; everything else here short-circuits the buffer.
+    if (integration.config?.liveRelay) {
+      // Deliberately NOT wrapped: a non-2xx makes Telegram redeliver, and
+      // whether that retry is a repair or a duplicate depends on which side of
+      // the pod write we failed on. relayTelegramMessageToPod swallows its own
+      // post-write failures and resolves, so anything that reaches here threw
+      // before the message was persisted — nothing exists to duplicate, and the
+      // redelivery is the only thing that saves the update. Adding a blanket
+      // catch + sendStatus(200) here silently drops those.
+      // eslint-disable-next-line global-require
+      const bridge = require('../../services/telegramBridgeService');
+      await bridge.relayTelegramMessageToPod({
+        integration,
+        telegramMessage: message,
+      });
+      return res.sendStatus(200);
+    }
+
+    const provider = registry.get('telegram', integration);
+    const { events } = provider.getWebhookHandlers();
+    // await, not return: a rejected promise returned from inside `try` escapes
+    // this catch (express 4 won't catch it either), and the claim above would
+    // survive to swallow Telegram's redelivery.
+    return await events(req, res);
+  } catch (error) {
+    console.error('Telegram webhook error', error);
+    // Forget-on-error: the 500 makes Telegram redeliver this update_id; the
+    // claim must not survive to swallow that retry. (Per the liveRelay comment
+    // above, anything that threw did so before the pod write persisted.)
+    if (updateId !== undefined && updateId !== null) {
+      await releaseWebhookDelivery('telegram', String(updateId));
+    }
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+module.exports = router;
+// LEGACY: in-platform webhook. External provider service will replace this route.
+
+export {};

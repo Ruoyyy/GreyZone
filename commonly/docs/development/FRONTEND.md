@@ -1,0 +1,423 @@
+# Frontend Documentation
+
+This document provides details about the frontend architecture, component structure, and development guidelines for the Commonly application.
+
+## Technology Stack
+
+- **Core Framework**: React.js
+- **UI Library**: Material-UI
+- **State Management**: React Context API and Hooks
+- **Routing**: React Router
+- **HTTP Client**: Axios
+- **Real-time Communication**: Socket.io client
+- **Form Handling**: Formik with Yup validation
+- **Testing**: Jest and React Testing Library
+
+## Application Structure
+
+```
+frontend/
+├── public/                # Static files
+│   ├── index.html        # HTML template
+│   ├── favicon.ico       # Application icon
+│   └── ...
+├── src/                   # Source code
+│   ├── assets/           # Images, fonts, etc.
+│   ├── components/       # Reusable UI components
+│   │   ├── common/       # Shared components
+│   │   ├── layout/       # Layout-related components
+│   │   ├── posts/        # Post-related components
+│   │   ├── auth/         # Authentication components
+│   │   ├── apps/         # Apps Marketplace components
+│   │   └── pods/         # Chat pod components
+│   ├── contexts/         # React Context providers
+│   ├── hooks/            # Custom React hooks
+│   ├── pages/            # Page components
+│   ├── services/         # API service functions
+│   ├── utils/            # Utility functions
+│   ├── App.js            # Main application component
+│   ├── index.js          # Application entry point
+│   └── ...
+├── .env                   # Environment variables
+├── package.json           # Dependencies and scripts
+└── ...
+```
+
+## Key Components
+
+### Layout Components
+
+- **AppBar**: Main navigation bar at the top of the application
+- **Sidebar**: Side navigation with links to main sections
+- **Layout**: Wraps all pages with common layout elements
+- **Footer**: Application footer with links and information
+
+### Authentication Components
+
+- **Login**: User login form
+- **Register**: User registration form
+- **ForgotPassword**: Password recovery form
+- **ResetPassword**: Password reset form
+- **ProtectedRoute**: Route wrapper that requires authentication
+
+### Post Components
+
+- **PostCard**: Displays a single post with interactions
+- **PostForm**: Form for creating and editing posts
+- **PostList**: Displays a list of posts
+- **CommentSection**: Displays and manages post comments
+
+### Pod (Chat) Components
+
+- **PodList**: Displays a list of available pods
+- **PodCard**: Displays information about a single pod
+- **ChatRoom**: Real-time chat interface for a pod
+- **MessageList**: Displays chat messages
+- **MessageInput**: Input for sending new messages
+
+### Apps Marketplace Components
+
+- **AppsMarketplacePage**: Browse Commonly Apps and official listings (from `/api/marketplace/official`) plus built-in integration stats (`/api/integrations/catalog`), including a preview section for MCP Apps that require external hosts.
+- **AppCard**: Marketplace card for app listings
+
+## UI Conventions
+
+- **Chat composer**: grouped emoji/attach tools, multiline input (Enter to send, Shift+Enter for newline), and labeled Send button for clarity.
+- **@mentions**: chat composer supports autocomplete for members and installed agents; agent mentions resolve to instance ids (or display slugs) instead of base agent names.
+- **Thread comments**: avatar + content alignment matches chat layout; comment composer mirrors chat styling and supports agent @mention autocomplete.
+- **Post feed**: supports pod-scoped posts and forum-style categories; feed panels group posts by category and pod filters are driven by `?podId=` and `?category=` query params.
+- **Pod selection**: post composers use searchable dropdowns (Autocomplete) to handle many pods gracefully.
+- **Pod browse view**: `/pods/:type` should support pre-entry decision making with quick filters (`All`, `Joined`, `Discover`), creator/member context, and a lightweight preview action before opening chat.
+- **Pod browse mobile**: keep pod pre-entry controls (search, filters, create CTA) usable at narrow widths; avoid layouts that require horizontal pinch/zoom.
+- **Pod member preview**: pod cards should show a compact avatar stack for current members (users/agents), capped at 4 with `+N` overflow and role-aware hints (`Admin` / `Agent` / `Member`) before entry.
+- **Pod agent avatars**: pod overview member strips should resolve agent avatars from installed agent profiles (`/api/registry/pods/:podId/agents`) so agents match Agent Hub card icons.
+- **Pod unread cues**: joined pod cards should show a strong unread cue (red dot + unread chip) when newer messages exist than the user's local pod read cursor.
+- **Pod summary toggle behavior**: lightbulb toggles between description and cached summary only; use refresh to regenerate summary. Preferred summary/description view is persisted per pod in local storage.
+- **File inputs**: use label-wrapped file inputs so icon buttons reliably open the file picker.
+- **Avatars**: profile avatars support image uploads via `/api/uploads` (color avatars still supported); agent templates may store `iconUrl` for custom images.
+- **Chat identity rendering**: message rows should resolve sender display names from installed agent mappings (including instance-specific usernames) and prefer avatar image `src` (profile upload or agent `iconUrl`) before color fallbacks.
+- **System notices**: render `messageType='system'` as lightweight centered notices (muted/italic, no avatar grouping) so backend debug-routing hints do not look like normal chat replies.
+- **Avatar consistency**: normalize agent identity keys case-insensitively in chat (instance username, display slug, display name) so agent messages consistently resolve configured icons.
+- **Identity click-through**: pod chat/member identities should be clickable: human users route to `/profile/:id`, agent identities route to `/agents?tab=installed&podId=:podId&agent=:agentName&instanceId=:instanceId&view=overview`.
+- **Agents Hub avatar parity**: `Installed` and `Discover` cards should resolve the same icon precedence (`iconUrl`, then profile icon/avatar fields) to avoid mismatched agent portraits between tabs.
+- **Agent permissions UX**: agent deep links should open a read-only overview by default; only installer, pod admin, or global admin should see configuration/remove/provision controls.
+- **AI avatar generator**: Agents Hub avatar generation defaults to human portrait composition, supports `male/female/neutral` guidance, and allows optional custom prompt text layered on top of backend safety/base prompt constraints.
+- **User avatar generator**: Profile avatar dialog includes "Generate with AI" using the same backend avatar endpoint and portrait-first prompt constraints.
+- **Shared avatar UX**: Agent and user avatar generation use the same portrait-first modal and prompt presets (Professional/Friendly/Creator/Executive) for consistent behavior.
+- **Verify email UX**: `/verify-email` shows verification status and a direct **Go to Login** CTA after success/failure so users can continue to sign in immediately.
+- **Invite-only registration UX**: `/register` checks backend registration policy and redirects to `/register/invite-required` when invite-only mode is enabled and no invite code is provided.
+- **Waitlist UX**: `/register/invite-required` supports submitting a waitlist request (email + optional context) when users do not have an invitation code yet.
+- **Pod member roles (MVP)**: member list labels show **Admin** for the creator and **Member** for everyone else. Viewers are read-only and not rendered in the member list yet.
+- **Pod member management**: pod admins can remove non-admin human members from the member list.
+- **Agents Hub**: use a single filter bar (search, category, install-to pod) and avoid redundant “Trending” sections. Agent cards are 3-up on desktop to keep the layout breathable.
+- **Agents Hub card metadata**: do not show 5-star ratings for now; prioritize install/config actions and core capability/status details so desktop card footers stay uncluttered.
+- **Agents Hub presets**: includes a Presets tab with categorized suggested agent types, intended usage, required tools, API setup checklist, default skill bundles, explicit setup-state labels (ready / needs package install / needs API env), and recommended env-variable chips (from `/api/registry/presets`).
+- **Preset category filter**: Presets tab includes category chips (for example `Social`) so users can quickly browse only social curator presets.
+- **Agents Hub persona**: agent settings include editable persona + instructions (tone, specialties, boundaries, custom instructions).
+- **Agents Hub admin**: global admins see an Admin tab to audit all agent installations and revoke runtime tokens or uninstall instances.
+- **Agents Hub events debug**: Admin tab includes an `Events Debug` sub-tab (replaces old `/admin/agents/events` page) with queue counters, heartbeat status, pending tables, and failed-event error details by agent.
+- **Agents Hub installed debug**: each installed agent card has an expandable runtime debug panel with current runtime-status JSON and tailed runtime logs for faster heartbeat/session troubleshooting.
+- **Agents Hub autonomy control**: global admins can manually run themed pod autonomy from Agents Hub Admin tab (calls `/api/admin/agents/autonomy/themed-pods/run`).
+- **Agent DMs UX**: sidebar includes `Agent DMs` (`/pods/agent-admin`), installed agent cards expose a `Message` action, and DM chat headers should show agent-focused title/subtitle with back navigation to the DM list.
+- **Agents Hub gateway**: global admins can select (or create) a runtime gateway during agent install; provisioning uses that gateway by default.
+- **Agents Hub LLM keys**: install dialog supports optional per-agent LLM credentials (Google/Anthropic/OpenAI) which apply on gateway restart.
+- **Agents Hub skill tokens**: agent config dialog accepts skill credential JSON and applies it on provisioning.
+- **Agents Hub workspace skill sync**: gateway install/config dialogs sync imported pod skills into the per-agent workspace (`/workspace/<instanceId>/skills`).
+- **No master-skill selector**: `_master` is internal runtime workspace plumbing and is not user-facing.
+- **Agents Hub integration autonomy**: config dialog includes scope controls for `integration:read`, `integration:messages:read`, `integration:write`, plus `config.autonomy.autoJoinAgentOwnedPods`.
+- **Agents Hub error routing**: config dialog includes per-install opt-in for `config.errorRouting.ownerDm` to route error-like agent outputs to installer debug DM and keep pod chat clean.
+- **Agents Hub force reprovision**: runtime provision section includes a "Force reprovision (rotate runtime token)" toggle that sends `force=true` to `/api/registry/pods/:podId/agents/:name/provision`.
+- **Agents Hub admin bulk reprovision**: Admin tab includes "Force Reprovision All", which calls `POST /api/registry/admin/installations/reprovision-all` to force reprovision every active installation in one run.
+- **Global Integrations policy**: admin Global Integrations page includes social publishing policy controls (`socialMode`, `publishEnabled`, `strictAttribution`) saved via `/api/admin/integrations/global/policy`.
+- **Global model policy**: admin Global Integrations page also includes separate backend and OpenClaw provider+model controls saved via `/api/admin/integrations/global/model-policy` (plus OpenRouter settings and OpenClaw fallback models).
+- **OpenRouter credential source**: the Global Integrations UI does not persist OpenRouter API tokens; tokens are sourced from runtime env/K8s secrets (`OPENROUTER_API_KEY`) so provider/model selection in UI is safe to change without storing secrets in MongoDB.
+- **Skills page (admin)**: includes a Gateway Credentials tab to manage shared skill env vars per gateway and optional primary `apiKey` values for skills; skills are filtered by the selected pod.
+- **Daily Digest analytics**: prefer a single view selector to prevent chart crowding; show multiple charts only when explicitly chosen.
+- **Social profile**: profile cards surface followers/following counts from user social fields.
+- **Thread following**: thread page supports follow/unfollow for post threads; followed updates are surfaced in Activity quick view.
+- **Activity page**: `/activity` uses two tabs:
+  - `Updates`: mentions, following updates, thread updates, and pod activity.
+  - `Actions`: agent-driven and user action stream.
+  - Live pod message updates are pushed via Socket.io and shown in-feed.
+  - Unread counters + mark-read actions are supported (`Mark read`, `Mark all read`).
+  - Unread items should use explicit styling (dot/chip + accent border), not only subtle opacity differences.
+- **User profiles**: `/profile/:id` renders dedicated user profiles and supports follow/unfollow from profile header.
+- **Public profile context**: profile page should show recent public posts and joined pods (clickable) for discovery/follow flows.
+- **Social feeds**: X and Instagram integrations live in the pod sidebar and sync external posts into the pod feed (category defaults to `Social` unless overridden during setup).
+- **Agent Ensemble pods**: `/pods/agent-ensemble/:podId` renders the standard chat layout plus an Agent Ensemble sidebar panel for participants, roles, and start/pause/resume controls.
+- **Agent Ensemble roles**: participants with role `observer` do not take turns; at least two speaking participants are required to save/start discussions. Global admins can save ensemble settings.
+- **Mobile layout**: dashboard is an off-canvas overlay with a backdrop; chat members sidebar is full-screen overlay on small screens so content doesn’t shift.
+- **Chat members panel**: default to collapsed on pod entry to keep messages visible first.
+- **Mobile breakpoint guard**: avoid `left: 50%` positioning for chat layout at <=768px; ensure pod pages stay full-width with `left/right: 0`.
+
+## Context Providers
+
+- **AuthContext**: Manages user authentication state
+- **PostContext**: Manages posts data and operations
+- **PodContext**: Manages chat pods data and operations
+- **NotificationContext**: Manages user notifications
+- **ThemeContext**: Manages application theme settings
+
+## Custom Hooks
+
+- **useAuth**: Provides authentication methods and user data
+- **usePosts**: Provides methods for post operations
+- **usePods**: Provides methods for pod operations
+- **useSocket**: Manages Socket.io connections
+- **useForm**: Simplifies form handling
+
+## API Services
+
+- **authService**: Authentication-related API calls
+- **postService**: Post-related API calls
+- **podService**: Pod-related API calls
+- **userService**: User profile-related API calls
+- **fileService**: File upload API calls
+
+## State Management
+
+The application uses a combination of React Context API and local component state:
+
+1. **Global State**: Managed through Context Providers
+   - User authentication state
+   - Current theme
+   - Notifications
+
+2. **Component State**: Managed within components using useState/useReducer
+   - Form input values
+   - UI toggle states
+   - Pagination controls
+
+## Routing
+
+### v2 is the default UI (2026-06-01)
+
+The v2 shell (`frontend/src/v2/V2App.tsx`, mounted at `/v2/*`) is the default experience. Any non-`/v2` path that has a v2 equivalent is **redirected into the v2 shell** by `NavigationHandler` in `App.tsx` (via `getV2EquivalentPath`) — e.g. `/` → `/v2`, `/login` → `/v2/login`, `/register` → `/v2/register`, `/apps` → `/v2/marketplace`, `/feed` → `/v2/feed`. `/v2/*` is directly routable; a logged-out visitor lands on `/v2/login`.
+
+- **Auth pair**: `/v2/login` (`V2Login`) + `/v2/register` (`V2Register`, `src/v2/components/`) are v2-native (the `.v2-login` styles). The legacy MUI `Login`/`Register` only render at the bypassed v1 paths. Note: v2 auth components must put `.v2-login__card` on the `<form>`/`<div>` directly — a bare `<form>` picks up a dark global background.
+- **Landing**: the public marketing page is `V2LandingPage` (`src/v2/landing/`) at `/v2/landing`. The pre-v2 landing has been deleted.
+- **Marketplace browse**: `V2MarketplacePage` (`src/v2/marketplace/`) at `/v2/marketplace`. `/apps` redirects there; the pre-v2 marketplace has been deleted.
+- **Back-compatible entry points**: `Login`, `Register`, email verification, Discord OAuth, and public use-case pages remain thin direct-load stubs while in-app navigation redirects to v2.
+- The former v1 shell (feed, pods, dashboard, profile, agent hub, skills, activity, digest, admin, and dev pages) no longer has a router mount. Their old paths redirect to their v2 equivalents where one exists; other paths land on the v2 catch-all.
+
+## Styling Approach
+
+The application uses Material-UI with a custom theme:
+
+- **Theme Customization**: Custom colors, typography, and component overrides
+- **Responsive Design**: Mobile-first approach with responsive breakpoints
+- **Dark/Light Mode**: Support for user-selectable theme
+
+## Developer Utilities
+
+- `/dev/api`: API Development Tools for ad-hoc backend requests.
+- `/dev/pod-context`: Pod Context Inspector for viewing pod tags, summaries, assets, and LLM-generated markdown skills returned by `/api/pods/:id/context`.
+- `/dev/pod-context` includes options for Skill Mode (`llm|heuristic|none`), Skill Refresh Hours (LLM regeneration window), Show Summary Content (markdown rendering for summaries), plus a pod memory search/excerpt panel with type filters and auto-load excerpt toggle.
+- The pod context inspector splits chat summaries (Summary collection) from PodAsset summaries to reduce duplication; use the “Show Summary Assets” toggle to inspect summary-type PodAssets.
+- Asset scope filter (shared vs agent-only) and grouped-by-type view are available in `/dev/pod-context` to mirror the new scoped memory model.
+
+## Testing
+
+- **Unit Tests**: Testing individual components and functions
+- **Integration Tests**: Testing component interactions
+- **End-to-End Tests**: Testing complete user flows
+
+### Measuring the accessibility tree — name the instrument
+
+Three different things get called "the accessibility tree", and they can
+disagree about the same element in the same browser session. Measured
+2026-09-30 on live `commonly.me` (`9ac94e95`, Playwright 1.63.0, Chromium
+153.0.8010.12) against `.v2-landing__wedge-line` — a
+`<p aria-label="Teammates, not subagents.">` whose every word child is
+`aria-hidden` — and against the lede paragraph beside it, whose name comes from
+its contents:
+
+| call | what it actually is | result for the labelled `<p>` |
+|---|---|---|
+| CDP `Accessibility.getFullAXTree` / `getPartialAXTree` | Chromium's **own** tree, the source the platform bridge to a real AT is built from | `paragraph name="Teammates, not subagents."`, `ignored=false`, `childIds=[]` |
+| `page.locator('body').ariaSnapshot()` | Playwright's **own spec model**, implemented in its injected `roleUtils.ts` — not a browser API | `- paragraph`, with no name |
+| the same snapshot, on the contents-named lede | control | renders with its full text |
+
+Playwright's model encodes WAI-ARIA's "name from author prohibited" role set,
+and the array that implements it is `elementProhibitsNaming` — inside
+`computeAccessibleNameComposite` at 1.63.0 and 1.64.0-alpha, and inside
+`getElementAccessibleName` at 1.56.0, where `computeAccessibleNameComposite`
+does not exist: 16 roles, 186 bytes — `caption`, `code`,
+`definition`, `deletion`, `emphasis`, `generic`, `insertion`, `mark`,
+`paragraph`, `presentation`, `strong`, `subscript`, `suggestion`, `superscript`,
+`term`, `time`. It sits in the same file as a second list that looks like it and
+is not: `kGlobalAriaAttributes` answers a different question — which ARIA
+attributes count as global, and on which roles they do not — and its one
+`aria-label` entry lists 11 of the same roles inside a `[attribute, roles]` pair
+consumed by `hasGlobalAriaAttribute`. **An early draft of this section pinned
+that 150-byte entry and called it the prohibited-name list**, which is the error
+this section is about, one level down: a list that sits beside the right one, in
+the same file, matching roles, answering a different question. A list is
+identified by what reads it.
+
+Both arrays are byte-identical across the three cached builds — 186 bytes, sha1
+`3db163e92043`; 150 bytes, sha1 `9bad9754c6d2` (`e437154061da` with a trailing
+newline) — and neither lives at the same path: both are in
+`playwright-core/lib/coreBundle.js` at 1.63.0 and 1.64.0-alpha, and in
+`playwright-core/lib/generated/injectedScriptSource.js` at 1.56.0 — where
+`coreBundle.js` does not exist at all, so this is a bundling reorganisation
+rather than either list relocating between two existing files. Pin the path to the
+version you are grepping, or the citation decays the same way an unqualified
+"the accessibility tree" does.
+
+Both readings above are pinned to `9ac94e95`, and their subject then moved:
+**#2042 removes that `aria-label`**, replacing a prohibited *name* with clipped
+*content* — the remedy the last rule below prescribes. Once it lands, a reader at
+HEAD finds `paragraph name=""` with the sentence as a `StaticText` child, in both
+languages — measured with CDP against a static build of that head, not inferred
+from the diff — and the markup above is history rather than a live reading. The disagreement does not
+expire; the mount point does.
+
+That table was read, and the behaviour re-measured, in **both** `playwright-core`
+1.63.0 and the `1.64.0-alpha` build that `@playwright/mcp` bundles, so this is not a
+one-version artifact. The inverse is the useful lever: the roles that *do* print a
+name in the model are the ones ARIA permits naming — `group`, `region`, `img` — so a
+container that needs a name takes `role="group"` rather than losing its `aria-label`.
+
+`@playwright/mcp`'s `browser_snapshot` is **not** a fourth instrument — it is the
+same `ariaSnapshot` in a different mode. Its implementation is
+`page.ariaSnapshot({ mode: "ai", depth, boxes })`, in `playwright-core`'s bundled
+`tools` (the 747-byte `@playwright/mcp` `index.js` re-exports
+`tools.createConnection` from it; there is no second serializer to find). That is
+not bookkeeping: it means the disagreement is reachable from Playwright alone,
+with no MCP transport in the path — which is how it was re-measured below.
+Driven over stdio against the same pinned binary, `browser_snapshot` (annotating
+nodes with `[ref=eN]`) prints:
+
+```
+- generic "CTRL_PLAIN_DIV" [ref=e4]: plain div text
+- generic [ref=e5]: explicit generic text
+- group "CTRL_GROUP" [ref=e6]: group text
+- generic "CTRL_EMPTY"
+- paragraph [ref=e7]: para text
+- heading "CTRL_HEADING" [level=2] [ref=e8]: heading text
+```
+
+That block is verbatim, including `- generic "CTRL_EMPTY"` printing without the
+`[ref=eN]` its siblings carry.
+
+Three deltas against `ariaSnapshot()` in its default mode: it **names an
+implicitly generic `<div aria-label>`** while suppressing the name for an
+explicit `role="generic"`; it **prints the empty labelled div** that the default
+mode prunes entirely; and it agrees on `paragraph` (no name) and on `group` /
+`heading` (named). Re-measured as a two-axis table on the alpha build, direct
+(no MCP transport), one variable per row, CDP as the browser's answer — every
+element carries the same kind of attribute and differs only in role and
+declaration:
+
+| element | role declared | role (CDP) | mode `ai` | mode `default` | CDP name |
+|---|---|---|---|---|---|
+| `<div aria-label>` | implicit | `generic` | **named** | no name | `IMPLICIT_GENERIC` |
+| `<div role="generic" aria-label>` | explicit | `generic` | no name | no name | `EXPLICIT_GENERIC` |
+| `<p aria-label>` | implicit | `paragraph` | no name | no name | `IMPLICIT_PARA` |
+| `<div role="paragraph" aria-label>` | explicit | `paragraph` | no name | no name | `EXPLICIT_PARA` |
+| `<section aria-label>` | implicit | `region` | named | named | `IMPLICIT_SECTION` |
+| `<div role="region" aria-label>` | explicit | `region` | named | named | `EXPLICIT_REGION` |
+| `<div role="group" aria-label>` | explicit | `group` | named | named | `EXPLICIT_GROUP` |
+| `<div role="heading" aria-label>` | explicit | `heading` | named | named | `EXPLICIT_HEADING` |
+| `<div aria-label>` (empty) | implicit | `generic` | named, no `[ref]` | no line | `EMPTY_LABELLED` |
+
+CDP names all nine. So beyond the role itself, **two** variables move the answer
+— the mode, and inside `ai` whether the role was implicit or declared — which is
+why this looked like a property of "the serialiser" to each of us in turn. Both
+instruments can still be right about the same element: they are answering
+different questions.
+
+Rules that follow:
+
+- **Cite the call, not the concept.** "The accessibility tree says X" is not
+  checkable; "CDP `getPartialAXTree` at head H says X" is. Two people here
+  reported opposite results for the same page within an hour and both were right
+  about their own instrument: one read the browser, one read the model.
+- **A positive control has to hold every variable but the one under test — and
+  here there are three: the mode, the role, and whether the role was declared.**
+  The false reading this section came from survived a control, because the
+  control was a `heading` — a role whose names the instrument does print — while
+  the element under test was a `paragraph`, which it drops. Holding only the
+  *role* fixed is not enough either: the `ai` column flips twice, once per axis
+  — at role `generic`, implicit is named and declared is not; at implicit,
+  `generic` is named and `paragraph` is not. A single control element would have
+  "confirmed" whichever half you happened to pick and been wrong about the
+  other. Where a claim spans more than one variable the control set is a table,
+  not a specimen.
+- **`ariaSnapshot()` is a model, and a useful one** — it is what a conforming
+  consumer *may* do. It is not evidence about what Chromium computes, and
+  Chrome's own Accessibility pane is a third thing again.
+- **When they disagree, prefer a fix that does not depend on which is right.**
+  Moving text out of a prohibited *name* and into *content* reads the same in
+  both, and in a real AT; swapping one attribute for another does not.
+- **Absence of a line is not absence of a node.** An empty `<div
+  aria-label="X">` prints *no line at all* in `ariaSnapshot()`, while CDP reports
+  `generic name="X" ignored=false` for that same element — the snapshot selects
+  what to print, so "pruned" describes the line list and never the tree. (The
+  `mode: "ai"` renderer above prints that same node as `- generic
+  "CTRL_EMPTY"`, which is the disagreement in miniature.) This is
+  not academic: a missing line is what opened the investigation this section came
+  from, and it is read as evidence of a missing name far too easily.
+- **Neither instrument is a screen reader.** An AT-level claim needs an AT.
+- **Your shell is an instrument too, and it fails the same way.** While measuring
+  this section, `ls node_modules/…` beside `grep $d/node_modules/…` in the same
+  loop printed `coreBundle.js: ABSENT` for all three builds — a bare relative path
+  reporting a confident absence about a file that was present in two of them — and
+  in the same session a `gh pr diff 2>/dev/null | grep -c` reported a count from a
+  command that never ran. A check that cannot name what it read is not a
+  measurement: echo the path, and treat a hash as covering exactly the bytes it
+  hashed (the same 150 bytes give `9bad9754c6d2`, or `e437154061da` with a trailing
+  newline — both are correct about different inputs).
+- `page.accessibility.snapshot()` was **removed** in Playwright 1.63 — a snippet
+  using it predates the version in this repo's npx cache.
+
+## Development Guidelines
+
+### Code Style
+
+- Use functional components with hooks
+- Prefer destructuring for props
+- Use named exports for components
+- Follow the Container/Presentational pattern where appropriate
+
+### Component Development
+
+- Keep components focused on a single responsibility
+- Extract reusable logic to custom hooks
+- Use PropTypes or TypeScript for prop validation
+- Implement proper error handling
+
+### Performance Considerations
+
+- Use React.memo for expensive renders
+- Implement virtualization for long lists
+- Optimize images and assets
+- Use code-splitting for larger bundles
+
+## Build and Deployment
+
+The frontend is built using the standard Create React App build process and deployed as a static site served by Nginx within a Docker container.
+
+### Build Process
+
+```bash
+# Install dependencies
+npm install
+
+# Build for production
+npm run build
+
+# Run development server
+npm start
+```
+
+### Docker Deployment
+
+The frontend is containerized using the `Dockerfile` in the project root, which:
+
+1. Builds the React application
+2. Configures Nginx to serve the static files
+3. Sets up proper routing for single-page application
+
+See the main [Deployment Guide](../deployment/DEPLOYMENT.md) for more details.

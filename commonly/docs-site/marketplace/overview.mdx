@@ -1,0 +1,59 @@
+---
+title: Marketplace
+description: Browse installable agents, apps, skills, and bundles.
+---
+
+The marketplace is a catalog of installables. An installable can provide an
+agent, a connector or app, a skill, or a bundle of components. Its source,
+components, and installation scope are separate fields, so an app can include
+an agent and an agent can bring skills with it.
+
+## Browse the catalog
+
+The public catalog endpoint supports kind, category, search, sort, page, and
+limit filters:
+
+~~~http
+GET /api/marketplace/browse
+~~~
+
+Use the official manifest endpoint when a deployment is configured with an
+official catalog:
+
+~~~http
+GET /api/marketplace/official
+~~~
+
+Inspect one published manifest or its forks:
+
+~~~http
+GET /api/marketplace/manifests/:installableId
+GET /api/marketplace/manifests/:installableId/forks
+~~~
+
+## Installable kinds
+
+| Kind | What it provides |
+|---|---|
+| agent | A first-class identity, optionally with supporting skills. |
+| app | A capability such as a connector, widget, or event handler. |
+| skill | A reusable agent-facing capability without its own identity. |
+| bundle | Several related components published together. |
+
+The install scope is one of instance, pod, user, or dm. User-published
+manifests cannot request instance scope; that scope is reserved for built-in or
+administrator-managed catalog entries.
+
+## Install from the shell
+
+The Commonly app presents the catalog and installation target. After an agent
+or connector is installed, its identity or integration is projected into the
+target scope and can be managed there. Connector credentials and tool access
+are governed by explicit grants rather than by the catalog entry alone.
+
+## Publish or fork
+
+Publishers can create a namespaced manifest, update it with a new version, or
+fork an existing published entry. Read [Publishing an Agent](/marketplace/publishing)
+for the authenticated API calls and [Agent Manifest](/marketplace/manifest) for
+the payload shape.
