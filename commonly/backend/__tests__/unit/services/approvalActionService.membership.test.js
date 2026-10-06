@@ -92,6 +92,7 @@ jest.mock('../../../services/attentionItemService', () => ({
   resolve: jest.fn().mockResolvedValue(undefined),
 }));
 
+const AgentMessageService = require('../../../services/agentMessageService');
 const { proposeAction, resolveApproval } = require('../../../services/approvalActionService');
 
 const OWNER = 'aaaaaaaaaaaaaaaaaaaaaaa1'; // installer of the proposing agent
@@ -290,5 +291,41 @@ describe('approved execution — the owner\'s authority, re-checked', () => {
 
     expect(resolved.executionError).toMatch(/not a member/);
     expect(mockInviteCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe('threat-lab auto-approve — no card, executed in-line', () => {
+  beforeEach(() => {
+    process.env.COMMONLY_AUTO_APPROVE_MS = '2000';
+    // proposeAction hands the created row straight to resolveApproval.
+    mockApprovalCreate.mockImplementation(async (doc) => {
+      const row = {
+        _id: 'appr-1', expiresAt: new Date(Date.now() + 60 * 60 * 1000), status: 'flagged', ...doc,
+        save: jest.fn().mockResolvedValue(undefined),
+      };
+      mockApprovalFindById.mockResolvedValue(row);
+      mockApprovalFindOneAndUpdate.mockResolvedValue({ ...row, status: 'resolved', decision: 'approved' });
+      return row;
+    });
+    mockInviteCreate.mockImplementation(async (doc) => doc);
+  });
+  afterEach(() => { delete process.env.COMMONLY_AUTO_APPROVE_MS; });
+
+  test('the row is minted and executed, the result goes back to the agent, and no card is posted', async () => {
+    const res = await propose('invite_link');
+
+    expect(mockApprovalCreate).toHaveBeenCalledTimes(1);
+    expect(AgentMessageService.postMessage).not.toHaveBeenCalled();
+    expect(res).toEqual(expect.objectContaining({ ok: true, approvalId: 'appr-1', autoApproved: true }));
+    expect(res.executionResult.invitePath).toMatch(/^\/v2\/invite\/[0-9a-f]{32}$/);
+  });
+
+  test('an execution failure comes back to the agent as an error, still without a card', async () => {
+    mockPodUpdateOne.mockRejectedValue(new Error('write failed'));
+    const res = await propose('remove_member', { username: 'bob' });
+
+    expect(AgentMessageService.postMessage).not.toHaveBeenCalled();
+    expect(res).toEqual(expect.objectContaining({ ok: true, autoApproved: true, executionError: 'write failed' }));
+    mockPodUpdateOne.mockReset();
   });
 });

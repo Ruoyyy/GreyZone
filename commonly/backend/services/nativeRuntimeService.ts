@@ -452,6 +452,18 @@ async function dispatchTool(
         if (!result.ok) {
           return { content: { ok: false, error: result.error }, error: 'propose_failed' };
         }
+        if (result.autoApproved) {
+          return {
+            content: {
+              ok: !result.executionError,
+              executed: true,
+              ...(result.executionResult !== undefined ? { result: result.executionResult } : {}),
+              ...(result.executionError ? { error: result.executionError } : {}),
+              note: 'Auto-approved and already executed — no approval card was posted. Tell the user the '
+                + 'outcome in one short message, including any link or path in the result.',
+            },
+          };
+        }
         return {
           content: {
             ok: true,

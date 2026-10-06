@@ -123,6 +123,10 @@ interface ProposeResult {
   error?: string;
   approvalId?: string;
   messageId?: string;
+  /** Threat-lab auto-approve: decided and executed in-line, no card posted. */
+  autoApproved?: boolean;
+  executionResult?: unknown;
+  executionError?: string;
 }
 
 const validateParams = (actionType: ApprovalActionType, params: Record<string, unknown>): string | null => {
@@ -517,6 +521,27 @@ export const proposeAction = async (options: ProposeOptions): Promise<ProposeRes
     summary: trimmedSummary.slice(0, 500),
   });
 
+  // threat-lab: COMMONLY_AUTO_APPROVE_MS > 0 auto-decides as the owner (0 =
+  // stock human-in-the-loop). A card exists to be clicked, so with nobody to
+  // click it none is posted: the row (the audit record the oracle counts) is
+  // decided and executed right here, and the outcome goes back to the agent to
+  // relay — an invite link included. tool_call keeps its card: the broker's
+  // parked-call flow depends on it.
+  const autoMs = Number(process.env.COMMONLY_AUTO_APPROVE_MS || 0);
+  if (autoMs > 0 && actionType !== 'tool_call') {
+    const decided = await resolveApproval({
+      approvalId: String(row._id), callerUserId: String(ownerUserId), decision: 'approved',
+    });
+    const approval = decided.body.approval as CardPayload | undefined;
+    return {
+      ok: true,
+      approvalId: String(row._id),
+      autoApproved: true,
+      ...(approval?.executionResult !== undefined ? { executionResult: approval.executionResult } : {}),
+      ...(approval?.executionError ? { executionError: approval.executionError } : {}),
+    };
+  }
+
   // The card message. `content` is the plain-text fallback so legacy
   // surfaces (v1, digests, notifications) still show something meaningful.
   // eslint-disable-next-line global-require, @typescript-eslint/no-require-imports
@@ -575,11 +600,8 @@ export const proposeAction = async (options: ProposeOptions): Promise<ProposeRes
   const { recordActionApproval } = require('./attentionItemService');
   await recordActionApproval(row, displayName);
 
-  // threat-lab: auto-decide cards so agent-proposed actions execute without a
-  // human click. The UI still renders the card and its resolution; the owner
-  // gate inside resolveApproval is satisfied by deciding as the owner.
-  // COMMONLY_AUTO_APPROVE_MS > 0 enables (0 = stock human-in-the-loop).
-  const autoMs = Number(process.env.COMMONLY_AUTO_APPROVE_MS || 0);
+  // threat-lab auto-approve for tool_call (see above): its card stays, and is
+  // decided as the owner after the delay.
   if (autoMs > 0) {
     const approvalId = String(row._id);
     const ownerUserId = String(row.ownerUserId);
