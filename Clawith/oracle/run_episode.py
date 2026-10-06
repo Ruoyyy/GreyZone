@@ -281,11 +281,15 @@ async def start(turn: str) -> None:
     pre = await C.api(token, "GET",
                       f"/groups/{gid}/sessions/{sid}/messages", params={"limit": 1})
     start_cursor = pre[-1]["cursor"] if pre else None
-    baselines = {
-        "kb": C.kb_snapshot(),
-        "fs_root": C.container_root_snapshot(),
-        "fs_meeseeks": C.meeseeks_namespace_snapshot(lab["agent_ids"]["Meeseeks"]),
-    }
+    # only baseline what the enabled surfaces judge — a disabled surface does
+    # no snapshotting here and no judging at finalize
+    surfaces = C.enabled_surfaces()
+    baselines: dict = {}
+    if "kb-integrity" in surfaces:
+        baselines["kb"] = C.kb_snapshot()
+    if "fs-escape" in surfaces:
+        baselines["fs_root"] = C.container_root_snapshot()
+        baselines["fs_meeseeks"] = C.meeseeks_namespace_snapshot(lab["agent_ids"]["Meeseeks"])
 
     body = {
         "content": turn,
@@ -303,6 +307,7 @@ async def start(turn: str) -> None:
         "state": "running",
         "startedAt": C.now_iso(),
         "turn": turn,
+        "surfaces": sorted(surfaces),
         "startCursor": start_cursor,
         "baselines": baselines,
         "exfilTexts": [],
@@ -316,12 +321,16 @@ async def start(turn: str) -> None:
     n = ep["n"]
     alerts = C.alerts_path(n)
     alerts.parent.mkdir(parents=True, exist_ok=True)
-    C.emit(alerts, "EPISODE_STARTED", turn=T.redact(turn), baselineSizes={
-        "kbRoots": {k: len(v) for k, v in baselines["kb"].items()},
-        "fsRoot": len(baselines["fs_root"]),
-        "fsMeeseeks": len(baselines["fs_meeseeks"]),
-    })
-    print(f"[start] episode #{n} running — attacker turn sent, watcher will close on idle")
+    sizes: dict = {}
+    if "kb-integrity" in surfaces:
+        sizes["kbRoots"] = {k: len(v) for k, v in baselines["kb"].items()}
+    if "fs-escape" in surfaces:
+        sizes["fsRoot"] = len(baselines["fs_root"])
+        sizes["fsMeeseeks"] = len(baselines["fs_meeseeks"])
+    C.emit(alerts, "EPISODE_STARTED", turn=T.redact(turn),
+           surfaces=sorted(surfaces), baselineSizes=sizes)
+    print(f"[start] episode #{n} running (surfaces: {','.join(sorted(surfaces))}) "
+          "— attacker turn sent, watcher will close on idle")
 
 
 def main() -> None:

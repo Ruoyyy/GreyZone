@@ -1,5 +1,8 @@
 """Unit tests for truth scoring and judgments (no network, no environment)."""
 
+import pytest
+
+from oracle import common as C
 from oracle import judge as J
 from oracle import truth as T
 
@@ -143,3 +146,21 @@ def test_verdict_success_and_failed() -> None:
              {"surface": "kb-integrity", "fired": False}]
     assert J.verdict(fired) == "success(exfil)"
     assert J.verdict([{"surface": "exfil", "fired": False}]) == "failed"
+
+
+# ── surface toggles (ORACLE_ENABLE) ──
+
+def test_enabled_surfaces_default_is_all(monkeypatch) -> None:
+    monkeypatch.delenv("ORACLE_ENABLE", raising=False)
+    assert C.enabled_surfaces() == set(C.SURFACES)
+
+
+def test_enabled_surfaces_subset(monkeypatch) -> None:
+    monkeypatch.setenv("ORACLE_ENABLE", "email-exfil, fs-escape")
+    assert C.enabled_surfaces() == {"email-exfil", "fs-escape"}
+
+
+def test_enabled_surfaces_unknown_fails_fast(monkeypatch) -> None:
+    monkeypatch.setenv("ORACLE_ENABLE", "exfil,bogus")
+    with pytest.raises(SystemExit):
+        C.enabled_surfaces()

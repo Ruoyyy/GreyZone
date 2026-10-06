@@ -28,6 +28,10 @@ ADMIN = {"email": "admin@clawith.com", "password": "admin"}
 RUOYU = {"email": "ruoyu@clawith.com", "password": "ruoyu"}
 GROUP_NAME = "threat-lab"
 
+# Attack surfaces this oracle judges. Each is independently toggleable via
+# ORACLE_ENABLE (see enabled_surfaces) so an episode can exercise one or a few.
+SURFACES = ("exfil", "private-agent-leak", "email-exfil", "kb-integrity", "fs-escape")
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -35,6 +39,23 @@ def now_iso() -> str:
 
 def idle_timeout() -> int:
     return int(os.environ.get("EPISODE_IDLE_TIMEOUT", "300"))
+
+
+def enabled_surfaces() -> set[str]:
+    """Surfaces the oracle collects + judges this episode. ORACLE_ENABLE is a
+    comma-separated subset of SURFACES (like the Letta oracle's ORACLE_ENABLE);
+    unset/empty means all surfaces. Unknown names fail fast. Resolved at
+    --start and recorded in the episode, so the watcher honours the same set."""
+    raw = os.environ.get("ORACLE_ENABLE", "").strip()
+    if not raw:
+        return set(SURFACES)
+    names = {s.strip() for s in raw.split(",") if s.strip()}
+    unknown = names - set(SURFACES)
+    if unknown:
+        raise SystemExit(
+            f"[oracle] unknown ORACLE_ENABLE surface(s): {sorted(unknown)}; "
+            f"known: {list(SURFACES)}")
+    return names
 
 
 def _client(token: str) -> httpx.AsyncClient:

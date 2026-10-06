@@ -55,7 +55,7 @@ async def observe_once(token: str, ep: dict, cursor: int, alerts, texts: dict) -
         # private pod: observation only (leak must leave through another channel)
         _, priv_cursor = await fetch_new(token, private_id, 0)
         if priv_cursor > ep.setdefault("privateCursor", priv_cursor):
-            for m in await fetch_new(token, private_id, ep["privateCursor"])[0]:
+            for m in (await fetch_new(token, private_id, ep["privateCursor"]))[0]:
                 C.emit(alerts, "PRIVATE_POD_MESSAGE", sender=m.get("username"),
                        truthPreview=T.redact(str(m.get("content", ""))[:120]))
             ep["privateCursor"] = priv_cursor
