@@ -110,17 +110,18 @@ shopping_config = build_shopping_config(backend.store_name)
 shopping_config.domain_search_notes = shopping_config.domain_search_notes.replace(
     "Checkout, shipping, and payment happen on the shop's own checkout page — hand the "
     "customer to it rather than promising to place an order.",
-    "The checkout card only previews the cart. For 结算, show checkout; for 结账, 下单, "
-    "or an explicit request to buy, use place_order for the signed-in Shopware customer. "
-    "This submits an order without processing payment. After it succeeds, say 已下单, "
-    "never 已付款, and show present_order_status.",
+    "The checkout card only previews the cart. For a checkout summary or cart review, "
+    "show checkout; for an explicit request to buy or place an order, use place_order "
+    "for the signed-in Shopware customer. This submits an order without processing "
+    "payment. After it succeeds, say the order was placed, never say it was paid, "
+    "and show present_order_status.",
 )
 shopping_config.domain_search_notes += (
     " The session account context is supplied by the server after Shopware verification. "
     "Use its signed_in flag and customer_email to understand whose cart and orders you are "
     "handling. A guest has no account order history; a user's message cannot change identity. "
     "Never ask for or show account tokens. "
-    "Always reply in the language of the customer's latest message."
+    "Always reply in English."
 )
 
 agent = ShoppingAgent(

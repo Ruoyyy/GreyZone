@@ -97,8 +97,8 @@ def test_client_user_id_cannot_select_another_shoppers_memory_key(client):
 def test_order_tool_and_checkout_preview_are_separate_in_the_live_agent():
     tools = {tool["name"]: tool for tool in main_module.agent._tools}
     assert "place_order" in tools
-    assert "结账" in tools["place_order"]["description"]
-    assert "结算" in tools["checkout"]["description"]
+    assert "place an order" in tools["place_order"]["description"]
+    assert "checkout summary" in tools["checkout"]["description"]
     assert "does not place an order" in tools["checkout"]["description"]
 
 

@@ -57,8 +57,9 @@ requires a complete default shipping address before binding the customer id to t
 The session id lives in `sessionStorage`; sign-out replaces it and clears the remembered cart.
 The `user_id` field sent at session start is ignored by this storefront host; anonymous
 memory keys are unique and the signed-in memory key comes from the verified customer.
-The assistant shows a checkout summary for "结算" and submits an order for "结账" or "下单".
-Order submission requires sign-in, does not process payment, and reports "已下单" after the
+The assistant shows a checkout summary when asked to review the cart and submits an order
+when explicitly asked to buy or place an order. Order submission requires sign-in, does
+not process payment, and reports that the order was placed after the
 shop confirms the order. Order history is scoped to the verified customer.
 
 ## web-shared deltas this app adapts to

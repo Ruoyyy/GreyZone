@@ -44,7 +44,7 @@ uvicorn storefront.api.main:app --port 8004
 | `GET /agent-profile.json` | the UCP agent profile (with the published signing key) |
 | `POST /api/chat` | SSE turn; needs `ANTHROPIC_API_KEY` (identity-linked keys also `ANTHROPIC_WORKSPACE_ID`, sent as `anthropic-workspace-id` by `shopware_common/anthropic_client.py`) |
 
-The agent uses `checkout` for a read-only summary card ("结算") and `place_order` for an explicit order request ("结账"/"下单"). Placing an order requires Shopware sign-in and a complete default shipping address. It submits the authenticated customer's Store API cart with that customer's `sw-context-token`, clears the cart, and reports "已下单". The agent does not process payment or report "已付款". Shopware's order database is the only source of order history; reads require the signed-in customer token.
+The agent uses `checkout` for a read-only summary card and `place_order` for an explicit order request. Placing an order requires Shopware sign-in and a complete default shipping address. It submits the authenticated customer's Store API cart with that customer's `sw-context-token`, clears the cart, and reports that the order was placed. The agent does not process payment or report that payment was completed. Shopware's order database is the only source of order history; reads require the signed-in customer token.
 
 Anonymous sessions receive a distinct server-generated memory key. The `user_id` supplied to `POST /api/session` cannot select a customer's data. After login, the server maps the verified Shopware customer id to an internal `shopware:<id>` key and checks the customer token on subsequent requests. The customer token is never returned as `cart_id` to the browser.
 
