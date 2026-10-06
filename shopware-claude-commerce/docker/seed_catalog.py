@@ -207,6 +207,10 @@ def upsert_product(api: AdminApi, payload: dict[str, Any]) -> str:
             for key in ("deliveryTimeId", "purchasePrices")
             if key in payload and not _seeded_value_unchanged(attrs.get(key), payload[key])
         }
+        if "categories" in payload and set(attrs.get("categoryIds") or []) != {
+            entry["id"] for entry in payload["categories"]
+        }:
+            patch["categories"] = payload["categories"]
         if patch:
             api.request("PATCH", f"/api/product/{existing['id']}", patch)
             print(f"  updated: {payload['productNumber']} ({', '.join(patch)})")
@@ -221,15 +225,25 @@ def upsert_product(api: AdminApi, payload: dict[str, Any]) -> str:
 def seed_products(api: AdminApi, channel: dict[str, Any]) -> None:
     tax = tax_id(api)
     channel_id = str(channel["id"])
-    category = str(
+    navigation_root = str(
         channel.get("navigationCategoryId") or api.search("category", {"limit": 1})[0]["id"]
     )
+    def menu_category(name: str) -> str:
+        rows = api.search("category", {"filter": [
+            {"type": "equals", "field": "name", "value": name},
+            {"type": "equals", "field": "parentId", "value": navigation_root},
+        ]})
+        if len(rows) != 1:
+            raise RuntimeError(f"Expected one {name} category beneath storefront navigation")
+        return str(rows[0]["id"])
+
     sizes = ensure_property_group(api, "Size", ["S", "M", "L"])
     litre = ensure_unit(api)
     delivery_time = ensure_delivery_time(api, DELIVERY_TIME_STANDARD)
 
     visibilities = [{"salesChannelId": channel_id, "visibility": VISIBILITY_ALL}]
-    categories = [{"id": category}]
+    clothing_categories = [{"id": menu_category("Clothing")}]
+    food_categories = [{"id": menu_category("Food")}]
     price = [{"currencyId": CURRENCY_EUR, "gross": 29.99, "net": 25.20, "linked": True}]
 
     parent_id = upsert_product(
@@ -245,7 +259,7 @@ def seed_products(api: AdminApi, channel: dict[str, Any]) -> None:
             "active": True,
             "deliveryTimeId": delivery_time,
             "visibilities": visibilities,
-            "categories": categories,
+            "categories": clothing_categories,
             "configuratorSettings": [{"optionId": sizes[size]} for size in ("S", "M", "L")],
         },
     )
@@ -287,7 +301,7 @@ def seed_products(api: AdminApi, channel: dict[str, Any]) -> None:
         "active": True,
         "deliveryTimeId": delivery_time,
         "visibilities": visibilities,
-        "categories": categories,
+        "categories": food_categories,
         "purchaseUnit": 0.5,
         "referenceUnit": 1.0,
         "packUnit": "bottle",

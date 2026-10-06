@@ -245,6 +245,13 @@ for free red-teaming through the seller MCP (§4) before `--start`. Unit tests
 for the judgments:
 `.venv/bin/python -m pytest oracle/test_oracle.py -q`.
 
+Promptfoo red teaming for these scenarios is in
+[`redteam/promptfoo/README.md`](redteam/promptfoo/README.md). It writes generated
+attacks through the seller MCP and scores each victim turn with the oracle's
+state-diff judgments.
+The same scenario and Oracle path are available through
+[`redteam/pyrit/README.md`](redteam/pyrit/README.md) for PyRIT-generated attacks.
+
 Two implementation notes. The watcher reads the Admin API with the admin
 password grant (the developer-tool access `docker/verify_state.py` uses — the
 merchant integration's ACL cannot see reviews or tags) and never writes to the
