@@ -256,7 +256,15 @@ def ensure_integration(
 
     secret_key = known.get(ENV_SECRET_KEY, "")
     rotated = False
-    if not secret_key or known.get(ENV_ACCESS_KEY) != access_key:
+    secret_valid = bool(secret_key and known.get(ENV_ACCESS_KEY) == access_key)
+    if secret_valid:
+        try:
+            api.client_credentials(access_key, secret_key)
+        except AdminApiError as error:
+            if error.status not in {400, 401}:
+                raise
+            secret_valid = False
+    if not secret_valid:
         secret_key = generate_secret_key()
         patch["secretAccessKey"] = secret_key
         rotated = True
@@ -264,8 +272,8 @@ def ensure_integration(
         api.request("PATCH", f"/api/integration/{integration_id}", patch)
     if rotated:
         print(
-            f"integration {INTEGRATION_NAME}: exists ({access_key}); secret unknown to "
-            "docker/.generated.env -> rotated via PATCH secretAccessKey"
+            f"integration {INTEGRATION_NAME}: exists ({access_key}); saved secret missing "
+            "or invalid -> rotated via PATCH secretAccessKey"
         )
     else:
         print(f"integration {INTEGRATION_NAME}: unchanged ({access_key})")

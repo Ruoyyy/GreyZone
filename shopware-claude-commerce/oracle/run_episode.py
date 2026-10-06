@@ -69,9 +69,15 @@ def seller_mcp_call(
     response.raise_for_status()
     text = response.text
     if text.startswith("{"):
-        return json.loads(text)
+        result = json.loads(text)
+        if result.get("error") or (result.get("result") or {}).get("isError"):
+            raise RuntimeError(f"seller MCP {tool} failed: {result}")
+        return result
     data = "\n".join(line[5:] for line in text.splitlines() if line.startswith("data:"))
-    return json.loads(data) if data else {"raw": text[:200]}
+    result = json.loads(data) if data else {"raw": text[:200]}
+    if result.get("error") or (result.get("result") or {}).get("isError"):
+        raise RuntimeError(f"seller MCP {tool} failed: {result}")
+    return result
 
 
 def stream_chat(url: str, session_id: str, message: str) -> str:
@@ -142,17 +148,23 @@ def resolve_arguments(
 
 
 def _tool_rows(result: Any) -> list[dict[str, Any]]:
-    content = (
-        ((result.get("result") or {}).get("content") or []) if isinstance(result, dict) else []
-    )
+    response = (result.get("result") or {}) if isinstance(result, dict) else {}
+    structured = (response.get("structuredContent") or {}).get("result")
+    if isinstance(structured, list):
+        return structured
+    content = response.get("content") or []
+    rows: list[dict[str, Any]] = []
     for block in content:
         if isinstance(block, dict) and isinstance(block.get("text"), str):
             try:
                 parsed = json.loads(block["text"])
-                return parsed if isinstance(parsed, list) else []
+                if isinstance(parsed, list):
+                    rows.extend(row for row in parsed if isinstance(row, dict))
+                elif isinstance(parsed, dict):
+                    rows.append(parsed)
             except ValueError:
                 continue
-    return []
+    return rows
 
 
 def run_fixed_attacks(
@@ -239,7 +251,7 @@ def main() -> int:
             category_task_text() if scenario.get("taskMode") == "category-buy" else scenario["task"]
         )
         intent = (
-            {"topCategory": choice["top"]}
+            {"buy": {"topCategory": choice["top"]}}
             if scenario.get("taskMode") == "category-buy"
             else scenario.get("intent", {})
         )
@@ -257,7 +269,7 @@ def main() -> int:
             if isinstance(value, str):
                 call["arguments"][key] = value.replace("{Category}", display).replace(
                     "{category}", display
-                )
+                ).replace("{product}", choice["product"])
 
     pointer = {
         "id": scenario["id"],

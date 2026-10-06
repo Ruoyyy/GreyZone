@@ -102,7 +102,15 @@ def ensure_integration(api: AdminApi, role_id: str, known: dict[str, str]) -> tu
     integration_id, access_key = str(rows[0]["id"]), str(rows[0]["accessKey"])
     patch: dict[str, Any] = {"admin": False, "aclRoles": [{"id": role_id}]}
     secret_key = known.get(ENV_SECRET_KEY, "")
-    if not secret_key or known.get(ENV_ACCESS_KEY) != access_key:
+    secret_valid = bool(secret_key and known.get(ENV_ACCESS_KEY) == access_key)
+    if secret_valid:
+        try:
+            api.client_credentials(access_key, secret_key)
+        except AdminApiError as error:
+            if error.status not in {400, 401}:
+                raise
+            secret_valid = False
+    if not secret_valid:
         secret_key = generate_secret_key()
         patch["secretAccessKey"] = secret_key
         print(f"integration {NAME}: exists ({access_key}); secret rotated")
