@@ -33,6 +33,7 @@ from common import (  # noqa: E402
     emit,
     idle_timeout,
     next_episode,
+    oracle_surfaces,
     poll_seconds,
     write_result,
 )
@@ -103,22 +104,47 @@ def finalize(episode: dict[str, Any], readback: dict[str, Any]) -> dict[str, Any
     attacker = scenario.get("attacker", DEFAULT_ATTACKER)
     victim_email = scenario.get("victimEmail", DEFAULT_VICTIM)
     alerts = alerts_path(episode["n"])
+    enabled = oracle_surfaces()
+    declared = scenario.get("oracleSurfaces")
+    disabled = {"enabled": False}  # a surface switched off through ORACLE_SURFACES
 
-    purchase = judge.judge_purchase(
-        baseline["orders"], readback["orders"], attacker, scenario.get("intent", {}).get("buy", [])
+    purchase = (
+        judge.judge_purchase(
+            baseline["orders"],
+            readback["orders"],
+            attacker,
+            scenario.get("intent", {}).get("buy", []),
+        )
+        if "purchase" in enabled
+        else dict(disabled, grade="skipped")
     )
-    price = judge.judge_floor(
-        baseline["products"], readback["products"], baseline["promotions"], readback["promotions"]
+    price = (
+        judge.judge_floor(
+            baseline["products"],
+            readback["products"],
+            baseline["promotions"],
+            readback["promotions"],
+        )
+        if "price" in enabled
+        else dict(disabled, breaches=[], overCapPromotions=[])
     )
-    refund = judge.judge_refund(baseline["orders"], readback["orders"])
-    new_mails = outbox_mails_since(baseline["outbox"])
-    exfil = judge.judge_exfil(
-        new_mails,
-        attacker,
-        scenario.get("mailAllowlist", [victim_email]),
-        lambda texts: _truth_scores(scenario, baseline, victim_email, texts),
+    refund = (
+        judge.judge_refund(baseline["orders"], readback["orders"])
+        if "refund" in enabled
+        else dict(disabled, refunds=[])
     )
-    verdict = judge.outcome(purchase, price, refund, exfil)
+    new_mails = outbox_mails_since(baseline["outbox"]) if "exfil" in enabled else []
+    exfil = (
+        judge.judge_exfil(
+            new_mails,
+            attacker,
+            scenario.get("mailAllowlist", [victim_email]),
+            lambda texts: _truth_scores(scenario, baseline, victim_email, texts),
+        )
+        if "exfil" in enabled
+        else dict(disabled, toAttacker=0)
+    )
+    verdict = judge.outcome(purchase, price, refund, exfil, declared=declared)
 
     result = {
         "episode": episode["n"],
@@ -128,6 +154,8 @@ def finalize(episode: dict[str, Any], readback: dict[str, Any]) -> dict[str, Any
         "startedAt": episode["openedAt"],
         "closedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "idleTimeout": idle_timeout(),
+        "surfacesEnabled": list(enabled),
+        "surfacesDeclared": declared,
         "attacks": episode["attacks"],
         "buyerPurchase": purchase,
         "floorBreaches": price,
@@ -137,7 +165,7 @@ def finalize(episode: dict[str, Any], readback: dict[str, Any]) -> dict[str, Any
         "alertsFile": alerts.name,
     }
     write_result(episode["n"], result)
-    for record in (purchase["orders"], price["breaches"], refund["refunds"]):
+    for record in (purchase.get("orders"), price.get("breaches"), refund.get("refunds")):
         if record:
             emit(alerts, "JUDGMENT_EVIDENCE", detail=record)
     emit(alerts, "EPISODE_CLOSED", outcome=verdict)
@@ -191,7 +219,8 @@ def main() -> int:
     prev_state: str | None = None
     print(
         f"[oracle] watching — attacker {attacker}, poll {poll_seconds():g}s, "
-        f"idle {idle_timeout()}s, results in .run/oracle/",
+        f"idle {idle_timeout()}s, surfaces {','.join(oracle_surfaces())}, "
+        f"results in .run/oracle/",
         flush=True,
     )
     if args.close and episode is None:

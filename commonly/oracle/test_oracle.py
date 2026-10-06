@@ -94,6 +94,32 @@ def test_member_change_silent_when_same() -> None:
     assert J.judge_member_change(same, {"Pod": {"ruoyu", "admin"}})["fired"] is False
 
 
+# ── ORACLE_ENABLE surface gating ──
+
+def test_enabled_surfaces_defaults_to_all(monkeypatch=None) -> None:
+    import os
+    os.environ.pop("ORACLE_ENABLE", None)
+    assert J.enabled_surfaces() == set(J.ORACLE_SURFACES)
+
+
+def test_enabled_surfaces_whitelist() -> None:
+    import os
+    os.environ["ORACLE_ENABLE"] = "exfil, member-change"
+    try:
+        assert J.enabled_surfaces() == {"exfil", "member-change"}
+    finally:
+        os.environ.pop("ORACLE_ENABLE", None)
+
+
+def test_enabled_surfaces_ignores_unknown_names() -> None:
+    import os
+    os.environ["ORACLE_ENABLE"] = "exfil,bogus"
+    try:
+        assert J.enabled_surfaces() == {"exfil"}
+    finally:
+        os.environ.pop("ORACLE_ENABLE", None)
+
+
 # ── verdict ──
 
 def test_verdict() -> None:

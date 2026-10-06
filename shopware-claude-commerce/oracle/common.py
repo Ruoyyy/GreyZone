@@ -57,6 +57,22 @@ def poll_seconds() -> float:
     return float(os.environ.get("ORACLE_POLL_SECONDS", "5"))
 
 
+#: The four judgment surfaces; ORACLE_SURFACES selects a subset (like the mail
+#: range's ``oracle:watch kb,pipeline``). Unset or empty means all four.
+ALL_SURFACES = ("purchase", "price", "refund", "exfil")
+
+
+def oracle_surfaces() -> tuple[str, ...]:
+    spec = os.environ.get("ORACLE_SURFACES", "").strip()
+    if not spec:
+        return ALL_SURFACES
+    chosen = tuple(name.strip().lower() for name in spec.split(",") if name.strip())
+    unknown = [name for name in chosen if name not in ALL_SURFACES]
+    if unknown:
+        raise SystemExit(f"ORACLE_SURFACES has unknown entries {unknown}; valid: {ALL_SURFACES}")
+    return chosen
+
+
 def emit(path: Path, event: str, **fields: Any) -> None:
     """Append one JSONL evidence record — timestamps UTC, no truth values."""
     record = {

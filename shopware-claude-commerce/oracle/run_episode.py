@@ -34,7 +34,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common import (  # noqa: E402
-    DEFAULT_ATTACKER,
     ORACLE_DIR,
     category_task_text,
     expand,
@@ -224,35 +223,40 @@ def main() -> int:
         args.start = True
 
     scenario = expand(json.loads((args.scenario / "scenario.json").read_text(encoding="utf-8")))
+    calibration_path = Path(__file__).resolve().parent / "calibrations" / f"{scenario['id']}.json"
+    calibration = (
+        expand(json.loads(calibration_path.read_text(encoding="utf-8")))
+        if calibration_path.exists()
+        else {}
+    )
     env = load_env()
     storefront = env.get("STOREFRONT_API_URL", "http://127.0.0.1:8004").rstrip("/")
     merchant_api = env.get("MERCHANT_API_URL", "http://127.0.0.1:8005").rstrip("/")
     seller_mcp = env.get("SELLER_MCP_URL", f"{storefront}/seller/mcp/")
 
-    victim = scenario["victim"]
+    # The spec is the external contract (roles, task, success criteria); the runner's
+    # own mechanics come from the calibration and the environment — never the spec.
+    victim = scenario["victim"]["role"]
+    task_kind = scenario.get("victimTask", {}).get("kind", "")
     choice = task_category()
+    category_driven = task_kind == "category-buy"
     if victim == "buyer":
-        login = scenario.get("victimLogin", {})
-        victim_email = login.get("email") or env.get("BUYER_EMAIL", "admin@shop.com")
-        victim_password = login.get("password") or env.get("BUYER_PASSWORD", "admin")
+        victim_email = env.get("BUYER_EMAIL", "admin@shop.com")
+        victim_password = env.get("BUYER_PASSWORD", "admin")
         task = args.task or (
-            category_task_text() if scenario.get("taskMode") == "category-buy" else scenario["task"]
+            category_task_text() if category_driven else scenario["victimTask"]["text"]
         )
-        intent = (
-            {"topCategory": choice["top"]}
-            if scenario.get("taskMode") == "category-buy"
-            else scenario.get("intent", {})
-        )
+        intent = {"topCategory": choice["top"]} if category_driven else {}
     else:
-        victim_email = scenario.get("victimEmail") or env.get("MERCHANT_EMAIL", "operator@shop")
+        victim_email = env.get("MERCHANT_EMAIL", "operator@shop")
         victim_password = None
-        task = args.task or scenario["task"]
-        intent = scenario.get("intent", {})
-    attacker_email = scenario.get("attacker") or env.get("ATTACKER_EMAIL", DEFAULT_ATTACKER)
+        task = args.task or scenario["victimTask"]["text"]
+        intent = {}
+    attacker_email = scenario["attacker"]["identity"]
 
-    # "{category}"/"{Category}" in payload templates follow the selected category
+    # "{category}"/"{Category}" in calibration templates follow the selected category
     display = choice["display"]
-    for call in scenario.get("attackFixed", []):
+    for call in calibration.get("attackFixed", []):
         for key, value in call.get("arguments", {}).items():
             if isinstance(value, str):
                 call["arguments"][key] = value.replace("{Category}", display).replace(
@@ -264,10 +268,9 @@ def main() -> int:
         "victim": victim,
         "victimEmail": victim_email,
         "attacker": attacker_email,
-        "taskCategory": choice["top"] if scenario.get("taskMode") == "category-buy" else None,
+        "taskCategory": choice["top"] if category_driven else None,
         "intent": intent,
-        "mailAllowlist": [a for a in scenario.get("mailAllowlist", [victim_email]) if a]
-        or [victim_email],
+        "mailAllowlist": [victim_email],
         "state": "preparing" if args.prepare else "running",
     }
     set_current_scenario({**pointer, **({"task": task} if args.start else {})})
@@ -277,7 +280,7 @@ def main() -> int:
 
     if args.prepare:
         if args.attack_fixed:
-            run_fixed_attacks(scenario, env, seller_mcp, attacker_email)
+            run_fixed_attacks(calibration, env, seller_mcp, attacker_email)
         print("[runner] prep window open — red-team through the seller MCP, then run with --start")
         return 0
 
