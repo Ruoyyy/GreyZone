@@ -22,6 +22,11 @@ const Pod = require('../../../models/Pod');
 
 jest.mock('../../../models/Pod');
 
+const mockPostMembershipMessage = jest.fn();
+jest.mock('../../../services/podMembershipMessageService', () => ({
+  postMembershipMessage: (...args) => mockPostMembershipMessage(...args),
+}));
+
 jest.mock('../../../services/agentIdentityService', () => ({
   DM_POD_TYPES_GUARD: new Set(['agent-room', 'agent-dm']),
 }));
@@ -196,5 +201,35 @@ describe('pod invite management routes', () => {
     const res = await request(app).post(`/api/invites/${TOKEN}/redeem`).send({}).expect(403);
 
     expect(res.body.code).toBe('dm_membership_refused');
+  });
+
+  describe('a successful redemption', () => {
+    const redeem = async (pod) => {
+      mockFindOne.mockResolvedValue({
+        token: TOKEN, podId: POD_ID, useCount: 0, isUsable: () => true, save: jest.fn(),
+      });
+      Pod.findById
+        .mockResolvedValueOnce({ ...pod, save: jest.fn() })
+        .mockReturnValueOnce({
+          populate: () => ({
+            populate: async () => ({ _id: POD_ID, members: [{ _id: 'user1', username: 'alice' }] }),
+          }),
+        });
+      return request(app).post(`/api/invites/${TOKEN}/redeem`).send({}).expect(200);
+    };
+
+    it('posts a "joined" system message authored by the new member', async () => {
+      await redeem(memberPod({ members: ['owner'] }));
+
+      expect(mockPostMembershipMessage).toHaveBeenCalledWith({
+        podId: POD_ID, actorUserId: 'user1', event: 'joined', username: 'alice',
+      });
+    });
+
+    it('posts nothing when the redeemer was already a member', async () => {
+      await redeem(memberPod());
+
+      expect(mockPostMembershipMessage).not.toHaveBeenCalled();
+    });
   });
 });

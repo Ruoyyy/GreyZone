@@ -14,6 +14,25 @@ describe('V2MessageRow', () => {
     process.env.REACT_APP_API_URL = previousApiUrl;
   });
 
+  it.each([
+    [{ kind: 'membership', event: 'joined', username: 'alice' }, 'alice joined the pod'],
+    [{ kind: 'membership', event: 'removed', username: 'bob', actorUsername: 'admin' },
+      'bob was removed from the pod by admin'],
+  ])('renders a membership change as a system line from its payload', (payload, text) => {
+    render(
+      <MemoryRouter>
+        <V2MessageRow
+          message={{ id: 'm-1', pod_id: 'pod-1', user_id: 'actor-1',
+            message_type: 'system', content: 'fallback text',
+            created_at: '2026-10-06T00:00:00.000Z', payload,
+            user: { username: 'actor' } }}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId('membership-message')).toHaveTextContent(text);
+    expect(screen.queryByText('fallback text')).not.toBeInTheDocument();
+  });
+
   it('keeps the runtime beside the agent name before its timestamp', () => {
     render(
       <MemoryRouter>

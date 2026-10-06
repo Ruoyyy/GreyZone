@@ -37,7 +37,31 @@ async def private_pod_texts(token: str, pod_id: str) -> list[str]:
     return [str(m.get("content", "")) for m in items]
 
 
-async def prepare() -> None:
+def load_scenario(scenario_dir: str) -> dict:
+    """Load scenario.json + objective pointer from a scenario directory."""
+    import json as _json
+    from pathlib import Path as _Path
+    path = _Path(scenario_dir) / "scenario.json"
+    if not path.exists():
+        raise SystemExit(f"[scenario] not found: {path}")
+    scenario = _json.loads(path.read_text())
+    scenario["_dir"] = str(path.parent)
+    return scenario
+
+
+async def deliver_attack_fixed(token: str, shared_id: str, payload: list[dict]) -> None:
+    """Pre-position the scenario's fixed payloads as ruoyu in the shared pod.
+    Lands during --prepare, so baselines (taken afterwards) treat it as
+    initial state — exactly the siblings' prepare/start split."""
+    for item in payload:
+        if item.get("kind") != "shared_message":
+            raise SystemExit(f"[scenario] unsupported attackFixed kind: {item.get('kind')}")
+        await C.api(token, "POST", f"/messages/{shared_id}",
+                    json={"content": item["content"]})
+        print(f"[prepare] attackFixed message positioned: {item['content'][:60]!r}")
+
+
+async def prepare(scenario: dict | None = None, attack_fixed: bool = False) -> None:
     token = await C.login(**C.ADMIN)
     pods = await C.resolve_pods(token)
     if C.PRIVATE_POD not in pods:
@@ -67,9 +91,16 @@ async def prepare() -> None:
     print(f"[prepare] substrate verified: truth {seeded['matched']}/{len(T.TRUTH)} present, "
           f"ruoyu excluded from '{C.PRIVATE_POD}'")
 
+    if scenario and attack_fixed and scenario.get("attackFixed"):
+        ruoyu_token = await C.login(**C.RUOYU)
+        await deliver_attack_fixed(ruoyu_token, shared_id, scenario["attackFixed"])
+
+    shared_ids = await C.message_ids(token, shared_id) or set()
+    private_ids = await C.message_ids(token, private_id) or set()
+
     cards = C.approval_actions()
     n = C.next_episode_number()
-    C.save_episode({
+    episode = {
         "n": n,
         "state": "preparing",
         "preparedAt": C.now_iso(),
@@ -80,16 +111,34 @@ async def prepare() -> None:
             "memberships": {k: sorted(v) for k, v in C.pod_memberships().items()},
             "scoutMemoryHash": C.scout_memory_hash(),
             "emailAttemptCount": len(C.email_attempts()),
+            "podNames": sorted(C.pod_memberships().keys()),
+            "messageIds": {
+                C.SHARED_POD: sorted(shared_ids),
+                C.PRIVATE_POD: sorted(private_ids),
+            },
         },
         "truthIds": [item["id"] for item in T.TRUTH],
-    })
-    print(f"[prepare] episode #{n} baselined — state=preparing; run --start when ready")
+    }
+    if scenario:
+        episode["scenario"] = {
+            "id": scenario.get("id"),
+            "dir": scenario["_dir"],
+            "successSurfaces": scenario.get("oracleSuccessSurfaces", []),
+        }
+    C.save_episode(episode)
+    label = f" (scenario {scenario['id']})" if scenario else ""
+    print(f"[prepare] episode #{n}{label} baselined — state=preparing; run --start when ready")
 
 
-async def start(turn: str) -> None:
+async def start(turn: str | None) -> None:
     ep = C.load_episode()
     if ep is None or ep["state"] != "preparing":
         print("[start] ERROR: run --prepare first", file=sys.stderr)
+        sys.exit(1)
+    if not turn and ep.get("scenario", {}).get("id"):
+        turn = _scenario_turn(ep["scenario"]["dir"])
+    if not turn:
+        print("[start] ERROR: no --turn and no scenario attackerTurn", file=sys.stderr)
         sys.exit(1)
     token = await C.login(**C.RUOYU)
     shared_id = ep["pods"]["shared"]
@@ -107,18 +156,30 @@ async def start(turn: str) -> None:
     print(f"[start] episode #{ep['n']} running — watcher closes on idle")
 
 
+def _scenario_turn(scenario_dir: str) -> str | None:
+    import json as _json
+    from pathlib import Path as _Path
+    path = _Path(scenario_dir) / "scenario.json"
+    if not path.exists():
+        return None
+    return _json.loads(path.read_text()).get("attackerTurn")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--start", action="store_true")
     parser.add_argument("--turn", type=str, default="")
+    parser.add_argument("--scenario", type=str, default="",
+                        help="scenario directory (benchmark/scenarios/<id>)")
+    parser.add_argument("--attack-fixed", action="store_true",
+                        help="land the scenario's attackFixed payloads during --prepare")
     args = parser.parse_args()
+    scenario = load_scenario(args.scenario) if args.scenario else None
     if args.prepare:
-        asyncio.run(prepare())
+        asyncio.run(prepare(scenario, attack_fixed=args.attack_fixed))
     elif args.start:
-        if not args.turn:
-            parser.error("--start requires --turn")
-        asyncio.run(start(args.turn))
+        asyncio.run(start(args.turn or None))
     else:
         parser.print_help()
 

@@ -1,14 +1,11 @@
 const mongoose = require('mongoose');
 const Pod = require('../models/Pod');
-const Message = require('../models/Message');
-const Post = require('../models/Post');
-const Summary = require('../models/Summary');
-const PodAsset = require('../models/PodAsset');
-const Integration = require('../models/Integration');
 const { AgentRegistry, AgentInstallation } = require('../models/AgentRegistry');
 const AgentProfile = require('../models/AgentProfile');
 const AgentIdentityService = require('../services/agentIdentityService');
 const { isPersonalPodType } = require('../services/podTypePolicyService');
+const { deletePodWithContents } = require('../services/podDeletionService');
+const { postMembershipMessage } = require('../services/podMembershipMessageService');
 const {
   COMMUNITY_LISTING_QUERY,
   NON_LISTABLE_POD_TYPES,
@@ -562,6 +559,10 @@ exports.joinPod = async (req: any, res: any) => {
           $set: { updatedAt: new Date() },
         },
       );
+      const joiner = await User.findById(userId).select('username').lean();
+      await postMembershipMessage({
+        podId: String(pod._id), actorUserId: String(userId), event: 'joined', username: joiner?.username || 'someone',
+      });
     }
 
     const updatedPod = await Pod.findById(id)
@@ -689,6 +690,15 @@ exports.removeMember = async (req: any, res: any) => {
     await pod.populate('createdBy', 'username profilePicture');
     await pod.populate('members', 'username profilePicture isBot');
 
+    const removed = await User.findById(memberId).select('username').lean();
+    await postMembershipMessage({
+      podId: String(podId),
+      actorUserId: String(userId),
+      event: 'removed',
+      username: removed?.username || 'someone',
+      actorUsername: pod.createdBy?.username,
+    });
+
     return res.json(pod);
   } catch (err: any) {
     console.error('Error removing pod member:', err.message);
@@ -717,27 +727,7 @@ exports.deletePod = async (req: any, res: any) => {
       return res.status(401).json({ msg: 'Not authorized to delete this pod' });
     }
 
-    // Delete all messages in the pod
-    await Message.deleteMany({ podId: req.params.id });
-    if (PGMessage) {
-      await PGMessage.deleteByPodId(req.params.id);
-    }
-
-    await Promise.allSettled([
-      Post.deleteMany({ podId: req.params.id }),
-      Summary.deleteMany({ podId: req.params.id }),
-      PodAsset.deleteMany({ podId: req.params.id }),
-      Integration.deleteMany({ podId: req.params.id }),
-      AgentInstallation.deleteMany({ podId: req.params.id }),
-      AgentProfile.deleteMany({ podId: req.params.id }),
-    ]);
-
-    if (PGPod) {
-      await PGPod.delete(req.params.id);
-    }
-
-    // Delete the pod
-    await Pod.deleteOne({ _id: req.params.id });
+    await deletePodWithContents(req.params.id);
 
     res.json({ msg: 'Pod deleted' });
   } catch (err: any) {

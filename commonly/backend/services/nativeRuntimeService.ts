@@ -131,7 +131,7 @@ export const TOOLS = [
     function: {
       name: 'commonly_read_context',
       description:
-        'Read recent messages from the current pod. Returns up to 50 messages with author and timestamp.',
+        'Read recent messages from the current pod. Returns up to 50 messages with id, author and timestamp.',
       parameters: {
         type: 'object',
         properties: {
@@ -213,14 +213,20 @@ export const TOOLS = [
         + 'invite link to this pod; after approval the card shows the link and the '
         + 'user shares it themselves — nobody joins until they open it), '
         + 'remove_member (remove a human member by username; only the pod creator '
-        + 'can approve it, and agents cannot be removed this way). Do NOT also '
+        + 'can approve it, and agents cannot be removed this way), delete_pod '
+        + '(delete this whole pod and all of its messages, posts and files — '
+        + 'irreversible; only the pod creator can approve it), delete_messages '
+        + '(delete specific messages by id, from commonly_read_context; only an '
+        + 'owner who sent every listed message, or an admin, can approve it). Do NOT also '
         + 'post a separate chat message about the proposal; the card IS the message.',
       parameters: {
         type: 'object',
         properties: {
           actionType: {
             type: 'string',
-            enum: ['create_pod', 'connect_local_agent', 'invite_link', 'remove_member'],
+            enum: [
+              'create_pod', 'connect_local_agent', 'invite_link', 'remove_member', 'delete_pod', 'delete_messages',
+            ],
             description: 'The action being proposed',
           },
           summary: {
@@ -232,10 +238,13 @@ export const TOOLS = [
             description: 'Action parameters. For create_pod: { name (required), description?, '
               + 'type? ("chat"|"team") }. For connect_local_agent: { name (required — '
               + 'lowercase letters/digits/dashes, e.g. "sams-claude") }. For invite_link: {}. '
-              + 'For remove_member: { username (required — the member\'s username) }',
+              + 'For remove_member: { username (required — the member\'s username) }. '
+              + 'For delete_pod: {} (always the current pod). '
+              + 'For delete_messages: { messageIds (required — up to 20 ids) }',
             properties: {
               name: { type: 'string' },
               username: { type: 'string' },
+              messageIds: { type: 'array', items: { type: 'string' } },
               description: { type: 'string' },
               type: { type: 'string', enum: ['chat', 'team'] },
             },
@@ -331,6 +340,7 @@ async function dispatchTool(
             || (row.username as string)
             || 'unknown';
           return {
+            id: String(row.id || row._id || ''),
             author,
             content: String(row.content || ''),
             createdAt: row.createdAt || row.created_at || null,

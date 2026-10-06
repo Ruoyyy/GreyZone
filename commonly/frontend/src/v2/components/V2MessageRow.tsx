@@ -429,6 +429,26 @@ const V2MessageRow: React.FC<V2MessageRowProps> = ({ message, sourceMessageId, d
     return <V2ApprovalCard message={message} authorLabel={author} time={time} />;
   }
 
+  // Membership change (joined / removed) — an ordinary message row in the
+  // sequence, rendered as a quiet system line from its payload.
+  if (message.payload?.kind === 'membership') {
+    const { event, username, actorUsername } = message.payload;
+    return (
+      <div id={`message-${message.id}`} className="v2-msg v2-msg--system" data-testid="membership-message">
+        <div className="v2-syscard">
+          <div className="v2-syscard__body">
+            <div className="v2-syscard__headline">
+              {event === 'removed'
+                ? t('membershipMessage.removed', { username, actor: actorUsername || '' })
+                : t('membershipMessage.joined', { username })}
+            </div>
+            {time && <div className="v2-syscard__time">{time}</div>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // §3.8 system event card. Detected by content shape (commonly-bot only
   // posts this exact form), so we don't depend on a metadata column the PG
   // messages table doesn't have. Render a chrome-light card with a

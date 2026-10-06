@@ -29,7 +29,8 @@ export type ApprovalDecision = 'approved' | 'declined';
 // the same PR as an executor, so a card can never exist for an action the
 // kernel cannot run.
 export type ApprovalActionType =
-  'create_pod' | 'connect_local_agent' | 'tool_call' | 'invite_link' | 'remove_member';
+  'create_pod' | 'connect_local_agent' | 'tool_call' | 'invite_link' | 'remove_member' | 'delete_pod'
+  | 'delete_messages';
 
 /** Server-only envelope for a parked broker call. canonicalArgs is present
  * only while the action is flagged and is scrubbed on every terminal write. */
@@ -88,7 +89,10 @@ const ApprovalActionSchema = new Schema<IApprovalAction>(
     instanceId: { type: String, default: 'default' },
     actionType: {
       type: String,
-      enum: ['create_pod', 'connect_local_agent', 'tool_call', 'invite_link', 'remove_member'],
+      enum: [
+        'create_pod', 'connect_local_agent', 'tool_call', 'invite_link', 'remove_member', 'delete_pod',
+        'delete_messages',
+      ],
       required: true,
     },
     params: { type: Schema.Types.Mixed, default: {} },

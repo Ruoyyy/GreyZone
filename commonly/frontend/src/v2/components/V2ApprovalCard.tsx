@@ -78,6 +78,13 @@ const describeAction = (
       vars: { username: String(p.username ?? '') },
     };
   }
+  if (actionType === 'delete_pod') {
+    return { key: 'approvalCard.action.deletePod', vars: {} };
+  }
+  if (actionType === 'delete_messages') {
+    const ids = Array.isArray(p.messageIds) ? p.messageIds : [];
+    return { key: 'approvalCard.action.deleteMessages', vars: { count: String(ids.length) } };
+  }
   // An actionType we have no phrasing for is still not licence to promote
   // prose back into the action slot. Name it and show the params verbatim:
   // ugly beats wrong on a consent surface, and it degrades safely when the
@@ -243,6 +250,13 @@ const V2ApprovalCard: React.FC<V2ApprovalCardProps> = ({ message, authorLabel, t
             <div className="v2-approval__action" data-testid="approval-action">
               {t(action.key, action.vars)}
             </div>
+            {payload.actionType === 'delete_messages' && Array.isArray(payload.params?.messages) && (
+              // Server-read excerpts of the exact messages that will be deleted.
+              <pre className="v2-approval__tool-call" data-testid="approval-delete-messages">
+                {(payload.params.messages as Array<{ author?: string; excerpt?: string }>)
+                  .map((m) => `${m.author || '?'}: ${m.excerpt || ''}`).join('\n')}
+              </pre>
+            )}
             {prose && <div className="v2-approval__pitch">{prose}</div>}
           </>
         ) : (

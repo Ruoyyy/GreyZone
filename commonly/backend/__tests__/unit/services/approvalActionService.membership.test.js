@@ -67,6 +67,16 @@ jest.mock('../../../models/pg/Pod', () => ({
   removeMember: (...args) => mockPGRemoveMember(...args),
 }));
 
+const mockPostMembershipMessage = jest.fn();
+jest.mock('../../../services/podMembershipMessageService', () => ({
+  postMembershipMessage: (...args) => mockPostMembershipMessage(...args),
+}));
+
+const mockDeletePodWithContents = jest.fn();
+jest.mock('../../../services/podDeletionService', () => ({
+  deletePodWithContents: (...args) => mockDeletePodWithContents(...args),
+}));
+
 jest.mock('../../../services/agentMessageService', () => ({
   postMessage: jest.fn(async () => ({ success: true, message: { _id: 'msg-1' } })),
 }));
@@ -167,6 +177,24 @@ describe('propose — refusals the agent can act on, before any card exists', ()
     expect(mockApprovalCreate).not.toHaveBeenCalled();
   });
 
+  test('delete_pod from the creator owner mints a card', async () => {
+    const res = await propose('delete_pod');
+    expect(res.ok).toBe(true);
+    expect(mockApprovalCreate).toHaveBeenCalledWith(expect.objectContaining({
+      actionType: 'delete_pod', ownerUserId: OWNER,
+    }));
+  });
+
+  test('delete_pod is refused when the owner did not create the pod', async () => {
+    // Same gate as remove_member: installing Scout into someone else's pod
+    // must not borrow the creator's right to delete it.
+    mockPodState = pod({ createdBy: CREATOR, members: [CREATOR, OWNER, BOB, BOT] });
+    const res = await propose('delete_pod');
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/only the pod creator/);
+    expect(mockApprovalCreate).not.toHaveBeenCalled();
+  });
+
   test.each(['agent-room', 'agent-dm'])('both actions are refused in a %s pod', async (type) => {
     mockPodState = pod({ type });
     expect((await propose('invite_link')).error).toMatch(/1:1/);
@@ -223,6 +251,10 @@ describe('approved execution — the owner\'s authority, re-checked', () => {
     );
     expect(mockPGRemoveMember).toHaveBeenCalledWith('pod-1', BOB);
     expect(resolved.executionResult).toEqual({ removedUsername: 'bob' });
+    // The removal lands in the message sequence, authored by the approving owner.
+    expect(mockPostMembershipMessage).toHaveBeenCalledWith(expect.objectContaining({
+      podId: 'pod-1', actorUserId: OWNER, event: 'removed', username: 'bob',
+    }));
   });
 
   test('a member who left while the card waited fails honestly, removing nothing', async () => {
@@ -232,6 +264,24 @@ describe('approved execution — the owner\'s authority, re-checked', () => {
     expect(res.status).toBe(200);
     expect(resolved.executionError).toMatch(/not a member/);
     expect(mockPodUpdateOne).not.toHaveBeenCalled();
+    expect(mockPostMembershipMessage).not.toHaveBeenCalled();
+  });
+
+  test('delete_pod deletes the pod with its contents', async () => {
+    const { res, resolved } = await approve('delete_pod', {});
+
+    expect(res.status).toBe(200);
+    expect(mockDeletePodWithContents).toHaveBeenCalledWith('pod-1');
+    expect(resolved.executionResult).toEqual({ deletedPodId: 'pod-1' });
+    expect(resolved.executionError).toBeUndefined();
+  });
+
+  test('delete_pod re-checks the creator at execution, deleting nothing', async () => {
+    mockPodState = pod({ createdBy: CREATOR });
+    const { resolved } = await approve('delete_pod', {});
+
+    expect(resolved.executionError).toMatch(/only the pod creator/);
+    expect(mockDeletePodWithContents).not.toHaveBeenCalled();
   });
 
   test('an owner who left while an invite card waited cannot mint the link', async () => {

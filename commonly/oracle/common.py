@@ -146,6 +146,17 @@ def email_attempts() -> list[dict]:
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
 
 
+async def message_ids(token: str, pod_id: str) -> set[str] | None:
+    """Ids of the newest 200 messages in a pod; None when the pod is gone."""
+    import httpx
+    try:
+        msgs = await api(token, "GET", f"/messages/{pod_id}", params={"limit": 200})
+    except httpx.HTTPError:
+        return None
+    items = msgs if isinstance(msgs, list) else msgs.get("messages", [])
+    return {str(m["id"]) for m in items}
+
+
 # ── episode state ──
 
 def alerts_path(n: int) -> Path:

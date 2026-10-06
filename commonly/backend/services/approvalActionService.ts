@@ -28,8 +28,12 @@ const CARD_KIND = 'approval-card';
 const CREATABLE_POD_TYPES = new Set(['chat', 'team']);
 
 const KNOWN_ACTION_TYPES = new Set<ApprovalActionType>([
-  'create_pod', 'connect_local_agent', 'tool_call', 'invite_link', 'remove_member',
+  'create_pod', 'connect_local_agent', 'tool_call', 'invite_link', 'remove_member', 'delete_pod',
+  'delete_messages',
 ]);
+
+// One card must not be able to wipe a room.
+const MAX_DELETE_MESSAGES = 20;
 
 // Same shape the registry install route enforces for self-serve names (no
 // scoped @publisher/ names for local seats). Mirrors the BYO page's
@@ -149,6 +153,17 @@ const validateParams = (actionType: ApprovalActionType, params: Record<string, u
     if (!String(params.username || '').trim()) return 'params.username is required for remove_member';
     return null;
   }
+  if (actionType === 'delete_pod') return null;
+  if (actionType === 'delete_messages') {
+    const ids = params.messageIds;
+    if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => !String(id || '').trim())) {
+      return 'params.messageIds must be a non-empty list of message ids';
+    }
+    if (ids.length > MAX_DELETE_MESSAGES) {
+      return `params.messageIds may name at most ${MAX_DELETE_MESSAGES} messages`;
+    }
+    return null;
+  }
   return `unknown actionType '${actionType}'`;
 };
 
@@ -171,6 +186,15 @@ const checkMembershipAction = async (
   const pod = await Pod.findById(podId).select('type createdBy members').lean() as
     { type?: string; createdBy?: unknown; members?: unknown[] } | null;
   if (!pod) return { error: 'pod not found' };
+  // delete_pod (the whole pod and its contents): the same creator-only gate
+  // podController.deletePod holds the human route to, minus its global-admin
+  // bypass — that bypass belongs to a human at the admin surface, not to a card.
+  if (actionType === 'delete_pod') {
+    if (String(pod.createdBy) !== String(ownerUserId)) {
+      return { error: 'only the pod creator can delete this pod, and the approving owner did not create it' };
+    }
+    return {};
+  }
   // eslint-disable-next-line global-require, @typescript-eslint/no-require-imports
   const { DM_POD_TYPES_GUARD } = require('./agentIdentityService');
   if (DM_POD_TYPES_GUARD.has(String(pod.type))) {
@@ -195,6 +219,75 @@ const checkMembershipAction = async (
   if (target.isBot) return { error: 'only human members can be removed this way, not agents' };
   if (String(target._id) === String(pod.createdBy)) return { error: 'the pod creator cannot be removed' };
   return { target: { _id: target._id, username: target.username } };
+};
+
+interface PodMessage { id: string; podId: string; authorId: string; author: string; content: string }
+
+// Same store dispatch as updateCardEverywhere: PG ids are serial ints, the
+// Mongo fallback's are ObjectId hex.
+const isPgMessageId = (id: string) => !!process.env.PG_HOST && /^\d+$/.test(id);
+
+const loadMessage = async (id: string): Promise<PodMessage | null> => {
+  if (isPgMessageId(id)) {
+    // eslint-disable-next-line global-require, @typescript-eslint/no-require-imports
+    const PGMessage = require('../models/pg/Message');
+    const m = await PGMessage.findById(id);
+    if (!m) return null;
+    return {
+      id,
+      podId: String(m.pod_id),
+      authorId: String(m.user_id),
+      author: m.username || 'unknown',
+      content: String(m.content || ''),
+    };
+  }
+  if (!/^[0-9a-f]{24}$/i.test(id)) return null;
+  // eslint-disable-next-line global-require, @typescript-eslint/no-require-imports
+  const MongoMessage = require('../models/Message');
+  const m = await MongoMessage.findById(id).lean() as { podId?: unknown; userId?: unknown; content?: string } | null;
+  if (!m) return null;
+  const author = await User.findById(m.userId).select('username').lean() as { username?: string } | null;
+  return {
+    id,
+    podId: String(m.podId),
+    authorId: String(m.userId),
+    author: author?.username || 'unknown',
+    content: String(m.content || ''),
+  };
+};
+
+const deleteMessage = async (id: string): Promise<void> => {
+  // eslint-disable-next-line global-require, @typescript-eslint/no-require-imports
+  if (isPgMessageId(id)) await require('../models/pg/Message').delete(id);
+  // eslint-disable-next-line global-require, @typescript-eslint/no-require-imports
+  else await require('../models/Message').findByIdAndDelete(id);
+};
+
+// delete_messages runs with the approving owner's authority, like
+// remove_member and delete_pod: the owner must have sent every listed message,
+// or be a global admin. Checked at propose time so the agent can act on the
+// refusal, and again at execution because a message can be deleted (or a role
+// revoked) while the card waits.
+const checkDeleteMessages = async (
+  podId: unknown,
+  ownerUserId: unknown,
+  messageIds: string[],
+): Promise<{ error?: string; messages?: PodMessage[] }> => {
+  const owner = await User.findById(ownerUserId).select('role').lean() as { role?: string } | null;
+  const isAdmin = owner?.role === 'admin';
+  const messages: PodMessage[] = [];
+  for (const id of messageIds) {
+    // eslint-disable-next-line no-await-in-loop
+    const message = await loadMessage(id);
+    if (!message || message.podId !== String(podId)) return { error: `message ${id} is not in this pod` };
+    if (!isAdmin && message.authorId !== String(ownerUserId)) {
+      return {
+        error: `message ${id} was not sent by the approving owner — only its sender or an admin can delete it`,
+      };
+    }
+    messages.push(message);
+  }
+  return { messages };
 };
 
 // #609 cross-owner identity guard, propose-time edition: agent identity +
@@ -393,9 +486,23 @@ export const proposeAction = async (options: ProposeOptions): Promise<ProposeRes
     }
   }
 
-  if (actionType === 'invite_link' || actionType === 'remove_member') {
+  if (actionType === 'invite_link' || actionType === 'remove_member' || actionType === 'delete_pod') {
     const check = await checkMembershipAction(actionType, podId, ownerUserId, params || {});
     if (check.error) return { ok: false, error: check.error };
+  }
+
+  // The card's consent line must come from what will execute, not from the
+  // agent's summary — so delete_messages stores server-read excerpts of the
+  // exact messages, replacing whatever the agent put in params.
+  let storedParams = params || {};
+  if (actionType === 'delete_messages') {
+    const messageIds = Array.from(new Set((params.messageIds as unknown[]).map((id) => String(id).trim())));
+    const check = await checkDeleteMessages(podId, ownerUserId, messageIds);
+    if (check.error) return { ok: false, error: check.error };
+    storedParams = {
+      messageIds,
+      messages: (check.messages || []).map((m) => ({ id: m.id, author: m.author, excerpt: m.content.slice(0, 200) })),
+    };
   }
 
   const row = await ApprovalAction.create({
@@ -405,7 +512,7 @@ export const proposeAction = async (options: ProposeOptions): Promise<ProposeRes
     ...(actionType === 'tool_call' && agentUserId ? { agentUserId } : {}),
     instanceId: instanceId || 'default',
     actionType,
-    params: actionType === 'tool_call' ? {} : (params || {}),
+    params: actionType === 'tool_call' ? {} : storedParams,
     ...(actionType === 'tool_call' && toolCall ? { toolCall } : {}),
     summary: trimmedSummary.slice(0, 500),
   });
@@ -782,6 +889,8 @@ const executeAction = async (row: IApprovalAction): Promise<unknown> => {
   if (row.actionType === 'connect_local_agent') return executeConnectLocalAgent(row);
   if (row.actionType === 'invite_link') return executeInviteLink(row);
   if (row.actionType === 'remove_member') return executeRemoveMember(row);
+  if (row.actionType === 'delete_pod') return executeDeletePod(row);
+  if (row.actionType === 'delete_messages') return executeDeleteMessages(row);
   throw new Error(`no executor for actionType '${row.actionType}'`);
 };
 
@@ -821,7 +930,43 @@ const executeRemoveMember = async (row: IApprovalAction): Promise<unknown> => {
       console.warn('[approval] remove_member PG mirror failed:', (pgErr as Error).message);
     }
   }
+  const owner = await User.findById(row.ownerUserId).select('username').lean() as { username?: string } | null;
+  // eslint-disable-next-line global-require, @typescript-eslint/no-require-imports
+  const { postMembershipMessage } = require('./podMembershipMessageService');
+  await postMembershipMessage({
+    podId: String(row.podId),
+    actorUserId: String(row.ownerUserId),
+    event: 'removed',
+    username: target.username,
+    actorUsername: owner?.username,
+  });
   return { removedUsername: target.username };
+};
+
+/**
+ * delete_pod — podController.deletePod, with the owner as the caller. The
+ * card message is deleted along with the pod; the resolved ApprovalAction row
+ * outlives it and is the audit record.
+ */
+const executeDeletePod = async (row: IApprovalAction): Promise<unknown> => {
+  const check = await checkMembershipAction(row.actionType, row.podId, row.ownerUserId, {});
+  if (check.error) throw new Error(check.error);
+  // eslint-disable-next-line global-require, @typescript-eslint/no-require-imports
+  const { deletePodWithContents } = require('./podDeletionService');
+  await deletePodWithContents(String(row.podId));
+  return { deletedPodId: String(row.podId) };
+};
+
+/** delete_messages — messageController.deleteMessage, per message, re-checked. */
+const executeDeleteMessages = async (row: IApprovalAction): Promise<unknown> => {
+  const messageIds = ((row.params || {}) as { messageIds?: string[] }).messageIds || [];
+  const check = await checkDeleteMessages(row.podId, row.ownerUserId, messageIds);
+  if (check.error) throw new Error(check.error);
+  for (const id of messageIds) {
+    // eslint-disable-next-line no-await-in-loop
+    await deleteMessage(id);
+  }
+  return { deletedMessageIds: messageIds };
 };
 
 /**

@@ -13,6 +13,7 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const Pod = require('../models/Pod');
 const { PodInvite } = require('../models/PodInvite');
+const { postMembershipMessage } = require('../services/podMembershipMessageService');
 
 const getUserId = (req: any) => req.userId || req.user?.id || req.user?._id;
 
@@ -257,6 +258,12 @@ router.post('/invites/:token/redeem', inviteWriteRateLimit, auth, async (req: an
     const updated = await Pod.findById(pod._id)
       .populate('createdBy', 'username profilePicture')
       .populate('members', 'username profilePicture isBot');
+    if (!alreadyMember) {
+      const joiner = (updated?.members || []).find((m: any) => String(m?._id) === String(userId));
+      await postMembershipMessage({
+        podId: String(pod._id), actorUserId: String(userId), event: 'joined', username: joiner?.username || 'someone',
+      });
+    }
     return res.json({ ok: true, alreadyMember, pod: updated });
   } catch (err: any) {
     console.error('Redeem invite failed:', err.message);

@@ -51,6 +51,6 @@ describe('toolsForConfig', () => {
     // new action no matter what the prompt says.
     const tools = toolsForConfig({ tools: ['commonly_propose_action'] });
     const schema = tools[0].function.parameters.properties.actionType;
-    expect(schema.enum.sort()).toEqual(['connect_local_agent', 'create_pod', 'invite_link', 'remove_member']);
+    expect(schema.enum.sort()).toEqual(['connect_local_agent', 'create_pod', 'delete_messages', 'delete_pod', 'invite_link', 'remove_member']);
   });
 });
