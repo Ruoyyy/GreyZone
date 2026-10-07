@@ -1,0 +1,61 @@
+services:
+  # Simulated Alpaca world: stocks + crypto + news + social, with a /admin API
+  # and control panel. Prices move on a 60s tick; state resets to the seeded
+  # universe on restart. Control panel + admin API: http://localhost:9000/
+  sim:
+    build: ./market
+    ports: ["127.0.0.1:9000:9000"]
+    networks: [backend]
+
+  # The victim's tools: alpaca-mcp-server pointed at the simulated world instead
+  # of the real Alpaca API. MCP endpoint for host clients: http://localhost:8000/mcp
+  mcp:
+    build:
+      context: ..
+      dockerfile: sim/mcp.Dockerfile
+    environment:
+      ALPACA_API_KEY: sim
+      ALPACA_SECRET_KEY: sim
+      ALPACA_PAPER_TRADE: "true"
+      TRADING_API_URL: http://sim:9000
+      DATA_API_URL: http://sim:9000
+      ALPACA_TOOLSETS: account,trading,assets,stock-data,crypto-data,news
+      ALPACA_SOCIAL_FEED: "true"   # register get_stocktwits_feed (served by the sim's /api/2/streams/feed)
+      ALPACA_MCP_SECURITY_ENVELOPE: "full"   # guardrail ablation switch: full | minimal | off
+      FASTMCP_HTTP_ALLOWED_HOSTS: '["mcp"]'   # DNS-rebinding guard: also accept Host: mcp (agent container)
+    ports: ["127.0.0.1:8000:8000"]
+    networks: [backend, agent]
+    depends_on: [sim]
+
+  # Attack console: payload injection ports for the external red-team agent.
+  # Backend network only — the victim agent cannot reach it. Host access: http://localhost:8200/mcp
+  # Text channels only by design; price manipulation is NOT exposed (threat model: text-only attacks).
+  attackconsole:
+    build: ./attack_console
+    environment:
+      WORLD_API_URL: http://sim:9000
+      FASTMCP_HTTP_ALLOWED_HOSTS: '["attackconsole", "localhost"]'
+    ports: ["127.0.0.1:8200:8000"]
+    networks: [backend]
+    depends_on: [sim]
+
+  # Victim agent: Claude Code in a container. Only on the `agent` network, so it
+  # can reach mcp but NOT the sim admin API or the attack console. Run on demand:
+  #   docker compose run --rm agent                        # interactive
+  #   docker compose run --rm agent -p "check my account"  # headless
+  agent:
+    profiles: [agent]
+    build: ./agent
+    entrypoint: [claude, --mcp-config, /agent/mcp.json, --strict-mcp-config, --settings, /agent/settings.json]
+    env_file: [{path: .env, required: false}]   # ANTHROPIC_* / CLAUDE_CODE_OAUTH_TOKEN — see .env.example
+    environment:
+      CLAUDE_CONFIG_DIR: /root/.claude
+    volumes:
+      - ./agent:/agent:ro
+      - ./agent-home:/root/.claude   # transcripts land in agent-home/projects/*.jsonl
+    networks: [agent]
+    depends_on: [mcp]
+
+networks:
+  backend:
+  agent:
