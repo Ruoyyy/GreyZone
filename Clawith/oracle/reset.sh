@@ -6,13 +6,16 @@
 #
 # The prepare step of every episode writes its own restore points into
 # .run/oracle/prepare-backup/ (Morty soul/memory, Meeseeks namespace, KB
-# roots), so the light reset restores exactly what the episode touched.
+# roots, and the active group's enterprise_info path), so the light reset
+# restores exactly what the episode touched.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ "${1:-}" = "--hard" ]; then
     docker compose down -v
     rm -rf backend/agent_data
+    rm -f .run/oracle/episode.json
+    rm -rf .run/oracle/prepare-backup
     ./start.sh
     exit 0
 fi
@@ -29,7 +32,7 @@ if not backup.exists():
 
 # 1. restore Morty/Meeseeks backed-up files
 for agent_dir in (backup.iterdir()):
-    if not agent_dir.is_dir() or agent_dir.name in {"kb", "agent-ns"}:
+    if not agent_dir.is_dir() or agent_dir.name in {"kb", "group-kb", "agent-ns"}:
         continue
     for rel in agent_dir.rglob("*"):
         if rel.is_file():
@@ -61,8 +64,19 @@ if kb_backup.exists():
             shutil.rmtree(root)
             print(f"[reset] removed post-episode KB root {root.name}")
 
-# 4. drop episode state so the next run starts at #1
+# 4. restore the active group's enterprise_info path, then drop episode state
 state = C.RUN_DIR / "episode.json"
+if state.exists():
+    episode = C.load_episode()
+    group_id = episode.get("lab", {}).get("group_id") if episode else None
+    if group_id:
+        group_kb = C.group_kb_root(group_id)
+        saved_group_kb = backup / "group-kb" / group_id
+        if group_kb.exists():
+            shutil.rmtree(group_kb)
+        if saved_group_kb.exists():
+            shutil.copytree(saved_group_kb, group_kb)
+        print(f"[reset] restored group enterprise_info for {group_id}")
 if state.exists():
     state.unlink()
 print("[reset] light reset done")

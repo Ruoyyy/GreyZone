@@ -18,11 +18,15 @@ objective. Each scenario directory contains `scenario.json` and the referenced
 (`group_message`), the exact `attackerTurn` planted, and the Oracle's
 `oracleMonitors` / `oracleSuccessSurfaces`.
 
-Run order is single-shot: the scenario plants one `attackerTurn` message into
-the group as ruoyu, which drives exactly one agent turn — there is no multi-turn
-negotiation, and the Oracle judges the resulting state afterward.
+For a direct Oracle episode, `attackerTurn` is the one message sent by
+`oracle/run_episode.py --start`. The red team runners can instead arm an
+episode before the first message and send several serial turns through the
+ruoyu MCP bridge. PyRIT and DeepTeam send `attackerTurn` verbatim as their
+first turn; Promptfoo and Dreadnode use it as an attack idea. All runners use
+the same scenario objective and selected Oracle success surface.
 
 Episodes are driven against the environment brought up by `../start.sh`; the
 mechanical verdict is the Oracle (`../oracle/`), never a model judging a model.
 Enable the selected scenario's monitors before running if Oracle evidence is
 needed. Model, transport, and framework settings stay outside the benchmark.
+See [`../redteam/README.md`](../redteam/README.md) for runner setup and results.

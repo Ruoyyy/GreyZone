@@ -14,6 +14,14 @@ cd "$(dirname "$0")"
 
 ENV_FILE=".env"
 
+sed_in_place() {
+    if [ "$(uname -s)" = "Darwin" ]; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
+}
+
 ensure_env() {
     if [ ! -f "$ENV_FILE" ]; then
         cp .env.example "$ENV_FILE"
@@ -25,7 +33,7 @@ ensure_env() {
         if [ -z "$current" ] || [[ "$current" == change-me-* ]]; then
             generated=$(openssl rand -hex 32)
             if grep -qE "^${var}=" "$ENV_FILE"; then
-                sed -i "s|^${var}=.*|${var}=${generated}|" "$ENV_FILE"
+                sed_in_place "s|^${var}=.*|${var}=${generated}|" "$ENV_FILE"
             else
                 echo "${var}=${generated}" >> "$ENV_FILE"
             fi
@@ -36,7 +44,7 @@ ensure_env() {
     for var in RUOYU_USER_ID RUOYU_TENANT_ID RUOYU_ROLE TOKEN_TTL_DAYS MCP_API_KEY MCP_PORT; do
         count=$(grep -cE "^${var}=" "$ENV_FILE" || true)
         if [ "$count" -gt 1 ]; then
-            sed -i "/^${var}=/d" "$ENV_FILE"
+            sed_in_place "/^${var}=/d" "$ENV_FILE"
             echo "${var}=" >> "$ENV_FILE"
             echo "[start] normalized duplicate ${var}"
         fi
@@ -48,7 +56,7 @@ ensure_env() {
 }
 
 set_env_value() {  # var value
-    sed -i "s|^$1=.*|$1=$2|" "$ENV_FILE"
+    sed_in_place "s|^$1=.*|$1=$2|" "$ENV_FILE"
 }
 
 wait_for_backend() {
@@ -88,8 +96,8 @@ run_bootstrap() {
     ZHIPU=$(grep -E '^ZHIPU_API_KEY=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
     OUT=$(docker compose exec -T -e ZHIPU_API_KEY="$ZHIPU" -e PYTHONPATH=/app backend \
         python /app/scripts/bootstrap_env.py 2>&1 | tee /dev/stderr)
-    USER_ID=$(echo "$OUT" | grep -oP 'BOOTSTRAP_RUOYU_USER_ID=\K.+')
-    TENANT_ID=$(echo "$OUT" | grep -oP 'BOOTSTRAP_RUOYU_TENANT_ID=\K.+')
+    USER_ID=$(echo "$OUT" | sed -nE 's/^BOOTSTRAP_RUOYU_USER_ID=(.+)$/\1/p' | tail -1)
+    TENANT_ID=$(echo "$OUT" | sed -nE 's/^BOOTSTRAP_RUOYU_TENANT_ID=(.+)$/\1/p' | tail -1)
     if [ -z "$USER_ID" ] || [ -z "$TENANT_ID" ]; then
         echo "[start] ERROR: bootstrap did not report ids" >&2
         exit 1
@@ -101,6 +109,10 @@ run_bootstrap() {
 
 main() {
     ensure_env
+    # The optional proxy file is mounted as a file by Compose.
+    if [ ! -e ss-nodes.json ]; then
+        printf '[]\n' > ss-nodes.json
+    fi
     echo "[start] building images..."
     docker compose build
     echo "[start] starting core services..."
@@ -111,7 +123,7 @@ main() {
     echo "[start] starting MCP bridge..."
     docker compose up -d mcp-bridge
     sleep 5
-    MCP_KEY=$(docker compose logs mcp-bridge 2>&1 | grep -oP 'MCP API key: \K\S+' | tail -1)
+    MCP_KEY=$(docker compose logs mcp-bridge 2>&1 | sed -nE 's/^.*MCP API key: ([^[:space:]]+).*$/\1/p' | tail -1)
     echo
     echo "══════════════════════════════════════════════════════"
     echo " Clawith threat-lab is up"

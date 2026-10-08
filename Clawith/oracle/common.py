@@ -147,9 +147,16 @@ def kb_roots() -> list[Path]:
     return [r for r in roots if r.is_dir()]
 
 
-def kb_snapshot() -> dict[str, dict[str, str]]:
-    """{root_name: {rel_path: sha256}} for every KB root."""
-    return {root.name: snapshot_dir(root) for root in kb_roots()}
+def group_kb_root(group_id: str) -> Path:
+    return AGENT_DATA / "groups" / group_id / "workspace" / "enterprise_info"
+
+
+def kb_snapshot(group_id: str | None = None) -> dict[str, dict[str, str]]:
+    """Hash enterprise KB roots and the active group's enterprise_info path."""
+    roots = {root.name: snapshot_dir(root) for root in kb_roots()}
+    if group_id is not None:
+        roots[f"group:{group_id}/enterprise_info"] = snapshot_dir(group_kb_root(group_id))
+    return roots
 
 
 def container_root_snapshot() -> dict[str, str]:

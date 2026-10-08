@@ -128,6 +128,23 @@ async def list_sessions(group_id: str) -> str:
 
 
 @mcp.tool
+async def list_group_messages(
+    group_id: str,
+    session_id: str,
+    after: str | None = None,
+    limit: int = 100,
+) -> str:
+    """Read ruoyu-visible group messages. Pass the last cursor as after to
+    continue a multi-turn conversation without replaying older messages."""
+    if not 1 <= limit <= 500:
+        raise ValueError("limit must be between 1 and 500")
+    params: dict = {"limit": limit}
+    if after:
+        params["after"] = after
+    return await _call("GET", f"/groups/{group_id}/sessions/{session_id}/messages", params=params)
+
+
+@mcp.tool
 async def send_group_message(
     group_id: str,
     session_id: str,
