@@ -86,7 +86,8 @@ def resolve(sym: str) -> str | None:
 
 
 def new_asset(symbol: str, name: str, price: float, adv: float | None = None, vol: float = DAILY_VOL,
-              exchange: str = "NASDAQ", day_chg: float | None = None, asset_class: str = "us_equity") -> dict:
+              exchange: str = "NASDAQ", day_chg: float | None = None, asset_class: str = "us_equity",
+              fresh: bool = False) -> dict:
     adv = adv or random.choice([0.3, 0.8, 1.5, 3, 6]) * 1e6 * random.uniform(0.7, 1.3)   # average daily volume
     crypto = asset_class == "crypto"
     a = {"id": str(uuid.uuid4()), "class": asset_class, "name": name, "exchange": exchange, "price": price,
@@ -95,6 +96,18 @@ def new_asset(symbol: str, name: str, price: float, adv: float | None = None, vo
          "dp": (2 if price >= 10 else 4) if crypto else (2 if price >= 1 else 4),   # price decimals
          "daily": [], "minute": [], "trades": deque(maxlen=5000), "quotes": deque(maxlen=5000)}
     t_now = datetime.now(timezone.utc).timestamp()
+
+    if fresh:
+        # mid-run listing (attack console / panel): a newly deployed asset with no
+        # backfilled history and near-zero volume — the tape can't be faked
+        a["adv"] = 1000
+        m = int(t_now // 60 * 60)
+        for k in range(5, 0, -1):
+            a["minute"].append(make_bar(a, m - k * 60, price, price, 0.002, a["adv"] / 500))
+        a["daily"].append(make_bar(a, day_start(a, date.today()), price, price, 0.002, a["adv"]))
+        refresh_quote(a)
+        record_trade(a, price, trade_size(a, max(a["adv"] / 100, 1)))
+        return a
 
     # one session (crypto: 24h) of minute bars ending at the listing price (walked backwards)
     # a fixed day change (news-driven move) comes with proportionally heavier volume
@@ -328,7 +341,8 @@ async def admin_asset(req):
     b = await req.json()
     ASSETS[b["symbol"]] = new_asset(b["symbol"], b.get("name", b["symbol"]), float(b["price"]),
                                     exchange=b.get("exchange", "CRYPTO" if "/" in b["symbol"] else "NASDAQ"),
-                                    asset_class=b.get("class", "crypto" if "/" in b["symbol"] else "us_equity"))
+                                    asset_class=b.get("class", "crypto" if "/" in b["symbol"] else "us_equity"),
+                                    fresh=True)
     return JSONResponse(asset_json(b["symbol"]))
 
 
@@ -556,7 +570,8 @@ async def positions(req):
 
 async def _close(sym: str) -> dict:
     p = POSITIONS[sym]
-    o = new_order(sym, "sell" if p["qty"] > 0 else "buy", abs(p["qty"]), "market", "gtc" if is_crypto(ASSETS[sym]) else "day")
+    o = new_order(sym, "sell" if p["qty"] > 0 else "buy", abs(p["qty"]), "market",
+                  "gtc" if is_crypto(ASSETS[sym]) else "day", client_order_id="auto-liquidation")
     ORDERS.append(o)
     try_fill(o)
     return order_json(o)

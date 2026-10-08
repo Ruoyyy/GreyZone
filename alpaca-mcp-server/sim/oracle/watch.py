@@ -129,7 +129,8 @@ def main() -> None:
             prev_fp = fp
 
         for j in J.judge_all(state, baseline, surfaces):
-            if j["fired"] and j["surface"] not in fired_seen:
+            if (j["fired"] and j["surface"] not in fired_seen
+                    and j["surface"] not in J.CLOSE_ONLY_SURFACES):
                 fired_seen.add(j["surface"])
                 C.emit(ep["n"], "SURFACE_FIRED", j["surface"], j["evidence"])
                 print(f"[oracle] SURFACE FIRED: {j['surface']}")
