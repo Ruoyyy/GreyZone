@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Alpaca Sim 控制台</title>
+<title>Alpaca Sim Console</title>
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --fg:#1d2330; --mute:#6b7280; --line:#e5e7eb; --up:#0a8f4e; --down:#d1343b; --acc:#2f6fed; }
   @media (prefers-color-scheme: dark) { :root { --bg:#111418; --card:#1a1f26; --fg:#e6e9ee; --mute:#9aa3af; --line:#2b323c; --up:#3ccf86; --down:#ff6b6b; --acc:#6e9bff; } }
@@ -33,58 +33,58 @@
 </head>
 <body>
 <header>
-  <h1>Alpaca Sim 控制台</h1>
-  <span class="stat">现金 <b id="cash">-</b></span>
-  <span class="stat">总资产 <b id="equity">-</b></span>
-  <span class="stat">股市 <b id="mkt">-</b> · 加密 <b class="up">24/7</b></span>
-  <button id="toggle">开/休市</button>
-  <button id="reset">重置全部</button>
+  <h1>Alpaca Sim Console</h1>
+  <span class="stat">Cash <b id="cash">-</b></span>
+  <span class="stat">Equity <b id="equity">-</b></span>
+  <span class="stat">Stocks <b id="mkt">-</b> · Crypto <b class="up">24/7</b></span>
+  <button id="toggle">Open/Close Market</button>
+  <button id="reset">Reset All</button>
 </header>
 <main>
   <section class="wide">
-    <h2>股票行情（你控制涨跌）</h2>
-    <table><thead><tr><th>代码</th><th>名称</th><th>价格</th><th>今日涨跌</th><th>买一 × 量</th><th>卖一 × 量</th><th>今日成交量</th><th>调价</th></tr></thead><tbody id="assets"></tbody></table>
-    <h2 style="margin-top:16px">加密货币（24/7，休市不影响）</h2>
-    <table><thead><tr><th>交易对</th><th>名称</th><th>价格</th><th>今日涨跌</th><th>买一 × 量</th><th>卖一 × 量</th><th>今日成交量</th><th>调价</th></tr></thead><tbody id="crypto"></tbody></table>
+    <h2>Stocks (you control the tape)</h2>
+    <table><thead><tr><th>Symbol</th><th>Name</th><th>Price</th><th>Today</th><th>Bid × Size</th><th>Ask × Size</th><th>Volume</th><th>Set Price</th></tr></thead><tbody id="assets"></tbody></table>
+    <h2 style="margin-top:16px">Crypto (24/7, unaffected by market close)</h2>
+    <table><thead><tr><th>Pair</th><th>Name</th><th>Price</th><th>Today</th><th>Bid × Size</th><th>Ask × Size</th><th>Volume</th><th>Set Price</th></tr></thead><tbody id="crypto"></tbody></table>
     <form id="addAsset">
-      <input name="symbol" placeholder="ZZZ 或 XYZ/USD" class="w90" style="width:130px" required>
-      <input name="name" placeholder="名称">
-      <input name="price" placeholder="价格" type="number" step="any" class="w90" required>
-      <button class="primary">上架</button>
+      <input name="symbol" placeholder="ZZZ or XYZ/USD" class="w90" style="width:130px" required>
+      <input name="name" placeholder="Name">
+      <input name="price" placeholder="Price" type="number" step="any" class="w90" required>
+      <button class="primary">List</button>
     </form>
   </section>
 
   <section class="wide">
-    <h2>榜单（与 agent 调用 get_market_movers（stocks / crypto）/ get_most_active_stocks 看到的一致）</h2>
+    <h2>Boards (exactly what the agent sees via get_market_movers (stocks / crypto) / get_most_active_stocks)</h2>
     <div class="boards">
-      <table><thead><tr><th>涨幅榜</th><th>价格</th><th>涨跌</th></tr></thead><tbody id="gainers"></tbody></table>
-      <table><thead><tr><th>跌幅榜</th><th>价格</th><th>涨跌</th></tr></thead><tbody id="losers"></tbody></table>
-      <table><thead><tr><th>活跃榜</th><th>成交量</th><th>笔数</th></tr></thead><tbody id="actives"></tbody></table>
+      <table><thead><tr><th>Gainers</th><th>Price</th><th>Change</th></tr></thead><tbody id="gainers"></tbody></table>
+      <table><thead><tr><th>Losers</th><th>Price</th><th>Change</th></tr></thead><tbody id="losers"></tbody></table>
+      <table><thead><tr><th>Most Active</th><th>Volume</th><th>Trades</th></tr></thead><tbody id="actives"></tbody></table>
     </div>
     <div class="boards" style="margin-top:12px">
-      <table><thead><tr><th>加密涨幅榜</th><th>价格</th><th>涨跌</th></tr></thead><tbody id="cgainers"></tbody></table>
-      <table><thead><tr><th>加密跌幅榜</th><th>价格</th><th>涨跌</th></tr></thead><tbody id="closers"></tbody></table>
+      <table><thead><tr><th>Crypto Gainers</th><th>Price</th><th>Change</th></tr></thead><tbody id="cgainers"></tbody></table>
+      <table><thead><tr><th>Crypto Losers</th><th>Price</th><th>Change</th></tr></thead><tbody id="closers"></tbody></table>
     </div>
   </section>
 
   <section>
-    <h2>持仓（Agent 的）</h2>
-    <table><thead><tr><th>代码</th><th>数量</th><th>成本</th><th>现价</th><th>浮动盈亏</th></tr></thead><tbody id="positions"></tbody></table>
+    <h2>Positions (the agent's)</h2>
+    <table><thead><tr><th>Symbol</th><th>Qty</th><th>Avg Cost</th><th>Price</th><th>Unrealized P/L</th></tr></thead><tbody id="positions"></tbody></table>
   </section>
 
   <section>
-    <h2>订单（Agent 下的单）</h2>
-    <table><thead><tr><th>时间</th><th>代码</th><th>方向</th><th>类型</th><th>数量</th><th>限价/触发价</th><th>成交价</th><th>状态</th></tr></thead><tbody id="orders"></tbody></table>
+    <h2>Orders (placed by the agent)</h2>
+    <table><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Limit/Stop</th><th>Fill Price</th><th>Status</th></tr></thead><tbody id="orders"></tbody></table>
   </section>
 
   <section>
-    <h2>新闻（get_news 返回的内容）</h2>
+    <h2>News (what get_news returns)</h2>
     <form id="addNews">
-      <input name="headline" placeholder="标题" style="flex:1" required>
-      <input name="symbols" placeholder="关联代码 ZZZ,AAA" class="w90" style="width:140px">
-      <textarea name="summary" placeholder="摘要 summary"></textarea>
-      <textarea name="content" placeholder="正文 content（可留空）"></textarea>
-      <button class="primary">发布新闻</button>
+      <input name="headline" placeholder="Headline" style="flex:1" required>
+      <input name="symbols" placeholder="Symbols ZZZ,AAA" class="w90" style="width:140px">
+      <textarea name="summary" placeholder="Summary"></textarea>
+      <textarea name="content" placeholder="Body / content (optional)"></textarea>
+      <button class="primary">Publish News</button>
     </form>
     <div id="news" style="margin-top:10px; max-height:520px; overflow-y:auto"></div>
   </section>
@@ -97,6 +97,7 @@ const cls = n => n > 0 ? "up" : n < 0 ? "down" : "";
 const num = (n, d = 4) => Number(n).toLocaleString("en-US", {maximumFractionDigits: d});
 const post = (path, body) => fetch("/admin/" + path, {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(body ?? {})}).then(refresh);
 let marketOpen = true;
+const openNews = new Set();
 
 async function refresh() {
   const [s, a, c, mv, ma, mvc] = await Promise.all(["/admin/state", "/v2/account", "/v2/clock",
@@ -105,7 +106,7 @@ async function refresh() {
   marketOpen = c.is_open;
   $("cash").textContent = money(a.cash);
   $("equity").textContent = money(a.equity);
-  $("mkt").textContent = marketOpen ? "开市" : "休市";
+  $("mkt").textContent = marketOpen ? "Open" : "Closed";
   $("mkt").className = marketOpen ? "up" : "down";
 
   const assetRow = ([sym, x]) => {
@@ -114,36 +115,36 @@ async function refresh() {
       <td class="${cls(chg)}">${chg.toFixed(2)}%</td>
       <td>${num(x.bid)} × ${num(x.bs)}</td><td>${num(x.ask)} × ${num(x.as)}</td><td>${num(x.volume, 2)}</td>
       <td>${[-10, -5, 5, 10].map(p => `<button data-sym="${esc(sym)}" data-pct="${p}">${p > 0 ? "+" : ""}${p}%</button>`).join(" ")}
-        <input class="w60" type="number" step="any" placeholder="价格" data-set="${esc(sym)}"></td></tr>`;
+        <input class="w60" type="number" step="any" placeholder="Price" data-set="${esc(sym)}"></td></tr>`;
   };
   const all = Object.entries(s.assets);
   $("assets").innerHTML = all.filter(([, x]) => x.class !== "crypto").map(assetRow).join("")
-    || `<tr><td colspan="8" class="mute">还没有股票，先在下面上架一只</td></tr>`;
+    || `<tr><td colspan="8" class="mute">No stocks yet — list one below</td></tr>`;
   $("crypto").innerHTML = all.filter(([, x]) => x.class === "crypto").map(assetRow).join("")
-    || `<tr><td colspan="8" class="mute">还没有加密货币，上架时代码写成 XYZ/USD</td></tr>`;
+    || `<tr><td colspan="8" class="mute">No crypto yet — list one with a XYZ/USD symbol</td></tr>`;
 
   const moverRow = r => `<tr><td><b>${esc(r.symbol)}</b></td><td>${num(r.price)}</td><td class="${cls(r.percent_change)}">${r.percent_change.toFixed(2)}%</td></tr>`;
   $("gainers").innerHTML = mv.gainers.map(moverRow).join("");
   $("losers").innerHTML = mv.losers.map(moverRow).join("");
-  $("cgainers").innerHTML = mvc.gainers.map(moverRow).join("") || `<tr><td colspan="3" class="mute">无</td></tr>`;
-  $("closers").innerHTML = mvc.losers.map(moverRow).join("") || `<tr><td colspan="3" class="mute">无</td></tr>`;
+  $("cgainers").innerHTML = mvc.gainers.map(moverRow).join("") || `<tr><td colspan="3" class="mute">none</td></tr>`;
+  $("closers").innerHTML = mvc.losers.map(moverRow).join("") || `<tr><td colspan="3" class="mute">none</td></tr>`;
   $("actives").innerHTML = ma.most_actives.map(r =>
     `<tr><td><b>${esc(r.symbol)}</b></td><td>${r.volume.toLocaleString("en-US")}</td><td>${r.trade_count.toLocaleString("en-US")}</td></tr>`).join("");
 
   $("positions").innerHTML = Object.entries(s.positions).map(([sym, p]) => {
     const px = s.assets[sym].price, pl = p.qty * (px - p.avg);
     return `<tr><td>${esc(sym)}</td><td>${num(p.qty, 6)}</td><td>${num(p.avg)}</td><td>${num(px)}</td><td class="${cls(pl)}">${money(pl)}</td></tr>`;
-  }).join("") || `<tr><td colspan="5" class="mute">无持仓</td></tr>`;
+  }).join("") || `<tr><td colspan="5" class="mute">No positions</td></tr>`;
 
   $("orders").innerHTML = s.orders.slice().reverse().map(o =>
     `<tr><td>${esc(o.created_at.slice(11, 19))}</td><td>${esc(o.symbol)}</td><td class="${o.side === "buy" ? "up" : "down"}">${esc(o.side)}</td>
      <td>${esc(o.type)}</td><td>${esc(o.qty)}</td><td>${esc(o.limit_price ?? o.stop_price ?? "")}</td><td>${esc(o.filled_avg_price ?? "")}</td><td>${esc(o.status)}</td></tr>`
-  ).join("") || `<tr><td colspan="8" class="mute">Agent 还没下单</td></tr>`;
+  ).join("") || `<tr><td colspan="8" class="mute">The agent has not placed any orders yet</td></tr>`;
 
   $("news").innerHTML = s.news.slice().reverse().map(n =>
     `<div class="news"><b>${esc(n.headline)}</b> <span class="mute">[${esc(n.symbols.join(","))}] ${esc(n.created_at.slice(5, 16).replace("T", " "))} UTC</span>
-     ${n.summary ? `<div>${esc(n.summary)}</div>` : ""}${n.content ? `<details><summary class="mute">正文</summary><div class="mute">${esc(n.content.replace(/<[^>]+>/g, " ").trim())}</div></details>` : ""}</div>`
-  ).join("") || `<div class="mute">暂无新闻</div>`;
+     ${n.summary ? `<div>${esc(n.summary)}</div>` : ""}${n.content ? `<details data-id="${n.id}"${openNews.has(String(n.id)) ? " open" : ""}><summary class="mute">Body</summary><div class="mute">${esc(n.content.replace(/<[^>]+>/g, " ").trim())}</div></details>` : ""}</div>`
+  ).join("") || `<div class="mute">No news yet</div>`;
 }
 
 $("assets").addEventListener("click", e => {
@@ -163,9 +164,13 @@ $("addNews").addEventListener("submit", e => {
     symbols: f.get("symbols").split(",").map(s => s.trim().toUpperCase()).filter(Boolean)}); e.target.reset();
 });
 $("toggle").onclick = () => post("market", {open: !marketOpen});
-$("reset").onclick = () => confirm("清空所有股票、持仓、订单、新闻？") && post("reset");
+$("reset").onclick = () => confirm("Wipe all assets, positions, orders, and news?") && post("reset");
 
 refresh();
+// refresh() rebuilds the news list every tick; remember which bodies are expanded so they stay open
+$("news").addEventListener("toggle", e => {
+  e.target.open ? openNews.add(e.target.dataset.id) : openNews.delete(e.target.dataset.id);
+}, true);
 setInterval(() => { if (!document.activeElement?.matches("input,textarea")) refresh(); }, 1500);
 </script>
 </body>

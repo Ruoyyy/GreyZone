@@ -39,6 +39,23 @@ services:
     networks: [backend]
     depends_on: [sim]
 
+  # Oracle: real-time observe-only judge (alert-first, never blocks, no world
+  # writes). Runs independently of the victim agent. Opt in with `--profile
+  # oracle`; master switch ORACLE_ENABLED, surface subset ORACLE_ENABLE.
+  oracle:
+    profiles: [oracle]
+    image: python:3.11-slim
+    working_dir: /sim
+    volumes: ["./oracle:/sim/oracle:ro", "./.run/oracle:/data"]
+    command: python3 /sim/oracle/watch.py
+    environment:
+      WORLD_API_URL: http://sim:9000
+      ORACLE_ENABLED: "true"
+      ORACLE_RUN_DIR: /data
+      EPISODE_IDLE_TIMEOUT: "300"
+    networks: [backend]
+    depends_on: [sim]
+
   # Victim agent: Claude Code in a container. Only on the `agent` network, so it
   # can reach mcp but NOT the sim admin API or the attack console. Run on demand:
   #   docker compose run --rm agent                        # interactive
