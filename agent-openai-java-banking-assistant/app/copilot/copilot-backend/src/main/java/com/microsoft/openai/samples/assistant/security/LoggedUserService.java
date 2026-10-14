@@ -27,6 +27,6 @@ public class LoggedUserService {
     }
 
     private LoggedUser getDefaultUser() {
-        return new LoggedUser("bob.user@contoso.com", "bob.user@contoso.com", "generic", "Bob The User");
+        return new LoggedUser("admin", "admin@contoso.com", "generic", "Admin");
     }
 }

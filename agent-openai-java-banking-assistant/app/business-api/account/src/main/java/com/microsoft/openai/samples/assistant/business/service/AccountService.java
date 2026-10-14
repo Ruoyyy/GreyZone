@@ -24,8 +24,8 @@ public class AccountService {
         // Fill the map with dummy data
         this.accounts.put("1000", new Account(
                 "1000",
-                "alice.user@contoso.com",
-                "Alice User",
+                "ruoyu@contoso.com",
+                "Ruoyu User",
                 "USD",
                 "2022-01-01",
                 "5000",
@@ -33,21 +33,13 @@ public class AccountService {
                               new PaymentMethodSummary("23456", "BankTransfer", "2022-01-01", "9999-01-01"))));
         this.accounts.put("1010", new Account(
                 "1010",
-                "bob.user@contoso.com",
-                "Bob User",
+                "admin@contoso.com",
+                "Admin User",
                 "EUR",
                 "2022-01-01",
                 "10000",
                 Arrays.asList(new PaymentMethodSummary("345678", "BankTransfer", "2022-01-01", "9999-01-01"),
                               new PaymentMethodSummary("55555", "Visa", "2022-01-01", "2026-01-01"))));
-        this.accounts.put("1020", new Account(
-                "1020",
-                "charlie.user@contoso.com",
-                "Charlie User",
-                "EUR",
-                "2022-01-01",
-                "3000",
-                Arrays.asList(new PaymentMethodSummary("46748576", "DirectDebit", "2022-02-01", "9999-02-01"))));
 
         this.paymentMethods.put("12345", new PaymentMethod("12345", "Visa", "2022-01-01", "2025-01-01", "500.00", "1234567812345678"));
         this.paymentMethods.put("55555", new PaymentMethod("55555", "Visa", "2024-01-01", "2028-01-01", "350.00", "637362551913266"));

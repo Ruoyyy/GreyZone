@@ -8,5 +8,5 @@ public interface Agent {
 
     String getName();
     AgentMetadata getMetadata();
-    List<ChatMessage> invoke(List<ChatMessage> chatHistory) throws AgentExecutionException;
+    List<ChatMessage> invoke(List<ChatMessage> chatHistory, String loggedUserName) throws AgentExecutionException;
 }

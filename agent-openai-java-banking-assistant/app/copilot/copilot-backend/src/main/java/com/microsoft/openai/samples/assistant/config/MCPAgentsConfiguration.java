@@ -6,7 +6,6 @@ import com.microsoft.openai.samples.assistant.langchain4j.agent.SupervisorAgent;
 import com.microsoft.openai.samples.assistant.langchain4j.agent.mcp.AccountMCPAgent;
 import com.microsoft.openai.samples.assistant.langchain4j.agent.mcp.PaymentMCPAgent;
 import com.microsoft.openai.samples.assistant.langchain4j.agent.mcp.TransactionHistoryMCPAgent;
-import com.microsoft.openai.samples.assistant.security.LoggedUserService;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -21,27 +20,25 @@ public class MCPAgentsConfiguration {
     @Value("${payments.api.url}") String paymentsMCPServerUrl;
 
     private final ChatLanguageModel chatLanguageModel;
-    private final LoggedUserService loggedUserService;
     private final DocumentIntelligenceInvoiceScanHelper documentIntelligenceInvoiceScanHelper;
 
-    public MCPAgentsConfiguration(ChatLanguageModel chatLanguageModel, LoggedUserService loggedUserService, DocumentIntelligenceInvoiceScanHelper documentIntelligenceInvoiceScanHelper) {
+    public MCPAgentsConfiguration(ChatLanguageModel chatLanguageModel, DocumentIntelligenceInvoiceScanHelper documentIntelligenceInvoiceScanHelper) {
         this.chatLanguageModel = chatLanguageModel;
-        this.loggedUserService = loggedUserService;
         this.documentIntelligenceInvoiceScanHelper = documentIntelligenceInvoiceScanHelper;
     }
     @Bean
     public AccountMCPAgent accountMCPAgent() {
-        return new AccountMCPAgent(chatLanguageModel, loggedUserService.getLoggedUser().username(), accountsMCPServerUrl);
+        return new AccountMCPAgent(chatLanguageModel, accountsMCPServerUrl);
     }
 
     @Bean
     public TransactionHistoryMCPAgent transactionHistoryMCPAgent() {
-        return new TransactionHistoryMCPAgent(chatLanguageModel, loggedUserService.getLoggedUser().username(), transactionsMCPServerUrl,accountsMCPServerUrl);
+        return new TransactionHistoryMCPAgent(chatLanguageModel, transactionsMCPServerUrl, accountsMCPServerUrl);
     }
 
     @Bean
     public PaymentMCPAgent paymentMCPAgent() {
-        return new PaymentMCPAgent(chatLanguageModel,documentIntelligenceInvoiceScanHelper, loggedUserService.getLoggedUser().username(),transactionsMCPServerUrl,accountsMCPServerUrl, paymentsMCPServerUrl);
+        return new PaymentMCPAgent(chatLanguageModel, documentIntelligenceInvoiceScanHelper, transactionsMCPServerUrl, accountsMCPServerUrl, paymentsMCPServerUrl);
     }
 
     @Bean

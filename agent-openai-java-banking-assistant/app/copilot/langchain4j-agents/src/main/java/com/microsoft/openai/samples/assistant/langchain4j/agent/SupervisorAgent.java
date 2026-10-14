@@ -35,6 +35,7 @@ public class SupervisorAgent {
         You are a banking customer support agent triaging conversation and select the best agent name that can solve the customer need.
         Use the below list of agents metadata to select the best one for the customer request:
         {{agentsMetadata}}
+        Base your decision on the customer's LAST message; use earlier messages only as context for follow-ups.
         Answer only with the agent name.
         if you are not able to select an agent answer with none.
         """;
@@ -56,7 +57,7 @@ public class SupervisorAgent {
     }
 
 
-    public List<ChatMessage> invoke(List<ChatMessage> chatHistory) {
+    public List<ChatMessage> invoke(List<ChatMessage> chatHistory, String loggedUserName) {
         LOGGER.info("------------- SupervisorAgent -------------");
 
         var internalChatMemory = buildInternalChat(chatHistory);
@@ -70,14 +71,14 @@ public class SupervisorAgent {
         LOGGER.info("Supervisor Agent handoff to [{}]", nextAgent);
 
      if (routing) {
-           return singleTurnRouting(nextAgent, chatHistory);
+           return singleTurnRouting(nextAgent, chatHistory, loggedUserName);
         }
 
      return new ArrayList<>();
     }
 
 
-    protected List<ChatMessage> singleTurnRouting(String nextAgent, List<ChatMessage> chatHistory) {
+    protected List<ChatMessage> singleTurnRouting(String nextAgent, List<ChatMessage> chatHistory, String loggedUserName) {
         if("none".equalsIgnoreCase(nextAgent)){
             LOGGER.info("Gracefully handle clarification.. ");
             AiMessage clarificationMessage = AiMessage.builder().
@@ -87,12 +88,21 @@ public class SupervisorAgent {
             return chatHistory;
         }
 
-        Agent agent = agents.stream()
+        var agent = agents.stream()
                 .filter(a -> a.getName().equals(nextAgent))
-                .findFirst()
-                .orElseThrow(() -> new AgentExecutionException("Agent not found: " + nextAgent));
+                .findFirst();
 
-        return agent.invoke(chatHistory);
+        if (agent.isEmpty()) {
+            // The routing model returned something that is not a known agent name; clarify instead of failing.
+            LOGGER.info("No matching agent for [{}]; asking for clarification.", nextAgent);
+            AiMessage clarificationMessage = AiMessage.builder()
+                    .text(" I'm not sure about your request. Can you please clarify?")
+                    .build();
+            chatHistory.add(clarificationMessage);
+            return chatHistory;
+        }
+
+        return agent.get().invoke(chatHistory, loggedUserName);
     }
 
 
@@ -105,17 +115,11 @@ public class SupervisorAgent {
                 .build();
 
         internalChatMemory.add(dev.langchain4j.data.message.SystemMessage.from(agentPrompt.text()));
-        // filter out tool requests and tool execution results
+        // Route using only the user turns: assistant answers/clarifications accumulated in a long
+        // persisted history otherwise derail the routing model (it may echo an answer instead of an
+        // agent name). User turns preserve intent continuity for multi-turn flows (e.g. "use my Visa").
         chatHistory.stream()
-                .filter(chatMessage -> {
-                    if (chatMessage instanceof ToolExecutionResultMessage) {
-                        return false;
-                    }
-                    if (chatMessage instanceof AiMessage) {
-                        return !((AiMessage) chatMessage).hasToolExecutionRequests();
-                    }
-                    return true;
-                })
+                .filter(chatMessage -> chatMessage instanceof dev.langchain4j.data.message.UserMessage)
                 .forEach(internalChatMemory::add);
         return internalChatMemory;
     }

@@ -1,4 +1,4 @@
-import { ChatAppResponse, ChatAppResponseOrError, ChatAppRequest, AccountInfo, PaymentMethod, Beneficiary, Transaction } from "./models";
+import { ChatAppResponse, ChatAppResponseOrError, ChatAppRequest, ResponseMessage, AccountInfo, PaymentMethod, Beneficiary, Transaction } from "./models";
 import { useLogin } from "../authConfig";
 
 const BACKEND_URI = import.meta.env.VITE_BACKEND_URI ? import.meta.env.VITE_BACKEND_URI : "";
@@ -49,6 +49,12 @@ export async function chatApi(request: ChatAppRequest, idToken: string | undefin
         headers: getHeaders(idToken, request.stream || false),
         body: JSON.stringify(request)
     });
+}
+
+export async function getChatHistoryApi(user: string): Promise<ResponseMessage[]> {
+    const res = await fetch(`${BACKEND_URI}/chat/history?user=${encodeURIComponent(user)}`);
+    if (!res.ok) throw Error(`Failed to load chat history (HTTP ${res.status})`);
+    return res.json();
 }
 
 export function getCitationFilePath(citation: string): string {
@@ -119,11 +125,11 @@ export async function getInvoiceApi(invoiceId: string): Promise<Record<string, s
     return res.json();
 }
 
-export async function askAgentApi(question: string): Promise<string> {
+export async function askAgentApi(question: string, user: string = "admin"): Promise<string> {
     const res = await fetch(`${BACKEND_URI}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content: question }], stream: false })
+        body: JSON.stringify({ user, messages: [{ role: "user", content: question }], stream: false })
     });
     const data = await res.json();
     if (!res.ok) throw Error(data.error || `HTTP ${res.status}`);

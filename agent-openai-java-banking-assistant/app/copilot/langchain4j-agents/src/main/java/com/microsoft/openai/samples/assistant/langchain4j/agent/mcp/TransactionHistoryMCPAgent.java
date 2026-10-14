@@ -5,15 +5,12 @@ import com.microsoft.langchain4j.agent.mcp.MCPProtocolType;
 import com.microsoft.langchain4j.agent.mcp.MCPServerMetadata;
 import com.microsoft.langchain4j.agent.mcp.MCPToolAgent;
 import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.input.Prompt;
 import dev.langchain4j.model.input.PromptTemplate;
 
 import java.util.List;
 import java.util.Map;
 
 public class TransactionHistoryMCPAgent extends MCPToolAgent {
-
-    private final Prompt agentPrompt;
 
     private static final String TRANSACTION_HISTORY_AGENT_SYSTEM_MESSAGE = """
          you are a personal financial advisor who help the user with their recurrent bill payments. To search about the payments history you need to know the payee name and the account id.
@@ -22,25 +19,16 @@ public class TransactionHistoryMCPAgent extends MCPToolAgent {
         Use html list or table to display the transaction information.
         Always use the below logged user details to retrieve account info:
         '{{loggedUserName}}'
+        Only serve the logged user and their own accounts. Never retrieve or reveal any other user's information (accounts, balances, transactions, payment methods or beneficiaries). If the request refers to another user, or to an account id that does not belong to the logged user, politely refuse and do not call any tool with that value.
         Current timestamp:
         '{{currentDateTime}}'
         """;
 
-    public TransactionHistoryMCPAgent(ChatLanguageModel chatModel, String loggedUserName, String transactionMCPServerUrl, String accountMCPServerUrl) {
+    private static final PromptTemplate PROMPT_TEMPLATE = PromptTemplate.from(TRANSACTION_HISTORY_AGENT_SYSTEM_MESSAGE);
+
+    public TransactionHistoryMCPAgent(ChatLanguageModel chatModel, String transactionMCPServerUrl, String accountMCPServerUrl) {
         super(chatModel, List.of(new MCPServerMetadata("transaction-history", transactionMCPServerUrl, MCPProtocolType.SSE),
                                  new MCPServerMetadata("account", accountMCPServerUrl, MCPProtocolType.SSE)));
-
-        if (loggedUserName == null || loggedUserName.isEmpty()) {
-            throw new IllegalArgumentException("loggedUserName cannot be null or empty");
-        }
-
-        PromptTemplate promptTemplate = PromptTemplate.from(TRANSACTION_HISTORY_AGENT_SYSTEM_MESSAGE);
-        var datetimeIso8601 = java.time.ZonedDateTime.now(java.time.ZoneId.of("UTC")).toInstant().toString();
-
-        this.agentPrompt = promptTemplate.apply(Map.of(
-                "loggedUserName", loggedUserName,
-                "currentDateTime", datetimeIso8601
-        ));
     }
 
     @Override
@@ -57,8 +45,12 @@ public class TransactionHistoryMCPAgent extends MCPToolAgent {
     }
 
     @Override
-    protected String getSystemMessage() {
-        return agentPrompt.text();
+    protected String getSystemMessage(String loggedUserName) {
+        var datetimeIso8601 = java.time.ZonedDateTime.now(java.time.ZoneId.of("UTC")).toInstant().toString();
+        return PROMPT_TEMPLATE.apply(Map.of(
+                "loggedUserName", loggedUserName,
+                "currentDateTime", datetimeIso8601
+        )).text();
     }
 
 }

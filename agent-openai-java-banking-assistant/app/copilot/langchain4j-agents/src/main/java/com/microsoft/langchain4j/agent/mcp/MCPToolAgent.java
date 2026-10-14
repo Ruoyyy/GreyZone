@@ -81,29 +81,34 @@ public abstract class MCPToolAgent extends AbstractReActAgent {
     protected List<ToolExecutionResultMessage> executeToolRequests(List<ToolExecutionRequest> toolExecutionRequests) {
         List<ToolExecutionResultMessage> toolExecutionResultMessages = new ArrayList<>();
         for (ToolExecutionRequest toolExecutionRequest : toolExecutionRequests) {
+            String result;
+            try {
+                // try first the extended executors
+                var toolExecutor = extendedExecutorMap.get(toolExecutionRequest.name());
+                if( toolExecutor != null){
+                    LOGGER.info("Executing {} with params {}", toolExecutionRequest.name(), toolExecutionRequest.arguments());
+                    result = toolExecutor.execute(toolExecutionRequest,null);
+                    LOGGER.info("Response from {}: {}", toolExecutionRequest.name(), result);
 
-            String result = "ko";
-
-            // try first the extended executors
-            var toolExecutor = extendedExecutorMap.get(toolExecutionRequest.name());
-            if( toolExecutor != null){
-                LOGGER.info("Executing {} with params {}", toolExecutionRequest.name(), toolExecutionRequest.arguments());
-                 result = toolExecutor.execute(toolExecutionRequest,null);
-                LOGGER.info("Response from {}: {}", toolExecutionRequest.name(), result);
-
-            }else{
-                var mcpClient = tool2ClientMap.get(toolExecutionRequest.name());
-                if (mcpClient == null) {
-                    throw new IllegalArgumentException("No MCP executor found for tool name: " + toolExecutionRequest.name());
+                }else{
+                    var mcpClient = tool2ClientMap.get(toolExecutionRequest.name());
+                    if (mcpClient == null) {
+                        throw new IllegalArgumentException("No MCP executor found for tool name: " + toolExecutionRequest.name());
+                    }
+                    LOGGER.info("Executing {} with params {}", toolExecutionRequest.name(), toolExecutionRequest.arguments());
+                    result =  mcpClient.executeTool(toolExecutionRequest);
+                    LOGGER.info("Response from {}: {}", toolExecutionRequest.name(), result);
                 }
-                LOGGER.info("Executing {} with params {}", toolExecutionRequest.name(), toolExecutionRequest.arguments());
-                result =  mcpClient.executeTool(toolExecutionRequest);
-                LOGGER.info("Response from {}: {}", toolExecutionRequest.name(), result);
-            }
 
-            if (result == null || result.isEmpty()) {
-                LOGGER.warn("Tool {} returned empty result but successfully completed. Setting result=ok.", toolExecutionRequest.name());
-                result = "ok";
+                if (result == null || result.isEmpty()) {
+                    // Only reachable when the tool completed without error and returned
+                    // nothing (void tools): report the fact instead of claiming success.
+                    LOGGER.warn("Tool {} returned an empty result", toolExecutionRequest.name());
+                    result = "Tool executed successfully but returned no output";
+                }
+            } catch (Exception e) {
+                LOGGER.error("Tool {} execution failed", toolExecutionRequest.name(), e);
+                result = "Tool execution failed: " + e;
             }
             toolExecutionResultMessages.add(ToolExecutionResultMessage.from(toolExecutionRequest, result));
         }

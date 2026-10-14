@@ -13,7 +13,7 @@ COPY langchain4j-agents langchain4j-agents
 RUN chmod +x ./mvnw
 # Convert CRLF to LF
 RUN sed -i 's/\r$//' ./mvnw
-RUN ./mvnw package -DskipTests
+RUN ./mvnw package -Dmaven.test.skip=true
 RUN mkdir -p copilot-backend/target/dependency && (cd copilot-backend/target/dependency; jar -xf ../*.jar)
 
 #install curl

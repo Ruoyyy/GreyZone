@@ -8,6 +8,7 @@ import styles from "./Chat.module.css";
 
 import {
     chatApi,
+    getChatHistoryApi,
     RetrievalMode,
     ChatAppResponse,
     ChatAppResponseOrError,
@@ -16,6 +17,31 @@ import {
     Approaches,
     SKMode
 } from "../../api";
+
+// Users selectable in the UI (identity is declared, not verified).
+const USERS = ["admin", "ruoyu"];
+
+// Convert the server-persisted flat history into the [question, attachments, response] tuples the UI uses.
+function historyToAnswers(items: ResponseMessage[]): [string, string[], ChatAppResponse][] {
+    const out: [string, string[], ChatAppResponse][] = [];
+    let question: string | null = null;
+    let attachments: string[] = [];
+    for (const m of items) {
+        if (m.role === "user") {
+            question = m.content;
+            attachments = m.attachments || [];
+        } else if (m.role === "assistant" && question !== null) {
+            out.push([
+                question,
+                attachments,
+                { choices: [{ index: 0, message: { content: m.content, role: "assistant" }, context: { data_points: [], thoughts: "" }, session_state: null }] } as unknown as ChatAppResponse
+            ]);
+            question = null;
+            attachments = [];
+        }
+    }
+    return out;
+}
 import { Answer, AnswerError, AnswerLoading } from "../../components/Answer";
 import { QuestionInput } from "../../components/QuestionInput";
 import { QuestionContextType } from "../../components/QuestionInput/QuestionContext";
@@ -45,6 +71,14 @@ const Chat = () => {
     const [useSuggestFollowupQuestions, setUseSuggestFollowupQuestions] = useState<boolean>(false);
     const [useOidSecurityFilter, setUseOidSecurityFilter] = useState<boolean>(false);
     const [useGroupsSecurityFilter, setUseGroupsSecurityFilter] = useState<boolean>(false);
+    const [loggedUser, setLoggedUser] = useState<string>(() => {
+        try {
+            const stored = localStorage.getItem("loggedUser");
+            return stored && USERS.includes(stored) ? stored : "admin";
+        } catch {
+            return "admin";
+        }
+    });
 
     const lastQuestionRef = useRef<string>("");
     const lastAttachementsRef = useRef<string[] | null>([]);
@@ -138,6 +172,7 @@ const Chat = () => {
                     }
                 },
                 approach: approach,
+                user: loggedUser,
                 // ChatAppProtocol: Client must pass on any session state received from the server
                 session_state: answers.length ? answers[answers.length - 1][2].choices[0].session_state : null
             };
@@ -181,6 +216,34 @@ const Chat = () => {
     useEffect(() => {
         chatMessageStreamEnd.current?.scrollIntoView({ behavior: "auto" });
     }, [streamedAnswers]);
+
+    // Load this user's persisted history on mount and whenever the selected user changes.
+    useEffect(() => {
+        try {
+            localStorage.setItem("loggedUser", loggedUser);
+        } catch {
+            /* ignore */
+        }
+        setError(undefined);
+        setStreamedAnswers([]);
+        let cancelled = false;
+        getChatHistoryApi(loggedUser)
+            .then(items => {
+                if (cancelled) return;
+                const a = historyToAnswers(items);
+                setAnswers(a);
+                lastQuestionRef.current = a.length ? a[a.length - 1][0] : "";
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setAnswers([]);
+                    lastQuestionRef.current = "";
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [loggedUser]);
 
     const onPromptTemplateChange = (_ev?: React.FormEvent<HTMLInputElement | HTMLTextAreaElement>, newValue?: string) => {
         setPromptTemplate(newValue || "");
@@ -276,6 +339,16 @@ const Chat = () => {
     return (
         <div className={styles.container}>
             <div className={styles.commandsContainer}>
+                <label style={{ marginRight: 12, alignSelf: "center" }}>
+                    User:&nbsp;
+                    <select value={loggedUser} onChange={e => setLoggedUser(e.target.value)} disabled={isLoading} aria-label="Logged user">
+                        {USERS.map(u => (
+                            <option key={u} value={u}>
+                                {u}
+                            </option>
+                        ))}
+                    </select>
+                </label>
                 <ClearChatButton className={styles.commandButton} onClick={clearChat} disabled={!lastQuestionRef.current || isLoading} />
 
             </div>

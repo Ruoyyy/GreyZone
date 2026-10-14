@@ -21,8 +21,6 @@ import java.util.Map;
 
 public class PaymentMCPAgent extends MCPToolAgent {
 
-    private final Prompt agentPrompt;
-
     private static final String PAYMENT_AGENT_SYSTEM_MESSAGE = """
         you are a personal financial advisor who help the user with their recurrent bill payments. The user may want to pay the bill uploading a photo of the bill, or it may start the payment checking transactions history for a specific payee.
         For the bill payment you need to know the: bill id or invoice number, payee name, the total amount.
@@ -39,6 +37,7 @@ public class PaymentMCPAgent extends MCPToolAgent {
         Use HTML list or table to display bill extracted data, payments, account or transaction details.
         Always use the below logged user details to retrieve account info:
         '{{loggedUserName}}'
+        Only serve the logged user and their own accounts. Never retrieve or reveal any other user's information (accounts, balances, transactions, payment methods or beneficiaries), and never move money from or to an account that does not belong to the logged user. If the request refers to another user, or to an account id that does not belong to the logged user, politely refuse and do not call any tool with that value.
         Current timestamp:
         '{{currentDateTime}}'
         Don't try to guess accountId,paymentMethodId from the conversation.When submitting payment always use functions to retrieve accountId, paymentMethodId.
@@ -76,24 +75,14 @@ public class PaymentMCPAgent extends MCPToolAgent {
         
         """;
 
-    public PaymentMCPAgent(ChatLanguageModel chatModel, DocumentIntelligenceInvoiceScanHelper documentIntelligenceInvoiceScanHelper, String loggedUserName, String transactionMCPServerURL, String accountMCPServerUrl, String paymentsMCPServerUrl) {
+    private static final PromptTemplate PROMPT_TEMPLATE = PromptTemplate.from(PAYMENT_AGENT_SYSTEM_MESSAGE);
+
+    public PaymentMCPAgent(ChatLanguageModel chatModel, DocumentIntelligenceInvoiceScanHelper documentIntelligenceInvoiceScanHelper, String transactionMCPServerURL, String accountMCPServerUrl, String paymentsMCPServerUrl) {
         super(chatModel, List.of(new MCPServerMetadata("payment", paymentsMCPServerUrl, MCPProtocolType.SSE),
                 new MCPServerMetadata("transaction", transactionMCPServerURL, MCPProtocolType.SSE),
                 new MCPServerMetadata("account", accountMCPServerUrl, MCPProtocolType.SSE)));
 
-        if (loggedUserName == null || loggedUserName.isEmpty()) {
-            throw new IllegalArgumentException("loggedUserName cannot be null or empty");
-        }
-
         extendToolMap(documentIntelligenceInvoiceScanHelper);
-
-        PromptTemplate promptTemplate = PromptTemplate.from(PAYMENT_AGENT_SYSTEM_MESSAGE);
-        var datetimeIso8601 = ZonedDateTime.now(ZoneId.of("UTC")).toInstant().toString();
-
-        this.agentPrompt = promptTemplate.apply(Map.of(
-                "loggedUserName", loggedUserName,
-                "currentDateTime", datetimeIso8601
-        ));
     }
 
     @Override
@@ -110,8 +99,12 @@ public class PaymentMCPAgent extends MCPToolAgent {
     }
 
     @Override
-    protected String getSystemMessage() {
-        return agentPrompt.text();
+    protected String getSystemMessage(String loggedUserName) {
+        var datetimeIso8601 = ZonedDateTime.now(ZoneId.of("UTC")).toInstant().toString();
+        return PROMPT_TEMPLATE.apply(Map.of(
+                "loggedUserName", loggedUserName,
+                "currentDateTime", datetimeIso8601
+        )).text();
     }
 
     protected void extendToolMap(DocumentIntelligenceInvoiceScanHelper documentIntelligenceInvoiceScanHelper) {

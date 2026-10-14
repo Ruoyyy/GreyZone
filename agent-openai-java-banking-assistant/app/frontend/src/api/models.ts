@@ -68,6 +68,7 @@ export type ChatAppRequest = {
     context?: ChatAppRequestContext;
     stream?: boolean;
     session_state: any;
+    user?: string;
 };
 
 export type PaymentMethodSummary = {

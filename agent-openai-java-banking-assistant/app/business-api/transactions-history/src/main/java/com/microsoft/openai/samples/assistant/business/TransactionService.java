@@ -67,7 +67,9 @@ public class TransactionService {
                 new Transaction("52", "Payment of the bill 171443","outcome", "contoso", "0005", "1010", "Transfer", "500.00", "2020-4-05T12:00:00Z")
          )));
 
-
+         // Other accounts start with empty (but present) history so payments/incoming don't fail.
+         lastTransactions.put("1000", new ArrayList<>());
+         allTransactions.put("1000", new ArrayList<>());
 
      }
     public List<Transaction> getTransactionsByRecipientName(String accountId, String name) {

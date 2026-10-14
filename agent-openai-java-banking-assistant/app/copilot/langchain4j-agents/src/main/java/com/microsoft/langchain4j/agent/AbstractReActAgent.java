@@ -22,6 +22,10 @@ public abstract class AbstractReActAgent implements Agent {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(AbstractReActAgent.class);
 
+    // Hard bound on model/tool round-trips per invocation so a model stuck in a
+    // tool-calling loop (e.g. after a prompt injection) cannot run forever.
+    private static final int MAX_TOOL_ITERATIONS = 10;
+
     protected final ChatLanguageModel chatModel;
 
     protected AbstractReActAgent(ChatLanguageModel chatModel) {
@@ -32,11 +36,11 @@ public abstract class AbstractReActAgent implements Agent {
     }
 
     @Override
-    public List<ChatMessage> invoke(List<ChatMessage> chatHistory) throws AgentExecutionException {
+    public List<ChatMessage> invoke(List<ChatMessage> chatHistory, String loggedUserName) throws AgentExecutionException {
         LOGGER.info("------------- {} -------------", this.getName());
 
         try {
-            var internalChatMemory = buildInternalChat(chatHistory);
+            var internalChatMemory = buildInternalChat(chatHistory, loggedUserName);
 
             ChatRequestParameters parameters = ChatRequestParameters.builder()
                 .toolSpecifications(getToolSpecifications())
@@ -50,7 +54,21 @@ public abstract class AbstractReActAgent implements Agent {
             var aiMessage = chatModel.chat(request).aiMessage();
 
             // ReAct planning with tools
+            int toolIterations = 0;
             while (aiMessage != null && aiMessage.hasToolExecutionRequests()) {
+                toolIterations++;
+                if (toolIterations > MAX_TOOL_ITERATIONS) {
+                    LOGGER.warn("Agent [{}] exceeded {} tool iterations, forcing a final answer without tools",
+                        this.getName(), MAX_TOOL_ITERATIONS);
+                    // Drop the pending tool request and ask for a plain answer: the message
+                    // history stays consistent because the request was never added to memory.
+                    ChatRequest finalAnswerRequest = ChatRequest.builder()
+                        .messages(internalChatMemory.messages())
+                        .build();
+                    aiMessage = chatModel.chat(finalAnswerRequest).aiMessage();
+                    break;
+                }
+
                 List<ToolExecutionResultMessage> toolExecutionResultMessages = executeToolRequests(aiMessage.toolExecutionRequests());
 
                 internalChatMemory.add(aiMessage);
@@ -86,29 +104,37 @@ public abstract class AbstractReActAgent implements Agent {
         for (ToolExecutionRequest toolExecutionRequest : toolExecutionRequests) {
             var toolExecutor = getToolExecutor(toolExecutionRequest.name());
             LOGGER.info("Executing {} with params {}", toolExecutionRequest.name(), toolExecutionRequest.arguments());
-            String result = toolExecutor.execute(toolExecutionRequest, null);
-            LOGGER.info("Response from {}: {}", toolExecutionRequest.name(), result);
-            if (result == null || result.isEmpty()) {
-                LOGGER.warn("Tool {} returned empty result but successfully completed. Setting result=ok.", toolExecutionRequest.name());
-                result = "ok";
+            String result;
+            try {
+                result = toolExecutor.execute(toolExecutionRequest, null);
+                LOGGER.info("Response from {}: {}", toolExecutionRequest.name(), result);
+                if (result == null || result.isEmpty()) {
+                    // Only reachable when the tool completed without error and returned
+                    // nothing (void tools): report the fact instead of claiming success.
+                    LOGGER.warn("Tool {} returned an empty result", toolExecutionRequest.name());
+                    result = "Tool executed successfully but returned no output";
+                }
+            } catch (Exception e) {
+                LOGGER.error("Tool {} execution failed", toolExecutionRequest.name(), e);
+                result = "Tool execution failed: " + e;
             }
             toolExecutionResultMessages.add(ToolExecutionResultMessage.from(toolExecutionRequest, result));
         }
         return toolExecutionResultMessages;
     }
 
-    protected ChatMemory buildInternalChat(List<ChatMessage> chatHistory) {
+    protected ChatMemory buildInternalChat(List<ChatMessage> chatHistory, String loggedUserName) {
         var internalChatMemory = MessageWindowChatMemory.builder()
             .id("default")
             .maxMessages(20)
             .build();
 
-        internalChatMemory.add(SystemMessage.from(getSystemMessage()));
+        internalChatMemory.add(SystemMessage.from(getSystemMessage(loggedUserName)));
         chatHistory.forEach(internalChatMemory::add);
         return internalChatMemory;
     }
 
-    protected abstract String getSystemMessage();
+    protected abstract String getSystemMessage(String loggedUserName);
 
     protected abstract List<ToolSpecification> getToolSpecifications();
 

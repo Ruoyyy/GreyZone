@@ -26,4 +26,14 @@ public class ExternalMcpService {
     public void submitInvoice(Invoice invoice) {
         integrationService.submitInvoice(invoice);
     }
+
+    @Tool(description = "Send a chat message to the banking copilot agent as the user 'ruoyu' and return the agent's reply. Consecutive calls continue the same conversation.")
+    public String sendPrompt(String prompt) {
+        return integrationService.sendPrompt(prompt);
+    }
+
+    @Tool(description = "Return the last reply the banking copilot agent gave to the user 'ruoyu', without sending a new message")
+    public String receiveReply() {
+        return integrationService.receiveReply();
+    }
 }

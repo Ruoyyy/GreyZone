@@ -17,7 +17,7 @@ import {
 } from "../../api";
 
 // Known mock accounts seeded in the account service.
-const ACCOUNTS = ["1000", "1010", "1020"];
+const ACCOUNTS = ["1000", "1010"];
 // Default logged user account (matches backend LoggedUserService default: bob.user@contoso.com).
 const DEFAULT_ACCOUNT = "1010";
 // The seven invoice fields the backend expects (extra fields are still accepted by the API).
