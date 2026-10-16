@@ -1,0 +1,1453 @@
+"""Feature setup and configuration subentry flow."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
+
+import voluptuous as vol
+from homeassistant.config_entries import (
+    SOURCE_RECONFIGURE,
+    ConfigSubentry,
+    ConfigSubentryFlow,
+    SubentryFlowResult,
+)
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_USERNAME,
+)
+from homeassistant.helpers.selector import (
+    BooleanSelector,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    ObjectSelector,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
+
+from ..const import (  # noqa: TID252
+    CONF_DB_NAME,
+    CONF_DB_PARAMS,
+    CONF_DISABLED_FEATURES,
+    CONF_FEATURE_FALLBACK_PROVIDER_IDS,
+    CONF_FEATURE_MODEL,
+    CONF_FEATURE_MODEL_CONTEXT_SIZE,
+    CONF_FEATURE_MODEL_KEEPALIVE,
+    CONF_FEATURE_MODEL_NAME,
+    CONF_FEATURE_MODEL_REASONING,
+    CONF_FEATURE_MODEL_REASONING_BUDGET,
+    CONF_FEATURE_MODEL_REASONING_BY_MODEL,
+    CONF_FEATURE_MODEL_TEMPERATURE,
+    CONF_VECTORS_BOOTSTRAPPED,
+    EMBEDDING_MODEL_DIMS,
+    FEATURE_CATEGORY_MAP,
+    FEATURE_DEFS,
+    KEEPALIVE_MAX_SECONDS,
+    KEEPALIVE_SENTINEL,
+    MODEL_CATEGORY_SPECS,
+    PROVIDER_TYPE_LABELS,
+    RECOMMENDED_DB_HOST,
+    RECOMMENDED_DB_NAME,
+    RECOMMENDED_DB_PARAMS,
+    RECOMMENDED_DB_PASSWORD,
+    RECOMMENDED_DB_PORT,
+    RECOMMENDED_DB_USERNAME,
+    RECOMMENDED_OLLAMA_CHAT_KEEPALIVE,
+    RECOMMENDED_OLLAMA_CONTEXT_SIZE,
+    RECOMMENDED_OLLAMA_REASONING,
+    RECOMMENDED_OLLAMA_SUMMARIZATION_KEEPALIVE,
+    RECOMMENDED_OLLAMA_URL,
+    RECOMMENDED_OLLAMA_VLM_KEEPALIVE,
+    SUBENTRY_TYPE_DATABASE,
+    SUBENTRY_TYPE_FEATURE,
+    SUBENTRY_TYPE_MODEL_PROVIDER,
+)
+from ..core.db_utils import build_postgres_uri  # noqa: TID252
+from ..core.embedding_model_guard import async_store_vector_dims  # noqa: TID252
+from ..core.utils import (  # noqa: TID252
+    CannotConnectError,
+    InvalidAuthError,
+    fetch_ollama_models,
+    format_embedding_dims,
+    list_ollama_models,
+    normalized_ollama_url,
+    ollama_embedding_dims,
+    ollama_model_installed,
+    ollama_provider_settings_url,
+    redact_url,
+    validate_db_uri,
+)
+from .localization import async_common_translation
+
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+
+KEEPALIVE_DEFAULTS = {
+    "chat": RECOMMENDED_OLLAMA_CHAT_KEEPALIVE,
+    "vlm": RECOMMENDED_OLLAMA_VLM_KEEPALIVE,
+    "summarization": RECOMMENDED_OLLAMA_SUMMARIZATION_KEEPALIVE,
+}
+
+
+def _current_subentry(flow: ConfigSubentryFlow) -> ConfigSubentry | None:
+    """Return the subentry currently being edited, if any."""
+    entry = flow._get_entry()  # noqa: SLF001
+    subentry_id = getattr(flow, "_subentry_id", None)
+    if not subentry_id:
+        subentry_id = flow.context.get("subentry_id")
+    if subentry_id:
+        return entry.subentries.get(subentry_id)
+    if flow.source == SOURCE_RECONFIGURE:
+        matches = [
+            subentry
+            for subentry in entry.subentries.values()
+            if subentry.subentry_type == SUBENTRY_TYPE_FEATURE
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def _feature_subentry(entry: ConfigEntry, feature_type: str) -> ConfigSubentry | None:
+    for subentry in entry.subentries.values():
+        if subentry.subentry_type != SUBENTRY_TYPE_FEATURE:
+            continue
+        if subentry.data.get("feature_type") == feature_type:
+            return subentry
+    return None
+
+
+def _provider_options(entry: ConfigEntry, category: str) -> list[SelectOptionDict]:
+    options: list[SelectOptionDict] = []
+    for subentry in entry.subentries.values():
+        if subentry.subentry_type != SUBENTRY_TYPE_MODEL_PROVIDER:
+            continue
+        caps = set(subentry.data.get("capabilities") or [])
+        if caps and category not in caps:
+            continue
+        # A subentry stored before capabilities existed has an empty caps set,
+        # so the check above passes and it would be offered for every category
+        # - Anthropic for embeddings included - which the resolver then
+        # refuses to use, leaving the feature silently unserved.
+        if not _provider_type_serves(
+            str(subentry.data.get("provider_type") or ""), category
+        ):
+            continue
+        options.append(
+            SelectOptionDict(
+                label=subentry.title or subentry.subentry_id,
+                value=subentry.subentry_id,
+            )
+        )
+    return options
+
+
+def _provider_type_serves(provider_type: str, category: str) -> bool:
+    """
+    Return False only when *provider_type* is known NOT to serve *category*.
+
+    Mirrors _provider_supports_category in core.subentry_resolver so the picker
+    cannot offer a provider the resolver will then refuse to use. Unknown
+    categories and unknown provider types fail open, as they do there.
+    """
+    spec = MODEL_CATEGORY_SPECS.get(category)
+    if spec is None:
+        return True
+    providers = spec.get("providers", {})
+    if not isinstance(providers, dict):
+        return True
+    known = {
+        str(name)
+        for other in MODEL_CATEGORY_SPECS.values()
+        if isinstance(other.get("providers", {}), dict)
+        for name in other.get("providers", {})
+    }
+    if provider_type not in known:
+        return True
+    return provider_type in providers
+
+
+def _capable_provider_types(category: str) -> list[str]:
+    """Return the display names of provider types that can serve *category*."""
+    providers = MODEL_CATEGORY_SPECS.get(category, {}).get("providers", {})
+    if not isinstance(providers, dict):
+        return []
+    return [PROVIDER_TYPE_LABELS.get(str(name), str(name)) for name in providers]
+
+
+def _has_model_providers(entry: ConfigEntry) -> bool:
+    """Return True when at least one model provider subentry exists."""
+    return any(
+        subentry.subentry_type == SUBENTRY_TYPE_MODEL_PROVIDER
+        for subentry in entry.subentries.values()
+    )
+
+
+def _provider_type_for_id(entry: ConfigEntry, provider_id: str | None) -> str | None:
+    if not provider_id:
+        return None
+    subentry = entry.subentries.get(provider_id)
+    if not subentry:
+        return None
+    return subentry.data.get("provider_type")
+
+
+def _fallback_provider_options(
+    entry: ConfigEntry, category: str, primary_id: str | None
+) -> list[SelectOptionDict]:
+    """Return provider options excluding the primary."""
+    options: list[SelectOptionDict] = []
+    for subentry in entry.subentries.values():
+        if subentry.subentry_type != SUBENTRY_TYPE_MODEL_PROVIDER:
+            continue
+        if primary_id and subentry.subentry_id == primary_id:
+            continue
+        caps = set(subentry.data.get("capabilities") or [])
+        if caps and category not in caps:
+            continue
+        # A subentry stored before capabilities existed has an empty caps set,
+        # so the check above passes and it would be offered for every category
+        # - Anthropic for embeddings included - which the resolver then
+        # refuses to use, leaving the feature silently unserved.
+        if not _provider_type_serves(
+            str(subentry.data.get("provider_type") or ""), category
+        ):
+            continue
+        options.append(
+            SelectOptionDict(
+                label=subentry.title or subentry.subentry_id,
+                value=subentry.subentry_id,
+            )
+        )
+    return options
+
+
+def _default_model_data(category: str, provider_type: str | None) -> dict[str, Any]:
+    spec = MODEL_CATEGORY_SPECS.get(category, {})
+    defaults: dict[str, Any] = {}
+    if provider_type:
+        defaults[CONF_FEATURE_MODEL_NAME] = spec.get("recommended_models", {}).get(
+            provider_type
+        )
+        temp = spec.get("recommended_temperature")
+        if temp is not None:
+            defaults[CONF_FEATURE_MODEL_TEMPERATURE] = temp
+
+    if provider_type == "ollama":
+        keepalive = KEEPALIVE_DEFAULTS.get(category)
+        if keepalive is not None:
+            defaults[CONF_FEATURE_MODEL_KEEPALIVE] = keepalive
+        if category in KEEPALIVE_DEFAULTS:
+            defaults[CONF_FEATURE_MODEL_CONTEXT_SIZE] = RECOMMENDED_OLLAMA_CONTEXT_SIZE
+        if category == "chat":
+            defaults[CONF_FEATURE_MODEL_REASONING] = RECOMMENDED_OLLAMA_REASONING
+
+    return defaults
+
+
+# Thinking/reasoning choices offered per provider type for the chat feature.
+# Stored canonical values: None (provider default), False (off), True (on),
+# or an effort-level string. See CONF_CHAT_REASONING in const.py.
+_REASONING_CHOICES: dict[str, list[tuple[str, str]]] = {
+    "ollama": [
+        ("Off", "false"),
+        ("On", "true"),
+        ("GPT-OSS effort", "low"),
+    ],
+    "openai": [
+        ("Provider default", "default"),
+        ("Minimal effort", "minimal"),
+        ("Low effort", "low"),
+        ("Medium effort", "medium"),
+        ("High effort", "high"),
+    ],
+    "openai_compatible": [
+        ("Provider default", "default"),
+        ("Off", "false"),
+        ("On", "true"),
+        ("Low effort", "low"),
+        ("Medium effort", "medium"),
+        ("High effort", "high"),
+    ],
+    # No effort/level choices: the pinned google-ai-generativelanguage
+    # protobuf cannot express thinking_level (see _thinking_gemini).
+    "gemini": [
+        ("Provider default", "default"),
+        ("Off", "false"),
+        ("On (dynamic or budget)", "true"),
+    ],
+    "anthropic": [
+        ("Off (default)", "default"),
+        ("On (extended thinking)", "true"),
+    ],
+}
+
+# Providers whose reasoning select accepts free-form values (model-specific
+# effort strings) in addition to the listed choices.
+_REASONING_CUSTOM_VALUE_PROVIDERS = frozenset({"ollama", "openai_compatible"})
+
+# Providers whose API accepts a thinking-token budget.
+_REASONING_BUDGET_PROVIDERS = frozenset({"openai_compatible", "gemini", "anthropic"})
+
+_REASONING_BUDGET_MAX_TOKENS = 131072
+
+
+def _normalize_reasoning(value: Any) -> Any:
+    if value in ("default", "", None):
+        return None
+    if value == "false":
+        return False
+    if value == "true":
+        return True
+    return value
+
+
+def _normalize_reasoning_budget(value: Any) -> int | None:
+    try:
+        budget = int(value)
+    except (TypeError, ValueError):
+        return None
+    return budget if budget > 0 else None
+
+
+def _reasoning_display(value: Any, provider_type: str | None) -> str:
+    """Map a stored canonical reasoning value to its select-option string."""
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        # Ollama predates the explicit "default" choice; absent means off.
+        return "false" if provider_type == "ollama" else "default"
+    return str(value)
+
+
+def _add_reasoning_schema(
+    schema: dict[Any, Any],
+    provider_type: str,
+    existing_model: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+) -> None:
+    """
+    Add thinking/reasoning fields to the chat feature-model schema.
+
+    Defaults follow the currently stored model: a per-model remembered entry
+    wins over the flat field so switching models restores that model's
+    thinking settings (issue #580).
+    """
+    remembered = _remembered_reasoning_entry(
+        existing_model, existing_model.get(CONF_FEATURE_MODEL_NAME)
+    )
+    reasoning_val = remembered.get(
+        "reasoning",
+        existing_model.get(
+            CONF_FEATURE_MODEL_REASONING,
+            defaults.get(CONF_FEATURE_MODEL_REASONING),
+        ),
+    )
+    display = _reasoning_display(reasoning_val, provider_type)
+    if provider_type not in _REASONING_CUSTOM_VALUE_PROVIDERS and display not in {
+        value for _, value in _REASONING_CHOICES[provider_type]
+    }:
+        # A value stored under a different provider type (the provider was
+        # reconfigured in place) would otherwise become an un-submittable
+        # default on a select that rejects custom values.
+        display = "default"
+    schema[
+        vol.Optional(
+            CONF_FEATURE_MODEL_REASONING,
+            default=display,
+        )
+    ] = SelectSelector(
+        SelectSelectorConfig(
+            options=[
+                SelectOptionDict(label=label, value=value)
+                for label, value in _REASONING_CHOICES[provider_type]
+            ],
+            mode=SelectSelectorMode.DROPDOWN,
+            sort=False,
+            custom_value=provider_type in _REASONING_CUSTOM_VALUE_PROVIDERS,
+        )
+    )
+    if provider_type in _REASONING_BUDGET_PROVIDERS:
+        budget_val = remembered.get(
+            "budget", existing_model.get(CONF_FEATURE_MODEL_REASONING_BUDGET)
+        )
+        budget_key = (
+            vol.Optional(CONF_FEATURE_MODEL_REASONING_BUDGET, default=budget_val)
+            if budget_val
+            else vol.Optional(CONF_FEATURE_MODEL_REASONING_BUDGET)
+        )
+        schema[budget_key] = NumberSelector(
+            NumberSelectorConfig(
+                min=0,
+                max=_REASONING_BUDGET_MAX_TOKENS,
+                step=1,
+                # Box, not slider: 1024 tokens on a 0-131072 slider is a
+                # sliver at the far left; the value is always typed.
+                mode=NumberSelectorMode.BOX,
+            )
+        )
+
+
+def _resolve_submitted_thinking(
+    user_input: Mapping[str, Any],
+    existing_model: Mapping[str, Any],
+    submitted_name: Any,
+    category: str | None,
+) -> tuple[Any, int | None, dict[str, dict[str, Any]]]:
+    """
+    Resolve the thinking values and per-model map for a model-form submission.
+
+    Returns (reasoning, budget, by_model). The on-screen thinking fields
+    belong to the previously stored model, so they never follow a model
+    switch: the new model uses its remembered entry or provider defaults, and
+    a second save changes them. With no stored model this is first-time setup
+    and the entered values are the user's own.
+    """
+    stored_name = existing_model.get(CONF_FEATURE_MODEL_NAME)
+    by_model: dict[str, dict[str, Any]] = {
+        str(name): dict(entry_val)
+        for name, entry_val in (
+            existing_model.get(CONF_FEATURE_MODEL_REASONING_BY_MODEL) or {}
+        ).items()
+        if isinstance(entry_val, Mapping)
+    }
+    reasoning_val = _normalize_reasoning(user_input.get(CONF_FEATURE_MODEL_REASONING))
+    budget_val = _normalize_reasoning_budget(
+        user_input.get(CONF_FEATURE_MODEL_REASONING_BUDGET)
+    )
+    if stored_name is not None and submitted_name != stored_name:
+        remembered = by_model.get(str(submitted_name or ""), {})
+        return (
+            remembered.get("reasoning"),
+            _normalize_reasoning_budget(remembered.get("budget")),
+            by_model,
+        )
+    if submitted_name and category == "chat":
+        if reasoning_val is None and budget_val:
+            # A budget only means something with thinking on; entering one
+            # while the select is at "Provider default" enables it.
+            reasoning_val = True
+        entry_val: dict[str, Any] = {}
+        if reasoning_val is not None:
+            entry_val["reasoning"] = reasoning_val
+        if budget_val:
+            entry_val["budget"] = budget_val
+        if entry_val:
+            by_model[submitted_name] = entry_val
+        else:
+            by_model.pop(submitted_name, None)
+    return reasoning_val, budget_val, by_model
+
+
+def _remembered_reasoning_entry(
+    model_data: Mapping[str, Any], model_name: Any
+) -> dict[str, Any]:
+    """Return the per-model-name remembered thinking entry, if any."""
+    by_model = model_data.get(CONF_FEATURE_MODEL_REASONING_BY_MODEL)
+    if not isinstance(by_model, Mapping) or not model_name:
+        return {}
+    entry = by_model.get(model_name)
+    return dict(entry) if isinstance(entry, Mapping) else {}
+
+
+class FeatureSubentryFlow(ConfigSubentryFlow):
+    """Config flow handler for feature/tool subentries."""
+
+    def __init__(self) -> None:
+        """Initialize the feature subentry flow."""
+        self._setup_mode = False
+        self._basic_mode = False
+        self._basic_skipped_features: list[str] = []
+        self._feature_queue: list[str] = []
+        self._active_feature: str | None = None
+        self._pending_provider_id: str | None = None
+        self._ollama_model_cache: dict[str, list[str]] = {}
+        # The embedding model and servers last refused, with the checks the
+        # user has already seen fail. Submitting the same input again skips
+        # those checks, so a spelling the name check cannot match (#757) or a
+        # misreported vector size (#755) never locks a working model out.
+        self._embedding_refusal: tuple[tuple[Any, ...], frozenset[str]] | None = None
+
+    def _schedule_reload(self) -> None:
+        entry = self._get_entry()
+        self.hass.async_create_task(
+            self.hass.config_entries.async_reload(entry.entry_id)
+        )
+
+    def _disabled_feature_cache(self) -> dict[str, Any]:
+        entry = self._get_entry()
+        return dict(entry.options.get(CONF_DISABLED_FEATURES, {}))
+
+    def _persist_disabled_cache(self, cache: dict[str, Any]) -> None:
+        entry = self._get_entry()
+        options = dict(entry.options)
+        if cache:
+            options[CONF_DISABLED_FEATURES] = cache
+        else:
+            options.pop(CONF_DISABLED_FEATURES, None)
+        self.hass.config_entries.async_update_entry(entry, options=options)
+
+    def _feature_defaults(self, feature_type: str) -> dict[str, Any]:
+        category = FEATURE_CATEGORY_MAP.get(feature_type)
+        return {
+            "feature_type": feature_type,
+            "name": FEATURE_DEFS[feature_type]["name"],
+            "model_provider_id": None,
+            CONF_FEATURE_MODEL: _default_model_data(category or "", None),
+            "config": {},
+        }
+
+    def _feature_payload(
+        self,
+        feature_type: str,
+        provider_id: str | None,
+        model_data: dict[str, Any],
+        config_data: dict[str, Any],
+        fallback_provider_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "feature_type": feature_type,
+            "name": FEATURE_DEFS[feature_type]["name"],
+            "model_provider_id": provider_id,
+            CONF_FEATURE_MODEL: model_data,
+            "config": config_data,
+        }
+        if fallback_provider_ids:
+            payload[CONF_FEATURE_FALLBACK_PROVIDER_IDS] = fallback_provider_ids
+        return payload
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the initial step."""
+        current = _current_subentry(self)
+        if current is not None:
+            self._setup_mode = False
+            self._active_feature = current.data.get("feature_type")
+            return await self._async_step_feature(self._active_feature, user_input)
+        return await self.async_step_setup_mode(user_input)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Reconfigure — bypass mode selector, go directly to the Advanced path."""
+        current = _current_subentry(self)
+        if current is not None:
+            self._setup_mode = False
+            self._active_feature = current.data.get("feature_type")
+            return await self._async_step_feature(self._active_feature, user_input)
+        self._setup_mode = True
+        return await self.async_step_feature_enable(user_input)
+
+    async def _async_provider_notice(self, entry: ConfigEntry, category: str) -> str:
+        """
+        Explain why no provider can be selected for a feature.
+
+        "No providers at all" and "providers exist but none supports this
+        category" are different problems with different fixes, and Anthropic
+        hitting the second one (it has no embeddings endpoint) is the common
+        case worth naming explicitly.
+        """
+        if not _has_model_providers(entry):
+            return await async_common_translation(
+                self.hass,
+                "no_model_provider_notice",
+                "No model provider is configured. "
+                "A default model will be assigned once available.",
+            )
+        sentence = await async_common_translation(
+            self.hass,
+            "no_capable_model_provider_notice",
+            "None of your model providers support this feature. "
+            "Add another Model Provider of a supported type - a provider "
+            "can be added for each service you use, and each feature can "
+            "point at a different one.",
+        )
+        capable = _capable_provider_types(category)
+        if capable:
+            label = await async_common_translation(
+                self.hass,
+                "supported_provider_types_label",
+                "Supported here:",
+            )
+            sentence = f"{sentence} {label} {', '.join(capable)}."
+        return sentence
+
+    async def async_step_setup_mode(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Show Basic/Advanced mode selector for new setup."""
+        if user_input is None:
+            entry = self._get_entry()
+            has_existing = any(
+                s.subentry_type == SUBENTRY_TYPE_FEATURE
+                for s in entry.subentries.values()
+            )
+            overwrite_warning = ""
+            if has_existing:
+                # Separator lives here: hassfest forbids leading whitespace
+                # in translation values.
+                overwrite_warning = "\n\n" + await async_common_translation(
+                    self.hass,
+                    "feature_overwrite_warning",
+                    "⚠️ Features are already configured. "
+                    "Choosing **Basic setup** will overwrite your current "
+                    "provider assignments with recommended defaults.",
+                )
+            return self.async_show_form(
+                step_id="setup_mode",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("setup_mode", default="basic"): SelectSelector(
+                            SelectSelectorConfig(
+                                options=["basic", "advanced"],
+                                translation_key="setup_mode",
+                                mode=SelectSelectorMode.LIST,
+                                sort=False,
+                                custom_value=False,
+                            )
+                        )
+                    }
+                ),
+                description_placeholders={"overwrite_warning": overwrite_warning},
+            )
+        self._setup_mode = True
+        if user_input.get("setup_mode", "basic") == "basic":
+            self._basic_mode = True
+            return await self._async_step_basic_setup()
+        self._basic_mode = False
+        return await self.async_step_feature_enable(None)
+
+    async def _async_step_basic_setup(self) -> SubentryFlowResult:
+        """Auto-create feature subentries with the first compatible provider."""
+        entry = self._get_entry()
+        any_providers = any(
+            s.subentry_type == SUBENTRY_TYPE_MODEL_PROVIDER
+            for s in entry.subentries.values()
+        )
+        if not any_providers:
+            return self.async_abort(reason="no_provider_for_basic_setup")
+
+        self._basic_skipped_features = []
+        disabled_cache = self._disabled_feature_cache()
+
+        for feature_type, info in FEATURE_DEFS.items():
+            category = FEATURE_CATEGORY_MAP.get(feature_type, "")
+            provider_opts = _provider_options(entry, category)
+            if not provider_opts:
+                self._basic_skipped_features.append(feature_type)
+                continue
+            provider_id = provider_opts[0]["value"]
+            provider_type = _provider_type_for_id(entry, provider_id)
+            model_data = _default_model_data(category, provider_type)
+            payload = self._feature_payload(feature_type, provider_id, model_data, {})
+            existing = _feature_subentry(entry, feature_type)
+            if existing is None:
+                disabled_cache.pop(feature_type, None)
+                subentry = ConfigSubentry(
+                    subentry_type=SUBENTRY_TYPE_FEATURE,
+                    title=info["name"],
+                    unique_id=f"{entry.entry_id}_{feature_type}",
+                    data=MappingProxyType(payload),
+                )
+                self.hass.config_entries.async_add_subentry(entry, subentry)
+            else:
+                self.hass.config_entries.async_update_subentry(  # type: ignore[attr-defined]
+                    entry, existing, data=payload, title=info["name"]
+                )
+
+        self._persist_disabled_cache(disabled_cache)
+        current_db = next(
+            (
+                s
+                for s in entry.subentries.values()
+                if s.subentry_type == SUBENTRY_TYPE_DATABASE
+            ),
+            None,
+        )
+        if current_db is None:
+            db_subentry = ConfigSubentry(
+                subentry_type=SUBENTRY_TYPE_DATABASE,
+                title="Database",
+                unique_id=f"{entry.entry_id}_database",
+                data=MappingProxyType(
+                    {
+                        CONF_USERNAME: RECOMMENDED_DB_USERNAME,
+                        CONF_PASSWORD: RECOMMENDED_DB_PASSWORD,
+                        CONF_HOST: RECOMMENDED_DB_HOST,
+                        CONF_PORT: RECOMMENDED_DB_PORT,
+                        CONF_DB_NAME: RECOMMENDED_DB_NAME,
+                        CONF_DB_PARAMS: RECOMMENDED_DB_PARAMS,
+                    }
+                ),
+            )
+            self.hass.config_entries.async_add_subentry(entry, db_subentry)
+        self._schedule_reload()
+        return await self.async_step_setup_status()
+
+    async def async_step_setup_status(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Show final status screen after basic setup writes."""
+        if user_input is not None:
+            return self.async_abort(reason="setup_complete")
+
+        entry = self._get_entry()
+        enabled_names = [
+            FEATURE_DEFS[ft]["name"]
+            for ft in FEATURE_DEFS
+            if _feature_subentry(entry, ft) is not None
+        ]
+        db_ok = any(
+            s.subentry_type == SUBENTRY_TYPE_DATABASE for s in entry.subentries.values()
+        )
+        skipped_names = [
+            FEATURE_DEFS[ft]["name"] for ft in self._basic_skipped_features
+        ]
+        skipped_section = (
+            f"\n\n**Skipped (no compatible provider):** {', '.join(skipped_names)}"
+            if skipped_names
+            else ""
+        )
+        return self.async_show_form(
+            step_id="setup_status",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "features_enabled": (
+                    ", ".join(enabled_names) if enabled_names else "None"
+                ),
+                "database_status": "Configured" if db_ok else "Not configured",
+                "skipped_section": skipped_section,
+            },
+        )
+
+    async def async_step_feature_enable(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the feature enable step."""
+        entry = self._get_entry()
+        disabled_cache = self._disabled_feature_cache()
+
+        if user_input is None:
+            schema_dict: dict[Any, Any] = {}
+            for feature_type, info in FEATURE_DEFS.items():
+                if info["required"]:
+                    continue
+                enabled = _feature_subentry(entry, feature_type) is not None
+                if feature_type in disabled_cache:
+                    enabled = False
+                schema_dict[vol.Required(feature_type, default=enabled)] = (
+                    BooleanSelector()
+                )
+            return self.async_show_form(
+                step_id="feature_enable", data_schema=vol.Schema(schema_dict)
+            )
+
+        cache = self._disabled_feature_cache()
+        enabled_features: set[str] = set()
+        for feature_type, info in FEATURE_DEFS.items():
+            is_required = info["required"]
+            enabled = is_required or bool(user_input.get(feature_type, False))
+            if enabled:
+                enabled_features.add(feature_type)
+            existing = _feature_subentry(entry, feature_type)
+            if not enabled and existing:
+                cache[feature_type] = dict(existing.data)
+                self.hass.config_entries.async_remove_subentry(  # type: ignore[attr-defined]
+                    entry, existing.subentry_id
+                )
+            if enabled and not existing:
+                payload = cache.pop(feature_type, None) or self._feature_defaults(
+                    feature_type
+                )
+                subentry = ConfigSubentry(
+                    subentry_type=SUBENTRY_TYPE_FEATURE,
+                    title=info["name"],
+                    unique_id=f"{entry.entry_id}_{feature_type}",
+                    data=MappingProxyType(payload),
+                )
+                self.hass.config_entries.async_add_subentry(entry, subentry)
+
+        self._persist_disabled_cache(cache)
+        self._feature_queue = [
+            feature_type
+            for feature_type in FEATURE_DEFS
+            if feature_type in enabled_features
+        ]
+        return await self._advance_setup()
+
+    async def _advance_setup(self) -> SubentryFlowResult:
+        next_feature = self._feature_queue.pop(0) if self._feature_queue else None
+        if next_feature is None:
+            return await self.async_step_database()
+        self._active_feature = next_feature
+        return await self._async_step_feature(next_feature, None)
+
+    async def _async_step_feature(
+        self, feature_type: str | None, user_input: dict[str, Any] | None
+    ) -> SubentryFlowResult:
+        """Start the feature flow by selecting a provider."""
+        if feature_type not in FEATURE_DEFS:
+            return self.async_abort(reason="no_existing_subentry")
+
+        entry = self._get_entry()
+        subentry = _feature_subentry(entry, feature_type)
+        if subentry is None:
+            return self.async_abort(reason="no_existing_subentry")
+
+        self._active_feature = feature_type
+        self._pending_provider_id = None
+
+        category = FEATURE_CATEGORY_MAP.get(feature_type)
+        provider_opts = _provider_options(entry, category or "")
+
+        provider_notice = ""
+        if not provider_opts:
+            provider_notice = await self._async_provider_notice(entry, category or "")
+            return self.async_show_form(
+                step_id="feature_model",
+                data_schema=vol.Schema({}),
+                description_placeholders={
+                    "provider_notice": provider_notice,
+                    "feature_name": FEATURE_DEFS[feature_type]["name"],
+                },
+            )
+
+        provider_ids = {opt["value"] for opt in provider_opts}
+        existing_provider_id = subentry.data.get("model_provider_id")
+        provider_id = (
+            existing_provider_id
+            if existing_provider_id in provider_ids
+            else provider_opts[0]["value"]
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    "model_provider_id",
+                    default=provider_id,
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=provider_opts,
+                        mode=SelectSelectorMode.DROPDOWN,
+                        sort=False,
+                        custom_value=False,
+                    )
+                )
+            }
+        )
+        if user_input is not None:
+            return await self.async_step_feature_provider(user_input)
+
+        return self.async_show_form(
+            step_id="feature_provider",
+            data_schema=schema,
+            description_placeholders={
+                "feature_name": FEATURE_DEFS[feature_type]["name"],
+            },
+        )
+
+    async def async_step_feature_provider(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the provider selection step."""
+        feature_type = self._active_feature
+        if feature_type not in FEATURE_DEFS:
+            return self.async_abort(reason="no_existing_subentry")
+
+        entry = self._get_entry()
+        subentry = _feature_subentry(entry, feature_type)
+        if subentry is None:
+            return self.async_abort(reason="no_existing_subentry")
+
+        category = FEATURE_CATEGORY_MAP.get(feature_type)
+        provider_opts = _provider_options(entry, category or "")
+        if not provider_opts:
+            return await self.async_step_feature_model()
+
+        provider_ids = {opt["value"] for opt in provider_opts}
+        existing_provider_id = subentry.data.get("model_provider_id")
+        provider_id = (
+            existing_provider_id
+            if existing_provider_id in provider_ids
+            else provider_opts[0]["value"]
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    "model_provider_id",
+                    default=provider_id,
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=provider_opts,
+                        mode=SelectSelectorMode.DROPDOWN,
+                        sort=False,
+                        custom_value=False,
+                    )
+                )
+            }
+        )
+
+        if user_input is None:
+            return self.async_show_form(
+                step_id="feature_provider",
+                data_schema=schema,
+                description_placeholders={
+                    "feature_name": FEATURE_DEFS[feature_type]["name"],
+                },
+            )
+
+        provider_id = user_input.get("model_provider_id")
+        if provider_id not in provider_ids:
+            return self.async_show_form(
+                step_id="feature_provider",
+                data_schema=schema,
+                errors={"base": "no_providers"},
+                description_placeholders={
+                    "feature_name": FEATURE_DEFS[feature_type]["name"],
+                },
+            )
+
+        self._pending_provider_id = provider_id
+        return await self.async_step_feature_model()
+
+    async def async_step_feature_model(  # noqa: PLR0911, PLR0912, PLR0915
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the model configuration step."""
+        feature_type = self._active_feature
+        if feature_type not in FEATURE_DEFS:
+            return self.async_abort(reason="no_existing_subentry")
+
+        entry = self._get_entry()
+        subentry = _feature_subentry(entry, feature_type)
+        if subentry is None:
+            return self.async_abort(reason="no_existing_subentry")
+
+        category = FEATURE_CATEGORY_MAP.get(feature_type)
+        provider_opts = _provider_options(entry, category or "")
+        existing_model = dict(subentry.data.get(CONF_FEATURE_MODEL, {}))
+        existing_config = dict(subentry.data.get("config", {}))
+        existing_provider_id = subentry.data.get("model_provider_id")
+        existing_fallback_ids = list(
+            subentry.data.get(CONF_FEATURE_FALLBACK_PROVIDER_IDS) or []
+        )
+
+        provider_notice = ""
+        if not provider_opts:
+            if user_input is not None:
+                if self._setup_mode:
+                    return await self._advance_setup()
+                return self.async_update_and_abort(
+                    entry,
+                    subentry,
+                    data=subentry.data,
+                    title=subentry.title,
+                )
+            # Built only on the branch that renders it; the branches above
+            # discard it, and it costs up to three translation lookups.
+            provider_notice = await self._async_provider_notice(entry, category or "")
+            return self.async_show_form(
+                step_id="feature_model",
+                data_schema=vol.Schema({}),
+                description_placeholders={
+                    "provider_notice": provider_notice,
+                    "feature_name": FEATURE_DEFS[feature_type]["name"],
+                },
+            )
+
+        provider_ids = {opt["value"] for opt in provider_opts}
+        provider_id = (
+            self._pending_provider_id
+            if self._pending_provider_id in provider_ids
+            else (
+                existing_provider_id
+                if existing_provider_id in provider_ids
+                else provider_opts[0]["value"]
+            )
+        )
+        if (
+            self._pending_provider_id
+            and self._pending_provider_id != existing_provider_id
+        ):
+            existing_model = {}
+            existing_fallback_ids = []
+        provider_type = _provider_type_for_id(entry, provider_id)
+        defaults = _default_model_data(category or "", provider_type)
+
+        model_options = (
+            MODEL_CATEGORY_SPECS.get(category or "", {})
+            .get("providers", {})
+            .get(provider_type or "", [])
+        )
+        if provider_type == "ollama":
+            provider_subentry = (
+                entry.subentries.get(provider_id) if provider_id else None
+            )
+            settings = (
+                provider_subentry.data.get("settings", {}) if provider_subentry else {}
+            )
+            # Keyed like the submit-time check, so a list it refreshed shows
+            # up in the dropdown when the form re-renders with its error.
+            ollama_url = normalized_ollama_url(settings.get("base_url"))
+            if ollama_url:
+                cached = self._ollama_model_cache.get(ollama_url)
+                if cached is None:
+                    cached = await list_ollama_models(self.hass, ollama_url)
+                    self._ollama_model_cache[ollama_url] = cached
+                if cached:
+                    model_options = cached
+        fallback_opts = _fallback_provider_options(entry, category or "", provider_id)
+        fallback_defaults = [
+            fid
+            for fid in existing_fallback_ids
+            if any(opt["value"] == fid for opt in fallback_opts)
+        ]
+        schema: dict[Any, Any] = {
+            vol.Required(
+                CONF_FEATURE_MODEL_NAME,
+                default=existing_model.get(CONF_FEATURE_MODEL_NAME)
+                or defaults.get(CONF_FEATURE_MODEL_NAME),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[SelectOptionDict(label=m, value=m) for m in model_options],
+                    mode=SelectSelectorMode.DROPDOWN,
+                    sort=False,
+                    custom_value=True,
+                )
+            ),
+        }
+        if fallback_opts:
+            schema[
+                vol.Optional(
+                    CONF_FEATURE_FALLBACK_PROVIDER_IDS,
+                    default=fallback_defaults,
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=fallback_opts,
+                    mode=SelectSelectorMode.LIST,
+                    sort=False,
+                    custom_value=False,
+                    multiple=True,
+                )
+            )
+
+        temp_default = existing_model.get(
+            CONF_FEATURE_MODEL_TEMPERATURE
+        ) or defaults.get(CONF_FEATURE_MODEL_TEMPERATURE)
+        if temp_default is not None:
+            schema[
+                vol.Optional(
+                    CONF_FEATURE_MODEL_TEMPERATURE,
+                    default=temp_default,
+                )
+            ] = NumberSelector(NumberSelectorConfig(min=0, max=1, step=0.05))
+
+        if provider_type == "ollama":
+            keepalive_default = existing_model.get(
+                CONF_FEATURE_MODEL_KEEPALIVE
+            ) or defaults.get(CONF_FEATURE_MODEL_KEEPALIVE)
+            if keepalive_default is not None:
+                schema[
+                    vol.Optional(
+                        CONF_FEATURE_MODEL_KEEPALIVE,
+                        default=keepalive_default,
+                    )
+                ] = NumberSelector(
+                    NumberSelectorConfig(
+                        min=KEEPALIVE_SENTINEL,
+                        max=KEEPALIVE_MAX_SECONDS,
+                        step=1,
+                    )
+                )
+
+            context_default = existing_model.get(
+                CONF_FEATURE_MODEL_CONTEXT_SIZE
+            ) or defaults.get(CONF_FEATURE_MODEL_CONTEXT_SIZE)
+            if context_default is not None:
+                schema[
+                    vol.Optional(
+                        CONF_FEATURE_MODEL_CONTEXT_SIZE,
+                        default=context_default,
+                    )
+                ] = NumberSelector(NumberSelectorConfig(min=64, max=65536, step=1))
+
+        if category == "chat" and provider_type in _REASONING_CHOICES:
+            _add_reasoning_schema(schema, provider_type, existing_model, defaults)
+
+        if user_input is not None and (
+            refusal := await self._async_ollama_embedding_refusal(
+                category, provider_id, user_input
+            )
+        ):
+            # Caught here rather than at runtime, where an un-pulled embedding
+            # model (#757) or one of the wrong vector size (#755) only shows up
+            # as failed writes on every memory search and a failed tool index.
+            error, placeholders = refusal
+            return self.async_show_form(
+                step_id="feature_model",
+                data_schema=self.add_suggested_values_to_schema(
+                    vol.Schema(schema), user_input
+                ),
+                errors={"base": error},
+                description_placeholders={
+                    "provider_notice": provider_notice,
+                    "feature_name": FEATURE_DEFS[feature_type]["name"],
+                    "model": str(user_input.get(CONF_FEATURE_MODEL_NAME, "")).strip(),
+                    **placeholders,
+                },
+            )
+
+        if user_input is not None:
+            provider_type = _provider_type_for_id(entry, provider_id)
+            model_data = dict(defaults)
+            model_data.update(existing_model)
+            submitted_name = user_input.get(CONF_FEATURE_MODEL_NAME)
+            if isinstance(submitted_name, str):
+                # A stray space would be sent to the server as part of the name;
+                # a blank name falls back to the existing or default model.
+                submitted_name = submitted_name.strip() or None
+            reasoning_val, budget_val, by_model = _resolve_submitted_thinking(
+                user_input, existing_model, submitted_name, category
+            )
+            model_data.update(
+                {
+                    CONF_FEATURE_MODEL_NAME: submitted_name,
+                    CONF_FEATURE_MODEL_TEMPERATURE: user_input.get(
+                        CONF_FEATURE_MODEL_TEMPERATURE
+                    ),
+                    CONF_FEATURE_MODEL_KEEPALIVE: user_input.get(
+                        CONF_FEATURE_MODEL_KEEPALIVE
+                    ),
+                    CONF_FEATURE_MODEL_CONTEXT_SIZE: user_input.get(
+                        CONF_FEATURE_MODEL_CONTEXT_SIZE
+                    ),
+                    CONF_FEATURE_MODEL_REASONING: reasoning_val,
+                    CONF_FEATURE_MODEL_REASONING_BUDGET: budget_val,
+                    CONF_FEATURE_MODEL_REASONING_BY_MODEL: by_model or None,
+                }
+            )
+            model_data = {k: v for k, v in model_data.items() if v is not None}
+            fallback_ids = user_input.get(CONF_FEATURE_FALLBACK_PROVIDER_IDS) or []
+            if fallback_ids and not isinstance(fallback_ids, list):
+                fallback_ids = [str(fallback_ids)]
+            fallback_ids = [
+                fid
+                for fid in fallback_ids
+                if any(opt["value"] == fid for opt in fallback_opts)
+            ]
+
+            payload = self._feature_payload(
+                feature_type,
+                provider_id,
+                model_data,
+                existing_config,
+                fallback_provider_ids=fallback_ids,
+            )
+            self.hass.config_entries.async_update_subentry(  # type: ignore[attr-defined]
+                entry, subentry, data=payload, title=FEATURE_DEFS[feature_type]["name"]
+            )
+            self._pending_provider_id = None
+            self._schedule_reload()
+            if self._setup_mode:
+                return await self._advance_setup()
+            return self.async_abort(reason="reconfigure_successful")
+
+        return self.async_show_form(
+            step_id="feature_model",
+            data_schema=vol.Schema(schema),
+            description_placeholders={
+                "provider_notice": provider_notice,
+                "feature_name": FEATURE_DEFS[feature_type]["name"],
+            },
+        )
+
+    async def _async_ollama_embedding_refusal(
+        self,
+        category: str | None,
+        provider_id: str,
+        user_input: dict[str, Any],
+    ) -> tuple[str, dict[str, str]] | None:
+        """
+        Return the error and placeholders refusing the embedding model, if any.
+
+        Checks an Ollama primary and every Ollama fallback provider submitted
+        with it, since they all embed with this one model (#749): first that
+        each server has the model, then that the servers that have it produce
+        vectors of the memory store's size. Only the embedding model is
+        checked: a missing chat or vision model fails loudly on the user's
+        first request, an embedding model fails in the background. Whatever a
+        server or the database cannot tell is skipped, since an unknown answer
+        must not block saving; a server that lists no models lacks this one.
+        Submitting a refused input again skips the checks it already failed.
+        """
+        model, urls = self._ollama_embedding_servers(category, provider_id, user_input)
+        if not urls:
+            self._embedding_refusal = None
+            return None
+        entry = self._get_entry()
+        bootstrapped = bool(entry.data.get(CONF_VECTORS_BOOTSTRAPPED))
+        # Always ask the servers: the cached lists predate the form, and a
+        # model may have been pulled or removed since it rendered. The store
+        # read and the size requests do not depend on the listings, so all
+        # three run together and one slow server costs a single timeout. An
+        # Ollama primary creates a new store at EMBEDDING_MODEL_DIMS; an
+        # existing one keeps the size it was created with.
+        expected, listings, reported = await asyncio.gather(
+            async_store_vector_dims(
+                getattr(getattr(entry, "runtime_data", None), "pool", None),
+                default=None if bootstrapped else EMBEDDING_MODEL_DIMS,
+            ),
+            asyncio.gather(*(fetch_ollama_models(self.hass, url) for url in urls)),
+            ollama_embedding_dims(self.hass, urls, model),
+        )
+        missing: list[str] = []
+        present: list[str] = []
+        for url, installed in zip(urls, listings, strict=True):
+            if installed is None:
+                continue
+            self._ollama_model_cache[url] = installed
+            (present if ollama_model_installed(model, installed) else missing).append(
+                url
+            )
+        sizes = {url: reported[url] for url in present if url in reported}
+        # The override covers only what the user was shown: the same model on
+        # the same servers, which answered the same way, against the same
+        # store. A fallback added on the resubmit, or a server that was
+        # unreachable or did not report a size and now does, is checked again.
+        key = (
+            model,
+            tuple(urls),
+            tuple(present),
+            tuple(missing),
+            tuple(sorted(sizes.items())),
+            expected,
+        )
+        overridden = (
+            self._embedding_refusal[1]
+            if self._embedding_refusal and self._embedding_refusal[0] == key
+            else frozenset()
+        )
+        if missing and "missing" not in overridden:
+            self._embedding_refusal = (key, overridden | {"missing"})
+            return "ollama_model_not_installed", {
+                "url": ", ".join(redact_url(url) for url in missing)
+            }
+        wrong = (
+            {url: dims for url, dims in sizes.items() if dims != expected}
+            if expected is not None
+            else {}
+        )
+        if wrong and "dims" not in overridden:
+            self._embedding_refusal = (key, overridden | {"dims"})
+            servers, dims = format_embedding_dims(wrong)
+            # The primary is urls[0]. When only fallbacks are wrong, choosing
+            # another model would break the primary; their fix differs.
+            error = (
+                "ollama_embedding_dims_mismatch"
+                if urls[0] in wrong
+                else "ollama_fallback_embedding_dims_mismatch"
+            )
+            return error, {"url": servers, "dims": dims, "expected": str(expected)}
+        self._embedding_refusal = None
+        return None
+
+    def _ollama_embedding_servers(
+        self,
+        category: str | None,
+        provider_id: str,
+        user_input: dict[str, Any],
+    ) -> tuple[str, list[str]]:
+        """
+        Return the submitted embedding model and the Ollama servers to check.
+
+        No servers unless this is the embedding feature with an Ollama primary
+        and a model name.
+        """
+        if category != "embedding":
+            return "", []
+        raw_model = user_input.get(CONF_FEATURE_MODEL_NAME)
+        model = raw_model.strip() if isinstance(raw_model, str) else ""
+        if not model:
+            return "", []
+        entry = self._get_entry()
+        # The submitted name is the Ollama embedding model only when Ollama is
+        # the primary; behind another primary, Ollama fallbacks embed with the
+        # separately resolved Ollama model, which the startup check verifies.
+        if _provider_type_for_id(entry, provider_id) != "ollama":
+            return "", []
+        fallback_ids = user_input.get(CONF_FEATURE_FALLBACK_PROVIDER_IDS) or []
+        if not isinstance(fallback_ids, list):
+            fallback_ids = [str(fallback_ids)]
+        urls: list[str] = []
+        for pid in [provider_id, *fallback_ids]:
+            if _provider_type_for_id(entry, pid) != "ollama":
+                continue
+            provider = entry.subentries.get(pid)
+            settings = provider.data.get("settings", {}) if provider else {}
+            # Resolved as runtime does: the primary embeds at its base_url (or
+            # the default), a fallback at the URL setup keys its provider by.
+            url = (
+                normalized_ollama_url(settings.get("base_url"))
+                or RECOMMENDED_OLLAMA_URL
+                if pid == provider_id
+                else ollama_provider_settings_url(settings)
+            )
+            if url not in urls:
+                urls.append(url)
+        return model, urls
+
+    async def async_step_conversation(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the conversation feature step."""
+        return await self._async_step_feature("conversation", user_input)
+
+    async def async_step_camera_image_analysis(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the camera image analysis feature step."""
+        return await self._async_step_feature("camera_image_analysis", user_input)
+
+    async def async_step_conversation_summary(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the conversation summary feature step."""
+        return await self._async_step_feature("conversation_summary", user_input)
+
+    async def async_step_embedding(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the embedding feature step."""
+        return await self._async_step_feature("embedding", user_input)
+
+    async def async_step_database(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the database configuration step."""
+        entry = self._get_entry()
+        current_subentry = next(
+            (
+                v
+                for v in entry.subentries.values()
+                if v.subentry_type == SUBENTRY_TYPE_DATABASE
+            ),
+            None,
+        )
+
+        if current_subentry is None:
+            options: dict[str, Any] = {
+                CONF_USERNAME: RECOMMENDED_DB_USERNAME,
+                CONF_PASSWORD: RECOMMENDED_DB_PASSWORD,
+                CONF_HOST: RECOMMENDED_DB_HOST,
+                CONF_PORT: RECOMMENDED_DB_PORT,
+                CONF_DB_NAME: RECOMMENDED_DB_NAME,
+                CONF_DB_PARAMS: RECOMMENDED_DB_PARAMS,
+            }
+        else:
+            options = dict(current_subentry.data)
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_USERNAME,
+                    description={"suggested_value": options.get(CONF_USERNAME)},
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                vol.Required(
+                    CONF_PASSWORD,
+                    description={"suggested_value": options.get(CONF_PASSWORD)},
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+                vol.Required(
+                    CONF_HOST,
+                    description={"suggested_value": options.get(CONF_HOST)},
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                vol.Optional(
+                    CONF_PORT,
+                    description={"suggested_value": options.get(CONF_PORT)},
+                ): NumberSelector(NumberSelectorConfig()),
+                vol.Required(
+                    CONF_DB_NAME,
+                    description={"suggested_value": options.get(CONF_DB_NAME)},
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+                vol.Optional(
+                    CONF_DB_PARAMS,
+                    description={"suggested_value": options.get(CONF_DB_PARAMS)},
+                ): ObjectSelector(
+                    {
+                        "fields": {
+                            "key": {"required": True, "selector": {"text": {}}},
+                            "value": {"required": True, "selector": {"text": {}}},
+                        },
+                        "multiple": True,
+                        "label_field": "key",
+                        "translation_key": "db_params",
+                    }
+                ),
+            }
+        )
+        if user_input is None:
+            return self.async_show_form(step_id="database", data_schema=schema)
+
+        errors: dict[str, str] = {}
+        try:
+            db_uri = build_postgres_uri(user_input)
+        except (KeyError, ValueError):
+            errors["base"] = "invalid_uri"
+        else:
+            try:
+                await validate_db_uri(self.hass, db_uri)
+            except InvalidAuthError:
+                errors["base"] = "invalid_auth"
+            except CannotConnectError:
+                errors["base"] = "cannot_connect"
+
+        if errors:
+            return self.async_show_form(
+                step_id="database",
+                data_schema=schema,
+                errors=errors,
+            )
+
+        if current_subentry is None:
+            subentry = ConfigSubentry(
+                subentry_type=SUBENTRY_TYPE_DATABASE,
+                title="Database",
+                unique_id=f"{entry.entry_id}_database",
+                data=MappingProxyType(user_input),
+            )
+            self.hass.config_entries.async_add_subentry(entry, subentry)
+        else:
+            self.hass.config_entries.async_update_subentry(  # type: ignore[attr-defined]
+                entry, current_subentry, data=user_input, title="Database"
+            )
+        self._schedule_reload()
+
+        if self._setup_mode:
+            return await self.async_step_setup_status()
+        if not _provider_options(entry, "chat"):
+            return await self.async_step_instructions()
+        return self.async_abort(reason="setup_complete")
+
+    async def async_step_instructions(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle the instructions step."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="instructions", data_schema=vol.Schema({})
+            )
+        return self.async_abort(reason="setup_complete")

@@ -1,0 +1,441 @@
+"""Deterministic reducer that compresses discovery snapshots for LLM prompts."""
+
+from __future__ import annotations
+
+import json
+import math
+from collections import defaultdict
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from .schema import FullStateSnapshot
+
+_ALLOWED_DOMAINS = {
+    "alarm_control_panel",
+    "binary_sensor",
+    "camera",
+    "cover",
+    "lock",
+    "person",
+    "sensor",
+}
+
+# Environmental readings follow weather/HVAC cycles rather than occupancy;
+# discovery needs to see them to propose baseline/threshold candidates
+# (issue #541 — without these, the LLM could only reach an environmental
+# device through its battery entity and produced physically-wrong cards).
+_ENVIRONMENTAL_SENSOR_DEVICE_CLASSES = {
+    "temperature",
+    "humidity",
+    "pressure",
+    "atmospheric_pressure",
+    "carbon_dioxide",
+    "carbon_monoxide",
+    "pm25",
+    "pm10",
+    "aqi",
+    "moisture",
+    "illuminance",
+}
+_ALLOWED_SENSOR_DEVICE_CLASSES = {
+    "power",
+    "energy",
+    "battery",
+} | _ENVIRONMENTAL_SENSOR_DEVICE_CLASSES
+_ALLOWED_BINARY_CLASSES = {"door", "window", "opening", "motion", "occupancy"}
+_MAX_ENTITIES = 100
+_MAX_CAMERA_ACTIVITY = 20
+_MAX_SUMMARY_CHARS = 80
+# Cap how many baseline-ready entity IDs appear in derived context.
+_MAX_BASELINE_ENTITIES = 30
+# Router clients shown to the discovery model (connected first, then by name).
+_MAX_NETWORK_CLIENTS = 40
+# Character budget for the serialised snapshot JSON (≈5 k tokens at 4 chars/token).
+# A second-pass strip is applied when this threshold is exceeded.
+_TOKEN_BUDGET_CHARS = 20_000
+# Camera summary length used in the emergency second-pass trim.
+_SECOND_PASS_SUMMARY_CHARS = 40
+# Cap per-camera recognized_people list so facial-recognition deployments
+# do not exceed the token budget after summaries are dropped.
+_MAX_RECOGNIZED_PEOPLE = 5
+
+# States considered "interesting" for anomaly detection — scored higher.
+_ANOMALOUS_STATES = {"on", "open", "unlocked", "triggered", "disarmed"}
+_LOW_BATTERY_THRESHOLD = 20
+_RECENT_CHANGE_MINUTES = 30
+_MODERATE_CHANGE_MINUTES = 120
+
+# Type alias for the grouping key.
+_GroupKey = tuple[str, str | None, str | None, str]
+
+
+def _truncate_iso(iso_str: str | None) -> str | None:
+    """Truncate an ISO-8601 timestamp to minute precision."""
+    if not iso_str:
+        return None
+    return iso_str[:16]  # "YYYY-MM-DDTHH:MM"
+
+
+def _anomaly_score(entity: dict[str, Any], generated_at: str) -> int:
+    """Return a relevance score for anomaly detection (higher = more interesting)."""
+    score = 0
+    state = entity.get("state", "")
+    device_class = entity.get("device_class")
+
+    if state.lower() in _ANOMALOUS_STATES:
+        score += 100
+
+    if device_class == "battery":
+        try:
+            if float(state) < _LOW_BATTERY_THRESHOLD:
+                score += 80
+        except (ValueError, TypeError):
+            pass
+
+    # Environmental sensors re-report continuously, so a recency bonus for
+    # them carries no anomaly signal — it would just let a fleet of
+    # temperature sensors systematically outrank idle security entities
+    # (closed doors, locked locks) at the _MAX_ENTITIES cap (issue #541
+    # ship red-team review, reproduced with a synthetic 110-entity home).
+    if device_class in _ENVIRONMENTAL_SENSOR_DEVICE_CLASSES:
+        return score
+
+    last_changed = entity.get("last_changed", "")
+    if last_changed and generated_at:
+        score += _recency_bonus(last_changed, generated_at)
+
+    return score
+
+
+def _recency_bonus(last_changed: str, generated_at: str) -> int:
+    """Return a bonus score based on how recently the entity changed."""
+    try:
+        changed = datetime.fromisoformat(last_changed)
+        generated = datetime.fromisoformat(generated_at)
+        if changed.tzinfo is None:
+            changed = changed.replace(tzinfo=UTC)
+        if generated.tzinfo is None:
+            generated = generated.replace(tzinfo=UTC)
+        delta_minutes = (generated - changed).total_seconds() / 60
+    except (ValueError, TypeError):
+        return 0
+
+    if delta_minutes < _RECENT_CHANGE_MINUTES:
+        return 60
+    if delta_minutes < _MODERATE_CHANGE_MINUTES:
+        return 30
+    return 0
+
+
+# Numeric states beyond this magnitude pass through unrounded: expanding a
+# garbage reading like "1e300" to a 301-digit integer string would inflate
+# the compressed snapshot instead of shrinking it (ship adversarial review).
+# No physical environmental quantity exceeds this bound.
+_MAX_ROUNDABLE_STATE = 1e9
+
+
+def _round_environmental_state(state: str) -> str:
+    """
+    Round a numeric environmental state to an integer string ("83.66" → "84").
+
+    Token control plus grouping: the LLM only needs magnitude, and identical-
+    area sensors that differ by fractions of a degree get a chance to share a
+    group. Non-numeric, non-finite, and absurd-magnitude states pass through
+    unmodified; the full snapshot keeps full precision for rule evaluation.
+    """
+    try:
+        value = float(state)
+    except (TypeError, ValueError):
+        return state
+    if not math.isfinite(value) or abs(value) > _MAX_ROUNDABLE_STATE:
+        return state
+    return str(round(value))
+
+
+def _filter_entities(snapshot: FullStateSnapshot) -> list[dict[str, Any]]:
+    """Filter snapshot entities to security/safety-relevant domains."""
+    filtered: list[dict[str, Any]] = []
+    for entity in snapshot["entities"]:
+        domain = entity["domain"]
+        if domain not in _ALLOWED_DOMAINS:
+            continue
+        attrs = entity.get("attributes", {})
+        device_class = attrs.get("device_class")
+        if domain == "sensor" and device_class not in _ALLOWED_SENSOR_DEVICE_CLASSES:
+            continue
+        if domain == "binary_sensor" and device_class not in _ALLOWED_BINARY_CLASSES:
+            continue
+        state = entity["state"]
+        if device_class in _ENVIRONMENTAL_SENSOR_DEVICE_CLASSES:
+            state = _round_environmental_state(state)
+        filtered.append(
+            {
+                "entity_id": entity["entity_id"],
+                "domain": domain,
+                "state": state,
+                "area": entity.get("area"),
+                "device_class": device_class,
+                "last_changed": entity.get("last_changed"),
+            }
+        )
+    return filtered
+
+
+def _group_entities(entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group entities by (domain, device_class, area, state)."""
+    groups: dict[_GroupKey, list[str]] = defaultdict(list)
+    last_changed_map: dict[_GroupKey, str | None] = {}
+
+    for entity in entities:
+        key: _GroupKey = (
+            entity["domain"],
+            entity.get("device_class"),
+            entity.get("area"),
+            entity["state"],
+        )
+        groups[key].append(entity["entity_id"])
+        existing = last_changed_map.get(key)
+        candidate = entity.get("last_changed")
+        if candidate and (existing is None or candidate > existing):
+            last_changed_map[key] = candidate
+
+    grouped: list[dict[str, Any]] = []
+    for (domain, device_class, area, state), entity_ids in sorted(
+        groups.items(), key=lambda item: item[1][0]
+    ):
+        entry: dict[str, Any] = {
+            "entity_ids": sorted(entity_ids),
+            "state": state,
+        }
+        if area:
+            entry["area"] = area
+        if device_class:
+            entry["device_class"] = device_class
+        lc = _truncate_iso(last_changed_map.get((domain, device_class, area, state)))
+        if lc:
+            entry["last_changed"] = lc
+        grouped.append(entry)
+    return grouped
+
+
+def _reduce_cameras(snapshot: FullStateSnapshot) -> list[dict[str, Any]]:
+    """Reduce camera activity entries, truncating summaries."""
+    reduced: list[dict[str, Any]] = []
+    for camera in snapshot["camera_activity"]:
+        summary = camera.get("snapshot_summary")
+        if summary and len(summary) > _MAX_SUMMARY_CHARS:
+            summary = summary[:_MAX_SUMMARY_CHARS] + "..."
+
+        entry: dict[str, Any] = {
+            "camera_entity_id": camera["camera_entity_id"],
+        }
+        if camera.get("area"):
+            entry["area"] = camera["area"]
+        if camera.get("last_activity"):
+            entry["last_activity"] = _truncate_iso(camera["last_activity"])
+        if summary:
+            entry["snapshot_summary"] = summary
+        people = camera.get("recognized_people", [])
+        if people:
+            entry["recognized_people"] = people
+        reduced.append(entry)
+
+    reduced.sort(
+        key=lambda item: (
+            item.get("last_activity") is not None,
+            item.get("last_activity") or "",
+            item["camera_entity_id"],
+        ),
+        reverse=True,
+    )
+    if len(reduced) > _MAX_CAMERA_ACTIVITY:
+        reduced = reduced[:_MAX_CAMERA_ACTIVITY]
+    reduced.sort(key=lambda item: item["camera_entity_id"])
+    return reduced
+
+
+def _reduce_derived(
+    snapshot: FullStateSnapshot, entity_id_set: frozenset[str]
+) -> dict[str, Any]:
+    """Compress derived context for LLM discovery prompts."""
+    derived: dict[str, Any] = dict(snapshot["derived"])
+
+    # Truncate timestamps to minute precision.
+    motion_by_area = derived.get("last_motion_by_area")
+    if isinstance(motion_by_area, dict):
+        derived["last_motion_by_area"] = {
+            area: _truncate_iso(str(ts)) for area, ts in motion_by_area.items()
+        }
+    now_val = derived.get("now")
+    if isinstance(now_val, str):
+        derived["now"] = _truncate_iso(now_val)
+
+    # timezone is redundant for anomaly detection — is_night already encodes it.
+    derived.pop("timezone", None)
+
+    # Restrict baseline_ready_entities to entities present in the reduced snapshot,
+    # then cap to bound token cost.
+    baseline_ready = derived.get("baseline_ready_entities")
+    if isinstance(baseline_ready, list):
+        trimmed = [eid for eid in baseline_ready if eid in entity_id_set]
+        derived["baseline_ready_entities"] = trimmed[:_MAX_BASELINE_ENTITIES]
+
+    return derived
+
+
+def _reduce_network(snapshot: FullStateSnapshot) -> dict[str, Any] | None:
+    """
+    Compress the network section for the discovery model.
+
+    Clients carry their pseudonymized ``key``, the name Home Assistant shows
+    (never the DHCP hostname, IP, or MAC, and never a name that carries one),
+    whether they are connected, and the guest flag; posture carries the
+    boolean router settings the rules may watch (one source:
+    ``NETWORK_POSTURE_ALERT_VALUE``). The model
+    cites a client as ``network.clients[key=<key>].connected`` and a setting
+    as ``network.posture.<key>``. Absent (None) when the snapshot has no
+    network section or it has neither clients nor posture.
+    """
+    from custom_components.home_generative_agent.sentinel.evidence_paths import (  # noqa: PLC0415
+        NETWORK_POSTURE_ALERT_VALUE,
+    )
+    from custom_components.home_generative_agent.sentinel.redaction import (  # noqa: PLC0415
+        client_display_name,
+        label_carries_address,
+    )
+
+    section = snapshot.get("network")
+    if not section:
+        return None
+    clients: list[dict[str, Any]] = []
+    for client in section.get("clients") or []:
+        key = client.get("key")
+        if not isinstance(key, str) or not key:
+            continue
+        # A router names an unresolved client by its MAC, and Home
+        # Assistant slugs a MAC into some device names: such a name is not
+        # shown to the model, the manufacturer-plus-key display name is.
+        name = str(client.get("name") or "")
+        if not name or label_carries_address(name):
+            name = client_display_name(client)
+        entry: dict[str, Any] = {
+            "key": key,
+            "name": name[:_MAX_SUMMARY_CHARS],
+            "connected": bool(client.get("connected")),
+        }
+        is_guest = client.get("is_guest")
+        if isinstance(is_guest, bool):
+            entry["is_guest"] = is_guest
+        if client.get("trusted") is False:
+            entry["trusted"] = False
+        clients.append(entry)
+    clients.sort(key=lambda c: (not c["connected"], c["name"].lower(), c["key"]))
+    posture_in: Mapping[str, Any] = section.get("posture") or {}
+    posture = {
+        k: v
+        for k in NETWORK_POSTURE_ALERT_VALUE
+        if isinstance((v := posture_in.get(k)), bool)
+    }
+    if not clients and not posture:
+        return None
+    result: dict[str, Any] = {}
+    if clients:
+        result["clients"] = clients[:_MAX_NETWORK_CLIENTS]
+    if posture:
+        result["posture"] = posture
+    return result
+
+
+def _char_count(result: dict[str, Any]) -> int:
+    """Return the compact JSON serialisation length of *result*."""
+    return len(json.dumps(result, default=str, separators=(",", ":")))
+
+
+def _apply_budget_trim(result: dict[str, Any]) -> dict[str, Any]:
+    """Strip fields progressively until the snapshot fits the token budget."""
+    if _char_count(result) <= _TOKEN_BUDGET_CHARS:
+        return result
+
+    # Strip last_changed from every entity group (~14 chars saved per group).
+    for group in result["entities"]:
+        group.pop("last_changed", None)
+
+    if _char_count(result) <= _TOKEN_BUDGET_CHARS:
+        return result
+
+    # Truncate camera summaries to _SECOND_PASS_SUMMARY_CHARS.
+    for cam in result["camera_activity"]:
+        summary = cam.get("snapshot_summary")
+        if summary and len(summary) > _SECOND_PASS_SUMMARY_CHARS:
+            cam["snapshot_summary"] = summary[:_SECOND_PASS_SUMMARY_CHARS] + "..."
+
+    if _char_count(result) <= _TOKEN_BUDGET_CHARS:
+        return result
+
+    # Drop all camera summaries.
+    for cam in result["camera_activity"]:
+        cam.pop("snapshot_summary", None)
+
+    if _char_count(result) <= _TOKEN_BUDGET_CHARS:
+        return result
+
+    # Cap recognized_people per camera — unbounded in facial-recognition deployments.
+    for cam in result["camera_activity"]:
+        people = cam.get("recognized_people")
+        if isinstance(people, list) and len(people) > _MAX_RECOGNIZED_PEOPLE:
+            cam["recognized_people"] = people[:_MAX_RECOGNIZED_PEOPLE]
+
+    if _char_count(result) <= _TOKEN_BUDGET_CHARS:
+        return result
+
+    _drop_network_clients(result)
+    return result
+
+
+def _drop_network_clients(result: dict[str, Any]) -> None:
+    """Drop the router clients (the posture facts are a few booleans)."""
+    network = result.get("network")
+    if isinstance(network, dict) and "clients" in network:
+        del network["clients"]
+        if not network:
+            del result["network"]
+
+
+def reduce_snapshot_for_discovery(snapshot: FullStateSnapshot) -> dict[str, Any]:
+    """Return a compressed snapshot for LLM discovery prompts."""
+    generated_at = snapshot.get("generated_at", "")
+
+    # Phase 1: Filter to relevant entities
+    filtered = _filter_entities(snapshot)
+
+    # Phase 2: Prioritize interesting entities, then cap
+    filtered.sort(
+        key=lambda e: (-_anomaly_score(e, generated_at), e["entity_id"]),
+    )
+    if len(filtered) > _MAX_ENTITIES:
+        filtered = filtered[:_MAX_ENTITIES]
+
+    # Phase 3: Group entities by (domain, device_class, area, state)
+    grouped_entities = _group_entities(filtered)
+
+    # Phase 4: Reduce camera activity
+    reduced_camera_activity = _reduce_cameras(snapshot)
+
+    # Phase 5: Compress derived context
+    entity_id_set = frozenset(e["entity_id"] for e in filtered)
+    derived = _reduce_derived(snapshot, entity_id_set)
+
+    result: dict[str, Any] = {
+        "entities": grouped_entities,
+        "camera_activity": reduced_camera_activity,
+        "derived": derived,
+    }
+    network = _reduce_network(snapshot)
+    if network is not None:
+        result["network"] = network
+
+    # Phase 6: Second-pass trim if character budget exceeded
+    return _apply_budget_trim(result)

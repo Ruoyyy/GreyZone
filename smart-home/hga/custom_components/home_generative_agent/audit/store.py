@@ -1,0 +1,359 @@
+"""Audit storage for sentinel events."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
+    from custom_components.home_generative_agent.sentinel.models import (
+        AnomalyFinding,
+        CompoundFinding,
+    )
+    from custom_components.home_generative_agent.snapshot.schema import (
+        FullStateSnapshot,
+    )
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
+
+from .models import AuditRecord
+
+LOGGER = logging.getLogger(__name__)
+
+STORE_VERSION = 1
+STORE_KEY = "home_generative_agent_audit"
+# Findings arrive in bursts (one Sentinel run, one camera event), and the
+# store is rewritten whole on every save: about 8 MB at 500 records on a busy
+# home. A fixed window lets a burst share one write: the first unsaved change
+# schedules it, later ones ride along, so nothing waits more than this long.
+# (Home Assistant's delayed save alone is a trailing debounce, which a steady
+# stream of findings would postpone indefinitely.) Records of an actuation and
+# user responses are low volume and the trail most worth keeping, so they are
+# written immediately. Home Assistant flushes a pending write on shutdown, and
+# the entry's unload closes the store.
+AUDIT_SAVE_DELAY_SECS = 15
+
+# v2 fields that must be present after migration; maps field name -> default
+_V2_FIELD_DEFAULTS: dict[str, Any] = {
+    "data_quality": None,
+    "trigger_source": None,
+    "suppression_reason_code": None,
+    "triage_confidence": None,
+    "canary_would_execute": None,
+    "execution_id": None,
+    "rule_version": None,
+    "autonomy_level_at_decision": None,
+    # Issue #262 additions (backward-compatible; same version bucket)
+    "triage_decision": None,
+    "triage_reason_code": None,
+    # action_policy_path was present in async_append_finding but missing from
+    # _V2_FIELD_DEFAULTS, so v1→v2 migration did not backfill it.
+    "action_policy_path": None,
+}
+
+
+def _snapshot_ref(snapshot: FullStateSnapshot) -> dict[str, Any]:
+    payload = json.dumps(snapshot, sort_keys=True, default=str)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return {
+        "schema_version": snapshot.get("schema_version"),
+        "generated_at": snapshot.get("generated_at"),
+        "snapshot_hash": digest,
+    }
+
+
+def _now_iso() -> str:
+    return dt_util.as_utc(dt_util.utcnow()).isoformat()
+
+
+# action_outcome statuses that mean something was done to the home: an
+# auto-executed service call (success, partial, or a failed attempt), a user's
+# Execute tap that reached the agent or fired the event, or a device the user
+# trusted. A dismissal or a refused tap also sets action_outcome but changes
+# nothing, so it gets no extra protection; protecting those let them pile up
+# until every new finding was dropped on arrival.
+_ACTED_STATUSES = frozenset(
+    {"success", "partial", "error", "agent_called", "event_fired", "trusted"}
+)
+
+
+def _acted(record: dict[str, Any]) -> bool:
+    """Return True when the record's action changed something in the home."""
+    outcome = record.get("action_outcome")
+    return isinstance(outcome, dict) and outcome.get("status") in _ACTED_STATUSES
+
+
+def _answers(record: dict[str, Any], anomaly_id: str) -> bool:
+    """Return True when a response to *anomaly_id*'s push belongs to *record*."""
+    finding = record.get("finding", {})
+    if finding.get("anomaly_id") == anomaly_id:
+        return True
+    shown = record.get("notification", {}).get("shown_anomaly_id")
+    if shown is not None:
+        return shown == anomaly_id
+    return any(
+        cf.get("anomaly_id") == anomaly_id
+        for cf in finding.get("constituent_findings", [])
+    )
+
+
+def _is_evictable(record: dict[str, Any]) -> bool:
+    """
+    Return True when *record* may be evicted to make room for a newer entry.
+
+    Records explicitly marked as user-facing (``suppression_reason_code ==
+    "not_suppressed"``) are preserved in preference to suppressed records.
+    Records missing the field (e.g. migrated v1 records) are treated as
+    evictable — we don't know whether they were user-facing.
+    """
+    if _acted(record):
+        # Something was done to the home; keep the record whatever the push did.
+        return False
+    return record.get("suppression_reason_code") != "not_suppressed"
+
+
+def _relabel_downstream_suppressed(record: dict[str, Any]) -> dict[str, Any]:
+    """
+    Relabel records mislabeled ``not_suppressed`` before the reason-code fix.
+
+    Findings suppressed by LLM triage or blocked by execution policy were
+    historically audited as ``not_suppressed`` even though they never reached
+    the user, making them permanently non-evictable and inflating notified
+    KPIs.  A genuinely notified record can never carry
+    ``triage_decision == "suppress"`` or ``action_policy_path == "blocked"``
+    (both engine branches return before notifying), so the relabel is
+    deterministic.  Idempotent; runs on every load because affected records
+    are already ``version: 2``.
+    """
+    if record.get("suppression_reason_code") != "not_suppressed":
+        return record
+    if record.get("triage_decision") == "suppress":
+        record["suppression_reason_code"] = "triage_suppressed"
+    elif record.get("action_policy_path") == "blocked":
+        record["suppression_reason_code"] = "policy_blocked"
+    return record
+
+
+def _migrate_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Backfill missing v2 fields into a raw record dict (in-place, returns it)."""
+    record_version = record.get("version", 1)
+    if record_version < 2:  # noqa: PLR2004
+        for field_name, default in _V2_FIELD_DEFAULTS.items():
+            record.setdefault(field_name, default)
+        record["version"] = 2
+    return _relabel_downstream_suppressed(record)
+
+
+class AuditStore:
+    """Persistent audit store for sentinel activity."""
+
+    def __init__(self, hass: HomeAssistant, max_records: int = 500) -> None:
+        """Initialize the audit store."""
+        self._store = Store(hass, STORE_VERSION, STORE_KEY)
+        self._records: list[dict[str, Any]] = []
+        self._max_records = max_records
+        self._logged_full = False
+        self._save_pending = False
+        self._closed = False
+
+    async def async_load(self) -> None:
+        """Load audit records from storage, migrating old records on the fly."""
+        try:
+            data = await self._store.async_load()
+        except (HomeAssistantError, OSError, ValueError):
+            return
+        if isinstance(data, list):
+            self._records = [_migrate_record(r) for r in data]
+
+    async def async_save(self) -> None:
+        """Persist audit records now, superseding any pending delayed save."""
+        self._save_pending = False
+        try:
+            await self._store.async_save(self._records)
+        except (HomeAssistantError, OSError, ValueError) as err:
+            LOGGER.warning("Could not save the Sentinel audit store: %s", err)
+
+    async def async_close(self) -> None:
+        """
+        Write the store and refuse later writes.
+
+        Called on entry unload. A Sentinel run or a notification action still
+        in flight can append to this store after the unload; scheduling a
+        write then would let this instance's stale list overwrite the file
+        the reloaded entry's store has written since. Such a late record is
+        dropped instead, as it was before saves were delayed.
+        """
+        self._closed = True
+        await self.async_save()
+
+    def _records_for_write(self) -> list[dict[str, Any]]:
+        """Return the records for a delayed write and open the next window."""
+        self._save_pending = False
+        return self._records
+
+    async def _async_persist(self, *, now: bool = False) -> None:
+        """Write now, or schedule one write per window for a burst."""
+        if self._closed:
+            LOGGER.debug("Audit store closed; not writing a late change")
+            return
+        if now:
+            await self.async_save()
+            return
+        if self._save_pending:
+            return
+        self._save_pending = True
+        self._store.async_delay_save(self._records_for_write, AUDIT_SAVE_DELAY_SECS)
+
+    async def async_append_finding(  # noqa: PLR0913
+        self,
+        snapshot: FullStateSnapshot,
+        finding: AnomalyFinding | CompoundFinding,
+        explanation: str | None,
+        *,
+        suppression_reason_code: str | None = None,
+        trigger_source: str | None = None,
+        data_quality: dict[str, Any] | None = None,
+        triage_confidence: float | None = None,
+        triage_decision: str | None = None,
+        triage_reason_code: str | None = None,
+        canary_would_execute: bool | None = None,
+        execution_id: str | None = None,
+        rule_version: str | None = None,
+        autonomy_level_at_decision: str | None = None,
+        action_policy_path: str | None = None,
+        action_outcome: dict[str, Any] | None = None,
+        shown_anomaly_id: str | None = None,
+        named_anomaly_ids: list[str] | None = None,
+    ) -> None:
+        """
+        Append a finding audit record.
+
+        For a compound finding, *shown_anomaly_id* is the constituent the push
+        showed (its buttons answer for it alone) and *named_anomaly_ids* the
+        partners its "Also: ..." line named.
+        """
+        notification: dict[str, Any] = {
+            "explanation": explanation,
+            "notified_at": _now_iso(),
+        }
+        if shown_anomaly_id is not None:
+            notification["shown_anomaly_id"] = shown_anomaly_id
+        if named_anomaly_ids:
+            notification["named_anomaly_ids"] = list(named_anomaly_ids)
+        record = AuditRecord(
+            snapshot_ref=_snapshot_ref(snapshot),
+            finding=finding.as_dict(),
+            notification=notification,
+            user_response=None,
+            action_outcome=action_outcome,
+            # v2 fields
+            data_quality=data_quality,
+            trigger_source=trigger_source,
+            suppression_reason_code=suppression_reason_code,
+            triage_confidence=triage_confidence,
+            triage_decision=triage_decision,
+            triage_reason_code=triage_reason_code,
+            canary_would_execute=canary_would_execute,
+            execution_id=execution_id,
+            rule_version=rule_version,
+            autonomy_level_at_decision=autonomy_level_at_decision,
+            action_policy_path=action_policy_path,
+        )
+        self._records.append(record.__dict__)
+        if len(self._records) > self._max_records:
+            self._evict_one()
+        await self._async_persist(now=action_outcome is not None)
+
+    def _evict_one(self) -> None:
+        """
+        Evict one record to keep the store within *_max_records*.
+
+        Eviction priority: prefer dropping the oldest evictable (suppressed)
+        record before touching any ``not_suppressed`` record so that
+        user-facing KPI history is preserved during high-volume periods.
+
+        # O(n) scan; acceptable at typical store sizes (<=500 records).
+        """
+        evict_idx = next(
+            (i for i, r in enumerate(self._records) if _is_evictable(r)),
+            None,
+        )
+        if evict_idx is not None:
+            self._records.pop(evict_idx)
+        else:
+            # Every record reached the user. On a home that notifies more
+            # often than the cap holds, this is the steady state, not a fault:
+            # dropping the oldest notified record is the right move, and any
+            # cap fills the same way. Say so once, not on every finding.
+            if not self._logged_full:
+                LOGGER.info(
+                    "Audit store holds %d notified findings; the oldest is now "
+                    "dropped as new ones arrive. Raise audit_hot_max_records to "
+                    "keep a longer history.",
+                    self._max_records,
+                )
+                self._logged_full = True
+            # Still keep records of actions over plain notifications: drop the
+            # oldest older record that did not act, and if every older record
+            # acted, the oldest of all. The record just appended is never the
+            # one dropped, so a store full of actions still keeps new findings.
+            drop_idx = next(
+                (i for i, r in enumerate(self._records[:-1]) if not _acted(r)),
+                0,
+            )
+            self._records.pop(drop_idx)
+
+    async def async_update_response(
+        self, anomaly_id: str, response: dict[str, Any], outcome: dict[str, Any] | None
+    ) -> None:
+        """
+        Update the latest record for an anomaly with user response.
+
+        Matches simple findings by ``finding.anomaly_id`` and compound findings
+        by ``notification.shown_anomaly_id``, the constituent whose buttons the
+        push carried. A compound record also holds partners shown by an earlier
+        push, so matching any constituent wrote a response for that earlier
+        push onto the later record. Records written before the field existed
+        fall back to matching any ``finding.constituent_findings[].anomaly_id``.
+
+        Prefers the newest ``not_suppressed`` match: ``anomaly_id`` is a stable
+        content hash, so a re-fired finding that was suppressed downstream
+        (triage/policy) can produce a newer record with the same id.  User
+        responses always originate from a notification, which only
+        ``not_suppressed`` records represent; landing the response there keeps
+        it KPI-visible and eviction-protected.  Records missing the reason
+        code (v1) may have been notified, so they are preferred over records
+        explicitly marked suppressed.  Falls back to the newest match of any
+        kind so responses are never dropped.
+        """
+        notified_match: dict[str, Any] | None = None
+        unknown_match: dict[str, Any] | None = None
+        suppressed_match: dict[str, Any] | None = None
+        for record in reversed(self._records):
+            if _answers(record, anomaly_id):
+                reason_code = record.get("suppression_reason_code")
+                if reason_code == "not_suppressed":
+                    notified_match = record
+                    break
+                if reason_code is None:
+                    unknown_match = unknown_match or record
+                else:
+                    suppressed_match = suppressed_match or record
+        match = notified_match or unknown_match or suppressed_match
+        if match is None:
+            return
+        match["user_response"] = response
+        match["action_outcome"] = outcome
+        match.setdefault("notification", {})["responded_at"] = _now_iso()
+        await self._async_persist(now=True)
+
+    async def async_get_latest(self, limit: int) -> list[dict[str, Any]]:
+        """Return the latest audit records, newest first."""
+        if limit <= 0:
+            return []
+        return list(reversed(self._records[-limit:]))

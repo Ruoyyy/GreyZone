@@ -1,0 +1,545 @@
+{
+  "common": {
+    "feature_overwrite_warning": "⚠️ Features are already configured. Choosing **Basic setup** will overwrite your current provider assignments with recommended defaults.",
+    "sentinel_overwrite_warning": "⚠️ Sentinel is already configured. Choosing **Basic setup** will overwrite your current settings with recommended defaults. Your entity exclusions and camera-to-entry links are kept.",
+    "no_model_provider_notice": "No model provider is configured. A default model will be assigned once available.",
+    "no_capable_model_provider_notice": "None of your model providers support this feature. Add another Model Provider of a supported type - a provider can be added for each service you use, and each feature can point at a different one.",
+    "supported_provider_types_label": "Supported here:"
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Home Generative Agent",
+        "description": "Default features are being created. Next, run **Setup** to enable/configure features and the database, then add a **Model Provider**."
+      }
+    },
+    "error": {
+      "cannot_connect": "Can't reach the service. Check keys/URLs and try again.",
+      "invalid_auth": "Invalid API key.",
+      "invalid_pin": "PIN must be 4-10 digits.",
+      "tool_excluded_and_included": "A tool cannot be both excluded and always included. Remove it from one of the two lists.",
+      "unknown": "Unexpected error."
+    }
+  },
+  "config_subentries": {
+    "database": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "Database configuration updated successfully."
+      },
+      "initiate_flow": {
+        "reconfigure": "Reconfigure Database",
+        "user": "Setup Database"
+      },
+      "step": {
+        "set_options": {
+          "title": "Database setup",
+          "description": "Enter the necessary parameters for the databse",
+          "data": {
+            "username": "Database username",
+            "password": "Database password",
+            "host": "Database host",
+            "port": "Database port (optional)",
+            "db_name": "Database name",
+            "db_params": "Database connection params (optional)"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Could not connect to the database. Check the database settings and try again.",
+        "invalid_auth": "Invalid authorization.",
+        "invalid_uri": "URI could not be generated.",
+        "unknown": "Unexpected error."
+      }
+    },
+    "model_provider": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "Model provider updated."
+      },
+      "initiate_flow": {
+        "reconfigure": "Reconfigure Model Provider",
+        "user": "Add Model Provider"
+      },
+      "step": {
+        "deployment": {
+          "title": "Deployment",
+          "description": "Choose where this provider runs. **Edge** is self-hosted on your own network (Ollama, OpenAI Compatible). **Cloud** is a hosted API (OpenAI, Gemini, Anthropic). This choice only decides which provider types the next step offers - you can add as many providers as you like, of either kind, and point each feature at a different one.",
+          "data": {
+            "deployment": "Deployment"
+          }
+        },
+        "provider": {
+          "title": "Provider",
+          "description": "Select a provider type and name. Add a separate provider for each service you want to use - for example Anthropic for Conversation and Gemini for Embeddings, since Anthropic has no embeddings endpoint.",
+          "data": {
+            "provider_type": "Provider",
+            "name": "Provider name"
+          },
+          "data_description": {
+            "name": "Leave the name blank to have it named after the provider type you pick."
+          }
+        },
+        "settings": {
+          "title": "Provider settings",
+          "description": "Configure the provider endpoint or credentials.",
+          "data": {
+            "base_url": "Base URL",
+            "api_key": "API key",
+            "gemini_api_key": "Gemini API key",
+            "anthropic_api_key": "Anthropic API key"
+          },
+          "data_description": {
+            "api_key": "Required for OpenAI. For OpenAI Compatible providers, leave blank or enter 'none' if the endpoint requires no authentication."
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Can't reach the provider.",
+        "invalid_auth": "Invalid credentials.",
+        "unknown": "Unexpected error."
+      }
+    },
+    "stt_provider": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "STT provider updated."
+      },
+      "initiate_flow": {
+        "reconfigure": "Reconfigure STT Provider",
+        "user": "Add STT Provider"
+      },
+      "step": {
+        "provider": {
+          "title": "Speech-to-Text Provider",
+          "description": "Select a provider type and name.",
+          "data": {
+            "provider_type": "Provider",
+            "name": "Provider name"
+          }
+        },
+        "credentials": {
+          "title": "Credentials",
+          "description": "Choose how to authenticate the STT provider. Local providers connect to an OpenAI-compatible server URL instead.",
+          "data": {
+            "openai_provider_subentry_id": "Reuse OpenAI model provider",
+            "api_key": "API key",
+            "base_url": "Server URL"
+          },
+          "data_description": {
+            "api_key": "Required for OpenAI. Optional for local servers that need no authentication.",
+            "base_url": "OpenAI-compatible endpoint of the local STT server, e.g. a Speaches instance. A missing /v1 suffix is added automatically."
+          }
+        },
+        "model": {
+          "title": "Model & advanced options",
+          "description": "Select a model and optional advanced settings.",
+          "data": {
+            "model_name": "Model",
+            "language": "Language (optional)",
+            "prompt": "Prompt (optional)",
+            "temperature": "Temperature (optional)",
+            "translate": "Translate to English",
+            "response_format": "Response format",
+            "request_format": "Request format",
+            "extra_body": "Extra request body (JSON, optional)"
+          },
+          "data_description": {
+            "request_format": "How the audio is sent. Multipart upload is OpenAI's own shape and works everywhere. JSON with base64 audio is OpenRouter's native transcription shape - pick it only if your server documents it. It has no translations endpoint and ignores the Prompt field above.",
+            "extra_body": "A JSON object merged into the request body, for fields HGA does not expose. On OpenRouter this is where provider options such as keyword biasing go, and those need the JSON request format. See the STT section of the documentation for a worked example. Leave blank if unsure."
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Can't reach the provider.",
+        "invalid_auth": "Invalid credentials.",
+        "invalid_model": "Select a valid model.",
+        "not_supported": "Provider not supported yet.",
+        "unknown": "Unexpected error.",
+        "invalid_extra_body": "Extra request body must be a JSON object.",
+        "reserved_extra_body_key": "Extra request body cannot set stream, file or input_audio - Home Generative Agent controls those."
+      }
+    },
+    "tts_provider": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "TTS provider updated."
+      },
+      "initiate_flow": {
+        "reconfigure": "Reconfigure TTS Provider",
+        "user": "Add TTS Provider"
+      },
+      "step": {
+        "provider": {
+          "title": "Text-to-Speech Provider",
+          "description": "Select a provider type and name.",
+          "data": {
+            "provider_type": "Provider",
+            "name": "Provider name"
+          }
+        },
+        "credentials": {
+          "title": "Credentials",
+          "description": "Choose how to authenticate the TTS provider. Local providers connect to an OpenAI-compatible server URL instead.",
+          "data": {
+            "openai_provider_subentry_id": "Reuse OpenAI model provider",
+            "api_key": "API key",
+            "base_url": "Server URL"
+          },
+          "data_description": {
+            "api_key": "Required for OpenAI. Optional for local servers that need no authentication.",
+            "base_url": "OpenAI-compatible endpoint of the local TTS server, e.g. a Speaches instance. A missing /v1 suffix is added automatically."
+          }
+        },
+        "model": {
+          "title": "Model, voice & advanced options",
+          "description": "Select a model and voice, and optional advanced settings.",
+          "data": {
+            "model_name": "Model",
+            "voice": "Voice",
+            "speed": "Speed",
+            "instructions": "Voice instructions (optional)"
+          },
+          "data_description": {
+            "voice": "OpenAI: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova, onyx, sage, shimmer, or verse. Local: a voice id the server's model provides, e.g. af_heart for Kokoro.",
+            "speed": "Playback speed multiplier, 0.25 to 4.0. 1.0 is normal speed.",
+            "instructions": "How the voice should sound, e.g. tone or pacing. Used only by OpenAI gpt-4o-mini-tts models; ignored elsewhere."
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Can't reach the provider.",
+        "invalid_auth": "Invalid credentials.",
+        "invalid_model": "Select a valid model.",
+        "not_supported": "Provider not supported yet.",
+        "unknown": "Unexpected error."
+      }
+    },
+    "sentinel": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "Sentinel configuration updated."
+      },
+      "error": {
+        "invalid_camera_entry_links": "Must be a JSON object mapping camera entity IDs to lists of entry entity IDs, e.g. a \"camera.driveway\" key with the value [\"lock.front_door\"].",
+        "invalid_pin": "PIN must be 4-10 digits.",
+        "pin_required": "Enter a PIN, or uncheck \"Require PIN for autonomy level increases\". No PIN is stored, so every level increase would be refused.",
+        "quiet_hours_incomplete": "Set both quiet hours start and end (or set both to Disabled).",
+        "invalid_quiet_hours": "Quiet hours must be local hours between 0 and 23.",
+        "invalid_rule_entity_exclusions": "Must be a JSON object mapping an anomaly type (or \"*\" for all types) to lists of entity IDs or glob patterns (* and ? wildcards only, lowercase entity-ID characters), each containing a dot and at least one literal character, e.g. an \"appliance_power_duration\" key with the value [\"sensor.ac_power\"], or a \"camera_entry_unsecured\" key with the value [\"camera.map_*\"]. Match-all entries such as \"*\" or \"*.*\" are not allowed — use the \"*\" type key instead."
+      },
+      "initiate_flow": {
+        "reconfigure": "Reconfigure Sentinel",
+        "user": "Configure Sentinel"
+      },
+      "step": {
+        "setup_mode": {
+          "title": "Sentinel Setup",
+          "description": "Choose how to configure Sentinel monitoring.{overwrite_warning}",
+          "data": {
+            "setup_mode": "Setup type"
+          }
+        },
+        "basic_settings": {
+          "title": "Sentinel",
+          "description": "Configure the essential Sentinel settings. All other options use recommended defaults.",
+          "data": {
+            "sentinel_enabled": "Enable anomaly alerting",
+            "sentinel_daily_digest_enabled": "Enable daily digest notification",
+            "sentinel_daily_digest_time": "Daily digest time (HH:MM:SS)",
+            "critical_action_pin": "Level-increase PIN (optional, 4-10 digits)",
+            "notify_service": "Notify service (optional)"
+          }
+        },
+        "settings": {
+          "title": "Sentinel",
+          "description": "Configure proactive Sentinel monitoring and discovery.",
+          "data": {
+            "sentinel_enabled": "Enable anomaly alerting",
+            "sentinel_interval_seconds": "Sentinel interval (seconds)",
+            "sentinel_cooldown_minutes": "Sentinel cooldown per type (minutes)",
+            "sentinel_entity_cooldown_minutes": "Sentinel cooldown per entity (minutes)",
+            "sentinel_pending_prompt_ttl_minutes": "Pending prompt TTL (minutes)",
+            "sentinel_discovery_enabled": "Enable discovery (requires anomaly alerting)",
+            "sentinel_discovery_interval_seconds": "Discovery interval (seconds)",
+            "sentinel_discovery_max_records": "Max discovery records to retain",
+            "sentinel_triage_enabled": "Enable LLM triage of findings",
+            "sentinel_triage_timeout_seconds": "Triage timeout (seconds)",
+            "sentinel_response_language": "Finding explanation language (optional)",
+            "sentinel_baseline_enabled": "Enable baseline collection (requires anomaly alerting)",
+            "sentinel_baseline_update_interval_minutes": "Baseline update interval (minutes)",
+            "sentinel_baseline_freshness_threshold_seconds": "Baseline freshness threshold (seconds)",
+            "sentinel_baseline_weekly_patterns": "Enable day-of-week baselines (reduces weekend false positives)",
+            "sentinel_baseline_dow_min_samples": "DOW baseline minimum samples (weeks of data per slot)",
+            "sentinel_baseline_min_samples": "Baseline minimum samples before deviation alerts fire",
+            "sentinel_baseline_sustained_minutes": "Cyclical load gate: minutes above threshold before alerting (0 = disabled)",
+            "sentinel_appliance_power_threshold_w": "Appliance power rule: power threshold (W)",
+            "sentinel_appliance_duration_min": "Appliance power rule: duration before alert (minutes)",
+            "sentinel_network_enabled": "Enable network and Home Assistant security audit",
+            "sentinel_network_offline_device_min": "Security device offline threshold (minutes)",
+            "sentinel_network_unknown_device_grace_min": "New network device grace period (minutes)",
+            "sentinel_network_guest_idle_days": "Guest Wi-Fi idle threshold (days)",
+            "sentinel_network_audit_share_details": "Share security audit details with the chat model",
+            "sentinel_ha_token_stale_days": "Stale long-lived token threshold (days)",
+            "sentinel_auth_ip_retention_days": "Auth inventory address retention (days)",
+            "explain_enabled": "Enable LLM explanations for sentinel findings",
+            "sentinel_require_pin_for_level_increase": "Require PIN for autonomy level increases",
+            "sentinel_daily_digest_enabled": "Enable daily digest notification",
+            "sentinel_daily_digest_time": "Daily digest time (HH:MM:SS)",
+            "sentinel_quiet_hours_start": "Quiet hours start (suppresses selected severities)",
+            "sentinel_quiet_hours_end": "Quiet hours end",
+            "sentinel_quiet_hours_severities": "Quiet hours suppressed severities",
+            "sentinel_camera_entry_links": "Camera entry links (JSON, optional)",
+            "sentinel_rule_entity_exclusions_all": "Exclude entities from all Sentinel rules (optional)",
+            "sentinel_rule_entity_exclusions": "Advanced: per-rule entity exclusions (JSON, optional)",
+            "critical_action_pin": "Sentinel level-increase PIN (optional)",
+            "notify_service": "Sentinel Notify Service (optional)"
+          },
+          "data_description": {
+            "explain_enabled": "Let a model write the wording of each alert instead of using the rule's own fixed summary. This only changes how an alert reads -- never whether you get it, which is what LLM triage above decides. It costs one model call per alert actually sent, and runs after triage, so a suppressed finding never reaches it. The Home Assistant & network security alerts and the alarm-disarm alerts always keep their exact wording and are not affected. Set the finding explanation language below to have that wording written in another language. Off by default.",
+            "sentinel_response_language": "Language for the LLM-authored finding explanation shown in notifications, e.g. 'Czech'. Leave empty for English. Discovery candidate title/summary and triage decision/reason_code/summary are unaffected -- those are parsed by code and always stay in English.",
+            "sentinel_rule_entity_exclusions_all": "Pick entities Sentinel should ignore everywhere -- e.g. a touch panel's template lock that only mirrors another entity's state. Excluded entities are dropped from every rule's findings and no longer wake Sentinel, so a real anomaly involving them is only caught on the next poll (default 5 minutes). Don't exclude a camera, lock, or alarm panel you still want instant alerts from.",
+            "sentinel_rule_entity_exclusions": "For excluding an entity from one specific rule only (not all of them), and for glob patterns such as camera.map_*, which the picker above cannot hold. Expects a JSON object whose keys are anomaly types and whose values are lists of entity IDs; the \"*\" key means all rules. See the Sentinel docs for examples. Most people won't need this -- use the picker above instead.",
+            "sentinel_triage_enabled": "Run one extra LLM call per finding that may suppress low-value alerts. Needs a configured chat model and Sentinel autonomy level 1 or higher -- at level 0 the switch has no effect. The model can only suppress or pass a finding -- it never changes, creates or acts on one, and any error or timeout passes the finding through. Off by default.",
+            "sentinel_triage_timeout_seconds": "How long to wait for the triage call before passing the finding through unchanged.",
+            "sentinel_network_enabled": "Runs the Home Assistant & network security rules on every Sentinel cycle and lets the chat agent run them on demand: administrator accounts and access tokens, entities exposed to voice assistants, add-on ports, radio pairings, UPnP at the router and, with a router integration, the devices on your network. Nothing scans the network -- every fact comes from what Home Assistant already knows. Off, these rules show as inactive on the health sensor and the audit tool reports that they are turned off. On by default.",
+            "sentinel_network_offline_device_min": "How long a lock, alarm panel, or camera may be unavailable before Sentinel reports it. Default 30 minutes.",
+            "sentinel_network_unknown_device_grace_min": "Minutes to wait after a device new to your network is first seen before Sentinel reports it, so a device that comes and goes is still reported but never the instant it appears. Needs a router integration. Default 5; 0 reports on first sight.",
+            "sentinel_network_guest_idle_days": "Days the guest Wi-Fi may stay enabled with no guest connected before Sentinel suggests turning it off. Needs a router integration that reports the guest network (eero today). Default 7.",
+            "sentinel_network_audit_share_details": "On, the chat agent's security audit gives the chat model the findings' details (device names, ports, token names) so it can explain them. Off, the model gets only counts, severities, and fixed titles, and the full report goes to a Home Assistant persistent notification when an administrator asked (a voice satellite or a non-admin account gets the digest only). Network addresses are redacted either way. On by default.",
+            "sentinel_ha_token_stale_days": "Age in days past which a long-lived access token is reported. Home Assistant does not record when a long-lived token is used, so age is the only fact available and the alert suggests rotating old tokens. Default 90.",
+            "sentinel_auth_ip_retention_days": "How long an address seen using an access token stays in the security audit's inventory. Addresses are stored as one-way hashes, never in the clear, and at most 20 are kept per token. Default 90 days."
+          }
+        }
+      }
+    },
+    "feature": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "Feature updated.",
+        "setup_complete": "Setup completed.",
+        "no_provider_for_basic_setup": "No model provider is configured. Add a **Model Provider** first, then retry setup."
+      },
+      "error": {
+        "no_providers": "No model providers are configured.",
+        "cannot_connect": "Could not connect to the database. Check settings and try again.",
+        "invalid_auth": "Invalid authorization.",
+        "invalid_uri": "URI could not be generated.",
+        "unknown": "Unexpected error.",
+        "ollama_model_not_installed": "Model {model} is not installed on Ollama at {url}. Run `ollama pull {model}` there, or choose an installed model. If the server has it under another name, or you are about to pull it, submit again to save it anyway.",
+        "ollama_embedding_dims_mismatch": "Model {model} produces {dims}-dimension embeddings on Ollama at {url}, but the memory store holds {expected}-dimension vectors, so its embeddings would fail to save. Choose an embedding model that produces {expected}-dimension vectors (the configuration docs list common ones). If you are sure the server reports the size wrong, submit again to save it anyway.",
+        "ollama_fallback_embedding_dims_mismatch": "Ollama at {url} produces {dims}-dimension embeddings with {model}, but the memory store holds {expected}-dimension vectors, so that fallback's embeddings would fail to save. If the primary's copy of {model} has the right size, that server has a different build of it: run `ollama pull {model}` there. Otherwise, remove that server from the fallback providers. If you are sure the server reports the size wrong, submit again to save it anyway."
+      },
+      "initiate_flow": {
+        "reconfigure": "Reconfigure Feature",
+        "user": "Setup"
+      },
+      "step": {
+        "setup_mode": {
+          "title": "Setup",
+          "description": "Choose a setup type. Basic setup enables all features with recommended defaults. Advanced setup gives you full control over each feature.{overwrite_warning}",
+          "data": {
+            "setup_mode": "Setup type"
+          }
+        },
+        "setup_status": {
+          "title": "Setup complete",
+          "description": "Setup is done.\n\n**Features enabled:** {features_enabled}{skipped_section}\n\n**Database:** {database_status}\n\n**Next steps:**\n- Run **Configure Sentinel** to enable anomaly monitoring.\n- Add an **STT Provider** for voice input.\n- Go to **Settings → Voice Assistants** to add Home Generative Agent as your voice assistant."
+        },
+        "feature_enable": {
+          "title": "Feature setup",
+          "description": "**Conversation** is always enabled. Enable or disable optional features below.",
+          "data": {
+            "camera_image_analysis": "Camera Image Analysis",
+            "conversation_summary": "Conversation Summary",
+            "embedding": "Embeddings"
+          },
+          "data_description": {
+            "embedding": "Embedding model for semantic memory and tool search. When off, the provider is chosen automatically (the Conversation provider if it supports embeddings)."
+          }
+        },
+        "feature_provider": {
+          "title": "Choose model provider",
+          "description": "Select a model provider for {feature_name}.",
+          "data": {
+            "model_provider_id": "Model provider"
+          }
+        },
+        "feature_model": {
+          "title": "{feature_name}",
+          "description": "Configure model settings for this feature. {provider_notice}",
+          "data": {
+            "model_name": "Model",
+            "fallback_provider_ids": "Fallback providers",
+            "temperature": "Temperature",
+            "keepalive_s": "Ollama keepalive (seconds or Never unload (-1))",
+            "context_size": "Ollama context size (tokens)",
+            "reasoning": "Thinking / reasoning",
+            "reasoning_budget": "Thinking budget (tokens)"
+          },
+          "data_description": {
+            "fallback_provider_ids": "Ordered list of fallback providers. The first available provider is used if the primary fails.",
+            "reasoning": "Controls model thinking for the selected chat model. Provider default leaves the server/model behavior unchanged; Off and On set it explicitly; effort levels are passed to providers that support them. Settings are remembered per model name, so switching models restores each model's configuration.",
+            "reasoning_budget": "Optional thinking-token budget for providers that support one (OpenAI-compatible servers such as llama.cpp, Gemini, Anthropic). Leave empty for the provider default."
+          }
+        },
+        "database": {
+          "title": "Database setup",
+          "description": "Enter the necessary parameters for the database.",
+          "data": {
+            "username": "Database username",
+            "password": "Database password",
+            "host": "Database host",
+            "port": "Database port (optional)",
+            "db_name": "Database name",
+            "db_params": "Database connection params (optional)"
+          }
+        },
+        "instructions": {
+          "title": "Add a model provider",
+          "description": "No model provider is configured yet. Add one from **Model Provider**."
+        }
+      }
+    }
+  },
+  "selector": {
+    "setup_mode": {
+      "options": {
+        "basic": "Basic setup",
+        "advanced": "Advanced setup"
+      }
+    },
+    "db_params": {
+      "fields": {
+        "key": {
+          "name": "Key",
+          "description": "Connection parameter name (for example: sslmode, connect_timeout)"
+        },
+        "value": {
+          "name": "Value",
+          "description": "Connection parameter value (for example: disable, 30)"
+        }
+      }
+    },
+    "stt_request_format": {
+      "options": {
+        "multipart": "Multipart upload (default)",
+        "json_base64": "JSON with base64 audio"
+      }
+    },
+    "voice_ack_timing": {
+      "options": {
+        "turn_start": "As soon as the agent starts",
+        "tool_call": "Before the first tool call"
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_config_entry": {
+      "message": "Invalid config entry provided. Got {config_entry}"
+    },
+    "pgvector_not_permitted": {
+      "message": "The pgvector extension is not enabled in PostgreSQL database {database}, and user {user} is not allowed to enable it. Enable it once as a superuser, connected to {database}: CREATE EXTENSION IF NOT EXISTS vector; then reload the integration. {user} does not need to be a superuser itself. If you already enabled pgvector, check that it was in {database}: an extension applies only to the database it was created in."
+    },
+    "pgvector_not_available": {
+      "message": "The PostgreSQL server holding database {database} does not have the pgvector extension installed. Run PostgreSQL with pgvector (the PostgreSQL with pgvector app, or an image such as pgvector/pgvector), then reload the integration."
+    },
+    "database_unreachable": {
+      "message": "Cannot reach the PostgreSQL database yet: {error}. Home Assistant will keep retrying; check that the database is running and that the Database settings (host, port, user, password, database name) are correct."
+    },
+    "database_invalid_settings": {
+      "message": "The Database settings were rejected before connecting: {error}. Fix the extra connection parameters (or other Database settings) in the Database subentry; the integration reloads when you save them."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Home Generative Agent Options",
+        "description": "Configure global behavior and prompts.",
+        "data": {
+          "face_api_url": "Face recognition API URL (optional)",
+          "prompt": "Instructions",
+          "vlm_response_language": "Camera description language (optional)",
+          "vlm_prompt_extra": "Additional camera analysis instructions (optional)",
+          "llm_hass_api": "Control Home Assistant",
+          "video_analyzer_mode": "Video analyzer mode",
+          "video_analyzer_uniqueness_enabled": "Enable perceptual-hash frame filter (dHash)",
+          "video_analyzer_event_recording_enabled": "Analyze Ring event recordings (ring-mqtt, Ring Protect)",
+          "video_analyzer_motion_camera_map": "Motion sensor → camera overrides (optional)",
+          "notify_service": "Video Analyzer Notify Service (optional)",
+          "video_analyzer_notification_cooldown_s": "Camera notification cooldown (seconds)",
+          "video_analyzer_house_notification_cooldown_s": "House notification cooldown (seconds)",
+          "face_recognition": "Enable face recognition",
+          "manage_context_with_tokens": "Context management method",
+          "max_tokens_in_context": "Max tokens in chat context",
+          "max_messages_in_context": "Max messages in chat context",
+          "critical_action_pin_enabled": "Require critical action PIN",
+          "critical_action_pin": "Critical action PIN (required to unlock/arm/open sensitive devices)",
+          "schema_first_yaml": "Schema-first JSON for YAML requests",
+          "stt_filters_section": "Speech input filters",
+          "stt_hallucination_patterns": "Ignored STT substrings",
+          "stt_hallucination_exact_patterns": "Ignored exact STT phrases",
+          "voice_tool_acknowledgement": "Spoken acknowledgement (voice only)",
+          "voice_tool_acknowledgement_timing": "When to speak the acknowledgement",
+          "tool_retrieval_limit": "Tool retrieval limit",
+          "tool_relevance_threshold": "Tool relevance threshold",
+          "tool_exclusions": "Excluded tools",
+          "tool_inclusions": "Always-included tools"
+        },
+        "data_description": {
+          "prompt": "Instruct how the LLM should respond. This can be a template.",
+          "vlm_response_language": "Language for VLM camera image descriptions, e.g. 'Czech'. Leave empty for English. The internal 'Scene unchanged.' reply always stays in English.",
+          "vlm_prompt_extra": "Extra instructions appended to the VLM camera analysis prompt, e.g. 'Ignore cars in the driveway'. They never replace the built-in rules.",
+          "video_analyzer_notification_cooldown_s": "0 turns it off. After a camera notification sounds, later ones from that camera within this many seconds (600 at most) replace the same notification quietly with the latest caption and image, instead of sounding again. With face recognition on, the first unknown person in that period still sounds. Works only with a single companion-app notify service (notify.mobile_app_...).",
+          "video_analyzer_house_notification_cooldown_s": "0 turns it off. One event seen by several cameras makes each camera notify. After a camera notification sounds, a notification from any camera within this many seconds (60 at most) still posts its own card, but quietly, and that camera then stays quiet for its camera notification cooldown, or this many seconds if longer, counted from that sound. With the camera cooldown off, every camera, including the one that sounded, is quiet for this many seconds. With face recognition on, the first unknown person in that period still sounds. Start around 15 seconds: each camera's video is analyzed separately, so one event can reach the cameras 10 to 30 seconds apart. Works only with a single companion-app notify service (notify.mobile_app_...); verified on iOS only.",
+          "schema_first_yaml": "When enabled, YAML requests are answered with strict JSON that is converted to YAML.",
+          "stt_hallucination_patterns": "One substring per line. If an STT transcript contains any entry, it is ignored before the LLM runs. Matching is case-insensitive.",
+          "stt_hallucination_exact_patterns": "One phrase per line. If the entire STT transcript equals any entry, it is ignored before the LLM runs. Matching is case-insensitive.",
+          "voice_tool_acknowledgement": "Said by a voice satellite while the agent works on a request, so a slow question is not met with silence (for example \"One moment.\"). Only on voice turns, at most once per reply; the next option sets when. Needs HGA's text-to-speech engine or another streaming one. Write it in your assistant's language. Leave empty to turn it off.",
+          "voice_tool_acknowledgement_timing": "As soon as the agent starts covers the whole wait, including a local model's time before its first word, but is also said before a reply that needs no tools (so prefer neutral wording such as \"One moment.\"). Before the first tool call is said only on turns that use tools, after the model has started.",
+          "tool_retrieval_limit": "The maximum number of tools to retrieve based on semantic similarity to the user's query.",
+          "tool_relevance_threshold": "The minimum semantic similarity score (0.0 to 1.0) required for a tool to be retrieved.",
+          "tool_exclusions": "Tools ticked here are never offered to the model and never executed, even if it asks for one by name. Leave empty to expose every tool of every selected API. Tools a server adds later are available by default.",
+          "tool_inclusions": "Tools ticked here are always offered to the model: they are appended after vector-based tool retrieval, on top of the retrieval limit. Useful for general-purpose tools, such as web search, that similarity search may not select. The model still decides whether to use them. A tool cannot be both excluded and always included.",
+          "video_analyzer_uniqueness_enabled": "Skip visually near-identical frames before VLM analysis. Warning: enabling this removes inter-frame motion context that the summary model uses to narrate movement. Only enable if a static scene generates excessive duplicates and you accept that motion continuity may be lost.",
+          "video_analyzer_event_recording_enabled": "When a ring-mqtt event_select entity publishes a signed recordingUrl with a new eventId, download the event's MP4, extract up to 8 frames with ffmpeg and analyze those instead of the retained interval snapshot, which on battery cameras can be up to 10 minutes older than the event. Needs a Ring Protect subscription (cameras without a recordingUrl keep using snapshots) and the ffmpeg binary the official Home Assistant image ships.",
+          "video_analyzer_motion_camera_map": "One override per line: binary_sensor.X_motion: camera.Y — use this when automatic resolution picks the wrong camera. Leave blank to rely on device-based and name-based resolution."
+        }
+      }
+    }
+  },
+  "issues": {
+    "database_not_configured": {
+      "title": "Home Generative Agent is running without a database",
+      "description": "This entry has no Database subentry, so it is running with in-memory storage only. Conversation history is lost on every reload or restart, long-term memory (conversation summaries, camera activity recall, alarm-arming consent) and face recognition (the person gallery) are unavailable, and the Sentinel baseline anomaly detector is off. Sentinel rules, notifications, and the audit trail keep working.\n\nThe Database subentry is created by **+ Setup** on the integration page: **Basic** creates it with the recommended defaults, and **Advanced** ends with a **Database setup** step that tests the connection before saving. This state is reached either by not running **+ Setup** after adding the integration, or by closing the Advanced wizard at that final step (the features are saved before it, so the entry still loads).\n\nTo fix it, open **Settings → Devices & services → Home Generative Agent**, click **+ Setup**, choose **Advanced**, step through the features, and complete the **Database setup** form. With the bundled PostgreSQL with pgvector app the defaults (`localhost`, port `5432`, database `ha_db`, user `ha_user`) are correct. This issue clears as soon as the entry loads with a Database subentry."
+    },
+    "pin_bypassed_by_local_intents": {
+      "title": "Critical action PIN is not protecting spoken commands",
+      "description": "Affected voice assistant pipelines: {pipelines}.\n\nThese use Home Generative Agent as their conversation agent and have **Prefer handling commands locally** enabled. Home Assistant then matches simple commands against its own built-in sentences and runs them itself, unlocking a lock included, before the agent is ever called. The agent never sees the command, so the critical action PIN cannot hold it for confirmation.\n\nTo fix it, open **Settings → Voice assistants**, edit each pipeline listed above and turn **Prefer handling commands locally** off.\n\nIf a lock or cover should never be voice-operable at all, also stop exposing it under **Settings → Voice assistants → Expose**. That is the only control that covers sentence triggers and non-agent paths as well."
+    },
+    "unknown_person_rules_inert_no_face": {
+      "title": "Sentinel's unknown-person rules cannot fire",
+      "description": "Affected rules:\n\n{rules}\n\n**Why this is showing:** face recognition is switched off, so nothing produces the result these rules need.\n\n**To turn it on:** set the face-service URL and enable face recognition in the integration's options, make sure the entry has a Database subentry (the person gallery lives there), and set a video analyzer mode — faces are only recognised while the analyzer is processing snapshots. The notice clears on the next reload once it works.\n\nThese rules trigger only on a face-recognition result saying a person was seen but not recognised, and only the face-recognition pipeline produces it. Nothing errors and nothing is logged when it is missing, and the rules still count as active on the `sentinel_health` sensor, because from Sentinel's side they simply never match.\n\nSentinel's other rules are unaffected: unlocked locks, open entries, appliance and battery checks, and the Home Assistant & network security audit.\n\n**For camera coverage without face recognition**, approve a `motion_detected_*` rule from Sentinel's rule discovery — those alert on motion while nobody is home, or at night, and need no face service.\n\nIf you meant to run without these rules, ignore this notice — it is a statement about coverage, not a fault."
+    },
+    "unknown_person_rules_inert_no_gallery": {
+      "title": "Sentinel's unknown-person rules cannot fire",
+      "description": "Affected rules:\n\n{rules}\n\n**Why this is showing:** face recognition is switched on, but this entry has no database, so there is no person gallery to recognise anyone against. Face recognition is disabled at startup as a result.\n\n**To fix it:** add a Database subentry with **+ Setup** on the integration page. Baseline anomaly detection is off for the same reason and will start working again too. The notice clears on the next reload.\n\nThese rules trigger only on a face-recognition result saying a person was seen but not recognised, and only the face-recognition pipeline produces it. Nothing errors and nothing is logged when it is missing, and the rules still count as active on the `sentinel_health` sensor, because from Sentinel's side they simply never match.\n\nSentinel's other rules are unaffected: unlocked locks, open entries, appliance and battery checks, and the Home Assistant & network security audit.\n\n**For camera coverage without face recognition**, approve a `motion_detected_*` rule from Sentinel's rule discovery — those alert on motion while nobody is home, or at night, and need no face service.\n\nIf you meant to run without these rules, ignore this notice — it is a statement about coverage, not a fault."
+    },
+    "unknown_person_rules_inert_no_analyzer": {
+      "title": "Sentinel's unknown-person rules cannot fire",
+      "description": "Affected rules:\n\n{rules}\n\n**Why this is showing:** face recognition is switched on and the database is present, but the video analyzer is turned off. Faces are only recognised while the analyzer is processing camera snapshots, so nothing ever produces the result.\n\n**To fix it:** set a video analyzer mode other than *disable* in the integration's options. The notice clears on the next reload.\n\nThese rules trigger only on a face-recognition result saying a person was seen but not recognised, and only the face-recognition pipeline produces it. Nothing errors and nothing is logged when it is missing, and the rules still count as active on the `sentinel_health` sensor, because from Sentinel's side they simply never match.\n\nSentinel's other rules are unaffected: unlocked locks, open entries, appliance and battery checks, and the Home Assistant & network security audit.\n\n**For camera coverage without face recognition**, approve a `motion_detected_*` rule from Sentinel's rule discovery — those alert on motion while nobody is home, or at night, and need no face service.\n\nIf you meant to run without these rules, ignore this notice — it is a statement about coverage, not a fault."
+    },
+    "ollama_embedding_model_missing": {
+      "title": "Ollama embedding model {model} is not installed",
+      "description": "Home Generative Agent creates embeddings on Ollama with **{model}**, but Ollama at {url} does not have that model, so embedding requests there fail. Each request then moves on to the next embedding provider in the fallback chain, if one is configured; a fallback with a different embedding model makes memory search less accurate. When that server is the primary and no other provider can embed, long-term memory search returns nothing and tool retrieval falls back to keyword matching, so the agent may say it cannot see tools or scripts you have exposed to it. On a fallback server, the chain skips it, so it gives no cover when the primary is down.\n\nTo fix it, run `ollama pull {model}` on each server listed. If Ollama is the provider of the **Embeddings** feature (**Settings → Devices & services → Home Generative Agent**), you can instead pick a model that is installed there. Then reload the integration; this issue clears on the first reload after the model is installed."
+    },
+    "ollama_embedding_dims_mismatch": {
+      "title": "Ollama embedding model {model} has the wrong vector size",
+      "description": "Home Generative Agent creates embeddings on Ollama with **{model}**, which produces {dims}-dimension vectors on {url}. The memory store was created for {expected}-dimension vectors and keeps that size, so every embedding write fails. Long-term memory search returns nothing and tool retrieval falls back to keyword matching, so the agent may say it cannot see tools or scripts you have exposed to it.\n\nTo fix it, choose an embedding model that produces {expected}-dimension vectors in the **Embeddings** feature (**Settings → Devices & services → Home Generative Agent**) and pull it on the server; the configuration docs list common Ollama embedding models by size. Then reload the integration; this issue clears on the first reload after the change."
+    },
+    "ollama_fallback_embedding_dims_mismatch": {
+      "title": "Ollama embedding fallback {model} has the wrong vector size",
+      "description": "The **Embeddings** feature falls back to Ollama at {url}, which embeds with **{model}** and produces {dims}-dimension vectors there. The memory store was created for {expected}-dimension vectors and keeps that size, so if this fallback takes over, its embedding writes fail and long-term memory search and tool retrieval stop working until the primary provider is back.\n\nIf Ollama is also the primary provider, the primary's copy of **{model}** has the right size, so that server has a different build of it: run `ollama pull {model}` there so the two match. Otherwise, remove that server from the fallback providers of the **Embeddings** feature (**Settings → Devices & services → Home Generative Agent**), since behind another primary its model is not set in that form. Then reload the integration; this issue clears on the first reload after the change."
+    }
+  }
+}

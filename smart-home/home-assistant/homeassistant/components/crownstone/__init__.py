@@ -1,0 +1,43 @@
+"""Integration for Crownstone."""
+
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
+
+from .const import DOMAIN, PLATFORMS
+from .entry_manager import CrownstoneConfigEntry, CrownstoneEntryManager
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: CrownstoneConfigEntry) -> None:
+    """Initiate setup for a Crownstone config entry."""
+    manager = CrownstoneEntryManager(hass, entry)
+
+    if not await manager.async_setup():
+        raise ConfigEntryError(
+            translation_domain=DOMAIN,
+            translation_key="authentication_failed",
+        )
+
+    entry.runtime_data = manager
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # HA specific listeners
+    entry.async_on_unload(entry.add_update_listener(async_update_listener))
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, manager.on_shutdown)
+    )
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: CrownstoneConfigEntry) -> None:
+    """Unload a config entry."""
+    entry.runtime_data.async_unload()
+
+    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
+
+
+async def async_update_listener(
+    hass: HomeAssistant, entry: CrownstoneConfigEntry
+) -> None:
+    """Handle options update."""
+    await hass.config_entries.async_reload(entry.entry_id)

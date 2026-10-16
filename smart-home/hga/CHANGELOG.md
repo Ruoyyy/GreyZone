@@ -1,0 +1,1872 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+Changes accumulate under **Unreleased** and ship in a scheduled bundle; urgent fixes release on
+their own. See [RELEASING.md](RELEASING.md).
+
+## [Unreleased]
+
+### Added
+
+- New option **House notification cooldown** (`video_analyzer_house_notification_cooldown_s`, 0 = off, up to 60 seconds, in Global Options) for the video analyzer ([#721](https://github.com/goruck/home-generative-agent/issues/721)). The camera notification cooldown works per camera, so one event seen by several cameras, such as people walking past the house, still made every camera's first notification sound a second or two apart. With the house cooldown set, a camera notification that sounds starts a short window for all cameras: notifications from other cameras inside it still post their own card, with their own description and image, but quietly. A camera made quiet this way then stays quiet for its own camera cooldown (or the house cooldown, if longer), counted from the sound that covered it; with the camera cooldown off, every camera, including the one that sounded, is quiet for the house cooldown. With face recognition on, the first Unknown Person in the window still sounds, once, whichever camera sees it. It works with the per-camera cooldown on or off, needs a single companion-app notify service (`notify.mobile_app_*`), is verified on iOS only (on Android a quiet card may still sound), and is a time window only, so two unrelated events on different cameras within it sound once. Start around 15 seconds: each camera's clip is analyzed separately, so on slower vision hardware one event reaches the cameras' notification decisions 10 to 30 seconds apart, and the reporter's setup grouped nothing at 5 seconds and every walk-past at 15; see [House notification cooldown](docs/camera-entities.md#house-notification-cooldown).
+
+- The Sentinel proposals card now follows your Home Assistant profile language: Czech when the profile is set to Czech, English otherwise (other languages fall back to English). Section titles, buttons, field labels, progress and error messages, the dedupe reasons, and the known proposal statuses are translated at display time; unknown statuses and reasons are shown as they are. Candidate titles and summaries are shown as the discovery model wrote them, untranslated, and the text pre-filled into a GitHub rule request stays English. Long candidate ids now wrap inside the card instead of overflowing a narrow panel. The browser caches the card for up to a month, so after updating, bump the query string on the card's dashboard resource URL (or hard-refresh) to see the change ([#697](https://github.com/goruck/home-generative-agent/pull/697), [#714](https://github.com/goruck/home-generative-agent/pull/714), @hruba202).
+
+### Fixed
+
+- A model fallback chain now moves on to the next provider when a provider does not have the configured model. Before, an Ollama model that was never pulled, or a model name a provider does not offer, answered with a "model not found" error that stopped the whole chain, so a fallback that would have worked was never tried, and every later call stopped at the same provider. This held for chat, camera image analysis, summarization and embeddings, and for the primary as well as the fallbacks: with the primary embedding model not pulled, long-term memory search and the tool index failed on every turn even with a working embedding fallback configured. The chain now skips such a provider, counts it toward the circuit breaker, and logs an ERROR saying the provider does not have the configured model, so a typo or an unpulled model on the primary stays visible while a fallback covers for it. Other errors, such as a rejected API key, still stop the chain. The repair issue for a missing Ollama embedding model now says a fallback takes over ([#752](https://github.com/goruck/home-generative-agent/issues/752), [#759](https://github.com/goruck/home-generative-agent/issues/759)).
+
+- Home Generative Agent no longer stays down after its database was unreachable during startup or a reload. If PostgreSQL was not up yet, for example the PostgreSQL with pgvector app starting after Home Assistant on a cold boot, or it restarted while the integration reloaded (an options save, or the automatic reload after a model provider comes back), setup failed for good and the integration stayed in "Failed to set up" until it was reloaded by hand. Setup now tells Home Assistant to retry, so it recovers on its own once the database is back: during Home Assistant startup the first retry comes once startup finishes, and after that it waits 5 seconds at first and longer each time, up to every 10 minutes. Saving corrected settings in the Database subentry reloads the integration at once instead of waiting for the next retry. The integration card shows why, using the server's own message: "Cannot reach the PostgreSQL database yet: connection failed: connection to server at …, port 5432 failed: Connection refused" (or "password authentication failed …" for a wrong password, which is retried the same way, since PostgreSQL's messages can be translated and a database that is still starting up reads like a refusal). Before, the log showed only a pool timeout, 30 seconds later, whatever the cause. An error that is not about reaching the database, such as a failed schema migration or an index pgvector cannot build, still fails setup as before, and an unknown option in the Database subentry's extra connection parameters now fails setup with its own message. A database user name or password containing `@`, `/`, `:`, `?`, `#` or `%` now works: it was put into the connection address unencoded, so the connection failed and part of the password could show in the error ([#748](https://github.com/goruck/home-generative-agent/issues/748)).
+
+- A level-increase PIN entered in Sentinel **Basic** setup is now enforced. Before, it was checked and stored, but Basic setup left "Require PIN for autonomy level increases" off, so `sentinel_set_autonomy_level` raised the autonomy level, including to the levels that let Sentinel act on its own, without asking for it, and nothing was logged. Saving a PIN in Basic or Advanced setup now turns the requirement on. A PIN stored by an earlier version is enforced after the update with nothing to redo: re-running Basic setup keeps it, and the Advanced form shows the checkbox as on. To remove the PIN, open Advanced setup, uncheck the box and leave the PIN field blank. Three related gaps are closed too. With the PIN on, asking for the level you already have no longer restarts its timer, so a raised level now always runs out after `sentinel_runtime_override_ttl_minutes` (60 by default) unless renewed with the PIN; lowering the level still needs no PIN. A raised level now ends when the integration reloads, for example when Sentinel options are saved, so turning the PIN on also ends a level raised before it existed; a level you lowered is kept until it runs out. Returning to your configured level after lowering it, and lowering the level with an out-of-date PIN in the call, no longer need the current PIN. Advanced setup no longer saves "Require PIN for autonomy level increases" with no PIN stored, which refused every increase: it now asks for the PIN, including when the form comes back after an error in another field with the PIN box cleared (a setup already saved that way now gets an error naming the fix, "Sentinel requires a PIN to raise the autonomy level, but none is set. Set one in Sentinel setup (Advanced), or turn off 'Require PIN for autonomy level increases'.", instead of asking the caller for a PIN) ([#762](https://github.com/goruck/home-generative-agent/issues/762)).
+
+- Setup on your own PostgreSQL server no longer fails with only a raw PostgreSQL error when pgvector is not ready. HGA needs the `vector` extension enabled in its own database, and an extension enabled in a different database does not count (CloudNativePG's `postInitSQL` runs in the `postgres` database, not yours). Before this, setup failed with `permission denied to create extension "vector"`, or with `type "vector" does not exist` when no embedding model was configured. Setup now checks first and enables the extension itself when its user is allowed to. Otherwise it fails with a message on the integration card that names the database and gives the `CREATE EXTENSION IF NOT EXISTS vector;` to run there once as a superuser; the integration's user does not need to be a superuser itself. A server without pgvector at all gets its own message. The new [Using your own PostgreSQL](docs/installation.md#using-your-own-postgresql) section covers both ([#756](https://github.com/goruck/home-generative-agent/issues/756)).
+
+- The agent could not use your exposed scripts, or any tool past the first few, while its tool index was unavailable, and an Ollama embedding model that was never pulled went unreported. Without working embeddings HGA cannot rank tools by meaning, and its fallback then bound the first 5 tools (the retrieval limit) in the order Home Assistant lists them, whatever you asked; Home Assistant lists scripts after its built-in tools, so the model said it had no access to them. The fallback now ranks every available tool by the words its name and description share with your request, so "run the door history script" finds that script, while a request to control something still keeps three of the five slots for control tools such as `HassTurnOn`; the log line now reads `Tool retrieval using keyword-ranked fallback` and says how many tools matched (it used to say "keyword-filtered", but nothing was filtered). The most common cause, an Ollama embedding model that is not installed on the server, is now caught. Saving the Embeddings feature with an Ollama provider checks the model against that server and any Ollama fallback servers, and shows an error naming the `ollama pull` command (names are compared the way Ollama resolves them, and submitting the same name again saves it anyway). A startup where any reachable Ollama server that embeds, fallbacks included, lacks the model raises a repair issue under **Settings → System → Repairs** naming the server; it clears on the first reload after the model is pulled. An Ollama embedding model of the wrong vector size fails the same quiet way, since the memory store keeps the vector size it was created with (1024 by default; `nomic-embed-text` produces 768): the form now reads both sizes and refuses a mismatch (submitting again overrides it), and startup raises a repair issue for a wrong-size primary and a separate one for a wrong-size Ollama fallback ([#757](https://github.com/goruck/home-generative-agent/issues/757), reported in #755).
+
+- Sentinel pushes about an open door or window now name it in the subtitle, for example "Breakfast Nook Center Right Window open" (Czech: "Breakfast Nook Center Right Window: otevřeno"), instead of "Open entry while away". The push body is often the model's explanation, and it could leave the device out: on one install, two pushes 24 minutes apart about two windows in the same room read "the window in the breakfast nook", so the second looked like a duplicate. This covers the built-in open-entry-while-away rule and rules approved from the open-entry templates (open entry while away, when home, or at night, and any window open at night while away). The name is the device's friendly name, with control and invisible characters removed and capped at 64 characters, and it is used only for a door, window or cover, so an approved rule that picked a lock or a window heater by its name never calls it "open". The "…open, alarm disarmed" subtitle now uses the friendly name too, and the "open for 3 h" subtitle of a rule approved from the "in a state too long" template now says "open" only for a door, window or cover and "unlocked" only for a lock; a motion sensor that has been on for 3 hours reads "unchanged for 3 h" ([#729](https://github.com/goruck/home-generative-agent/issues/729)).
+
+- Sentinel no longer re-alerts a standing condition every 30 minutes. A rule that fires once something has been in a state too long (for example, a lock unlocked for more than 2 hours, approved from discovery) gave its alert a new identity on every check, because the identity included the elapsed time. So the "already alerted, waiting for your response" guard, which holds a repeat for 4 hours (`sentinel_pending_prompt_ttl_minutes`), never matched it. Each time the 30-minute cooldown ran out, it pushed again, and because it was grouped with related alerts on the same device, the push often repeated one of those instead. On one install an unlocked garage door lock pushed every 30 minutes for about 9 hours. The identity now changes only when the condition starts again. When related findings are grouped into one push, the push now shows a finding that is actually due, the most severe one first, rather than the most confident one even if it was already sent or held back, so a confident low-severity alert no longer hides a high-severity one in the same group. Only the finding the push shows waits out the 4-hour guard; a related finding it did not show becomes due again after its cooldown and is shown next, unless a more severe one in the group is due again, instead of staying hidden behind its partner for 4 hours. The same identity fix applies to rules that fire when a sensor has stopped reporting for too long. Replaying three days of one install's alerts removes about a fifth of the pushes; most of the rest are new events, such as a camera sighting or a door opening (#723).
+
+- Sentinel no longer sends a push for each finding in a large group, one after another. When related findings are grouped into one push, the push showed only one of them, and since the #723 fix each other finding came due again after its 30-minute cooldown and got its own push. On one install, with nobody home and five windows open, a group of 15–17 findings sent 10 pushes in two hours, each about a different window. The push now ends with a line naming the devices of the group's other due findings, for example "Also: Kitchen Window, Landing Window +2 more" (Czech: "Také: …"), and every finding it names waits out the same 4-hour "already alerted" hold as the shown one. The line has its own 120-character budget, so the alert text above it is never cut, and a push carrying it is never held back for the burst summary. A finding is named only when it is the same type of finding as the shown one, all its own devices are on the line (a device the shown finding also has, such as the alarm panel, is not repeated), no other device in the home shares its name, it goes to the same phone as the shown finding (per-area routing), and Sentinel would not act on it automatically. Any other finding still comes due on its own and gets its own push, so nothing is hidden: a stranger on camera or an unlocked lock grouped with an open door is never reduced to a device name. Findings about the same door or window as the shown one are folded in by their condition, for example "Also: Garage and Play Room Windows (open while home, alarm disarmed, open too long)" when they come due in the same run; this covers the open-entry, alarm-disarmed-with-open-entry and open-too-long rules, and any other approved rule on that window still gets its own push. Each rule still keeps its own reminder clock, so a window that stays open all night can still get a push from each rule at a different time ([#736](https://github.com/goruck/home-generative-agent/issues/736)). The buttons still act on the shown finding only. A response to a grouped push is now recorded on the audit record of the push it answered, not on a later push that showed a different finding from the same group (#727).
+
+- Sentinel pushes from a rule approved from discovery no longer show a bare number as their subtitle (for example "1" for a rule named `candidate_1`). The rule's subtitle came from its internal name with the `candidate_` prefix removed, and some approved rules have nothing else in their name. Rules built on the "in a state too long" template (such as a window open for over 2 hours) now name the device, its state and how long, for example "Breakfast Nook Side Right Window open for 3 h" or "Garage Door Lock unlocked for 2 h" (Czech: "…: otevřeno 3 h", "…: odemčeno 2 h"; other states read "unchanged for", "beze změny"), and use "Unchanged too long" (Czech: "Příliš dlouho beze změny") in the batch summary and snooze confirmation, rules built on the night-motion-while-disarmed template read "Motion at night, alarm disarmed" (Czech: "Pohyb v noci při vypnutém alarmu"), and any other rule whose name leaves no words reads "Sentinel alert" (Czech: "Upozornění Sentinelu"). These pushes became visible once grouped alerts started showing the finding that is due (#723).
+
+- Sentinel no longer logs "Audit store at capacity ... Consider increasing audit_hot_max_records" as a warning on every finding. A home that gets more alerts than the audit store holds (500 by default) fills it with notified findings, and from then on dropping the oldest one is normal, so this is now one INFO line. The audit store is also no longer rewritten in full on every finding: on a busy home it is several megabytes, so this was about 2 GB of writes a day, which wears an SD card or SSD. Findings are now written within 15 seconds of the first unsaved one, so a burst shares one write; a record of an action Sentinel took and your responses to alerts are still written immediately, and records of actions taken are kept over plain notifications when the store is full. A push the notifier dropped as a repeat of the same alert within its own cooldown is now recorded as `notifier_duplicate` rather than as having reached you, so the daily digest and the Sentinel health sensor's notification counts no longer include it.
+
+- The agent could read the history of devices you had hidden from Assist. Its history lookup searched every entity by name, so anyone at a voice satellite could ask, for example, when a person tracker last changed or when an unexposed lock was opened, as long as they knew the device's name. History questions now resolve only entities exposed to Assist, and a hidden device gets the same "not found" answer as one that does not exist. The agent's entity-id lookup no longer "corrects" a guessed id to a hidden device's real id either. If you ask about the history of a sensor Home Assistant does not expose by default (a power meter, a battery level, a leak or smoke sensor), expose it under **Settings → Voice assistants → Expose** (#716).
+
+- History answers could miss events by several hours. The history tool asked the model for times with a UTC offset, but the model only ever sees the local clock time and a timezone name, so it guessed the offset, and on one install it labelled local times as UTC in 4 of 14 calls. A question such as "did I leave this morning?" then searched from 5 PM the previous day to just before 7 AM and answered that nobody had left. History times are now read as the home's local time, and any offset the model adds is ignored, which also keeps winter (standard-time) windows from shifting by an hour.
+
+- The agent no longer answers a history question with "I don't have access to the history" when tool retrieval left the history tool out. A question phrased around the device ("When did the mudroom lights turn off today?") ranked the turn-off and date/time tools above `get_entity_history`, and nothing told the model its tools are a per-request subset, so it reported a missing capability. Questions about past states ("when did", "how many times", "how long has", "last time", "history", a span like "in the last hour" or "past 24 hours", or a past-tense question with a time reference like "today", "yesterday", "last week" or "at 8 pm") now always bind the history tool, on top of the retrieval limit, and so does the follow-up turn ("And yesterday?"). For any other retrieval miss the system prompt now tells the model its tools are a subset, so it says it could not find a suitable tool and suggests rephrasing; an error or empty result from a tool it did call is handled as before (retried when it can be corrected, otherwise reported). The intent patterns are English-only; other languages rely on ranking and the new prompt line (#715).
+
+- Sentinel pushes for a low-battery rule approved from discovery now carry a readable subtitle, "Low battery" (Czech: "Slabá baterie"), in place of the rule's internal id ("V1 subject sensor predicate low battery night any"). The `low_battery_sensors` template had no curated label, so the subtitle, the batch summary, the snooze confirmation, and the explanation text used as the push body when the model call fails fell back to the slugified rule id ([#696](https://github.com/goruck/home-generative-agent/pull/696), @hruba202).
+
+## [3.43.4] - 2026-10-10
+
+### Fixed
+
+- A model provider that failed its health check when Home Assistant started stayed disabled until the integration was reloaded. On a busy boot the checks' 2-second timeouts can fire late and together, so working cloud providers were marked down, and with the primary (for example a local Ollama) really down, every turn answered "I'm sorry, I was unable to respond in time" for the whole session. A provider that a model category uses (as primary or fallback) and that failed its check is now checked again once Home Assistant has started, then after 30 seconds, 1, 2 and 5 minutes, and every 5 minutes while it stays down; when it answers, the integration reloads itself to use it. This also switches back to a primary that comes back online later, which used to need a manual reload. These reloads happen at most once every 5 minutes, backing off to once an hour if a reload does not fix the provider, so a provider that answers only some of the time cannot reload the integration in a loop. A provider whose key is rejected is checked once more and then left alone. The health-check warnings now name the cause, such as `TimeoutError` or `HTTP 503`, instead of ending in an empty message ([#711](https://github.com/goruck/home-generative-agent/issues/711)).
+
+- An Ollama model provider used only as a fallback, at an address other than the default `http://localhost:11434`, was never checked or set up, so its fallback did nothing: if the primary (for example OpenAI or Gemini) failed, there was nothing to fall back to, and nothing was logged above debug level. Every Ollama provider in a fallback chain is now health-checked at its own address and used for chat, vision, summarization and embeddings like a primary, and one that is down at startup is re-checked like any other provider. A fallback Ollama server embeds with the configured Ollama embedding model, so its vectors stay comparable with the ones already stored. The startup Ollama diagnostics (loaded models, shared servers) now cover only servers a model category uses and that answered, instead of probing the unused `localhost` default when Ollama is only a fallback (its health check still runs and logs a warning, as before); Ollama addresses in these and other log lines no longer show a username or password; and a malformed saved Ollama address fails its health check instead of stopping the integration from starting ([#749](https://github.com/goruck/home-generative-agent/issues/749)).
+
+## [3.43.3] - 2026-10-08
+
+### Fixed
+
+- The integration failed to start on Home Assistant 2026.10.0 with "Setup failed for custom integration 'home_generative_agent': Requirements for home_generative_agent not found: ['langchain-openai==1.0.3']". Home Assistant 2026.10 moved to `openai` 3.10.0, and the pinned `langchain-openai` 1.0.3 only accepts `openai` below 3, so the requirements could not be installed. This blocked every install, including Ollama-only ones that never use OpenAI. `langchain-openai` is now 1.6.7, which accepts `openai` 2.45 and later. Both providers built on it (OpenAI and OpenAI-compatible) stay on the Chat Completions API they used before; langchain-openai 1.6 would otherwise switch some model names to the Responses API on its own. **The minimum Home Assistant version is now 2026.8.0.** Home Assistant 2026.3 to 2026.7 pin `openai` 2.21, and no `langchain-openai` release accepts both that and the `openai` 3 that 2026.10 requires, so HACS no longer offers this update on those versions; they keep 3.43.2 until Home Assistant is updated ([#735](https://github.com/goruck/home-generative-agent/issues/735)).
+
+- On Home Assistant 2026.10 the agent could not use any Home Assistant tool: every device command and state lookup failed with "Object of type ToolResult is not JSON serializable", so chat and voice could neither read nor control the home. Home Assistant 2026.10 returns tool results wrapped in a new `ToolResult` object, and also renamed the chat log's tool result field. With **schema-first YAML** turned on, every turn that used a tool failed after the device had already acted. A critical action confirmed with the PIN (unlocking a lock, disarming an alarm) ran and then replied with an error instead of confirming. Both are fixed, and the integration reads and writes tool results the way each Home Assistant version expects. A PIN-confirmed action that a tool reports as failed is now reported as failed and stays pending so it can be retried, a failed live-context lookup is no longer reported as "no open windows", and tool calls rejected by routing policy show as errors in **Show Details** ([#735](https://github.com/goruck/home-generative-agent/issues/735)).
+
+## [3.43.2] - 2026-10-03
+
+### Fixed
+
+- A fallback chain that mixes providers failed the turn when it failed over, instead of answering from the fallback. With a local primary (Ollama) and Gemini as the fallback, an unreachable primary produced "Invalid argument provided to Gemini: 400 ... any_of[0].required: only allowed for OBJECT type": tool schemas were shaped for the primary provider only and the same list was handed to every provider in the chain. The same happened, along with a log warning per tool ("Key 'additionalProperties' is not supported in schema"), when the primary was already down at startup and the fallback was selected at setup. Each provider now gets tool schemas shaped for it (Gemini, OpenAI, OpenAI-compatible and Anthropic fallbacks are all covered). The safety net that drops a tool a provider rejects also now recognises Gemini's real error text, which it previously missed ([#712](https://github.com/goruck/home-generative-agent/pull/712)).
+
+## [3.43.1] - 2026-10-03
+
+### Fixed
+
+- Reloading the integration could hang and leave every HGA entity unavailable until Home Assistant was restarted: the conversation agent, speech-to-text and text-to-speech all showed as missing, an Assist pipeline listed its conversation agent as `__NONE_OPTION__`, and a voice satellite reported `stt-provider-missing`. Saving the Sentinel options was the easiest way to hit it, because that reloads the entry twice in a row and the second reload lands while the first one's tool index is still being written. The unload cancels that write and then waited, with no time limit, for the database store's background worker to stop; when the cancel reached the worker in the middle of a database batch it could come out as an ordinary error, which the worker catches and survives, so the wait never ended and the entry stayed in "unloading". The unload now repeats the cancel and gives up on a task that will not stop after 10 seconds (two tasks are cancelled this way, so about 20 seconds at worst), with a warning in the log that names the task. Regression in 3.43.0. ([#710](https://github.com/goruck/home-generative-agent/pull/710))
+
+## [3.43.0] - 2026-10-03
+
+### Added
+
+- New option **Camera notification cooldown** (`video_analyzer_notification_cooldown_s`, 0 = off, up to 600 seconds, in Global Options) for the video analyzer ([#672](https://github.com/goruck/home-generative-agent/issues/672)). A subject that lingers in view, or a camera whose motion sensor re-triggers, could produce several near-identical notifications within a minute, because the vision model words the same scene differently each time and caption deduplication compares wording. With the cooldown set, the first notification from a camera sounds and later ones from that camera within the window replace the same notification card quietly with the latest description and image. With face recognition on, the first Unknown Person reported inside the window still sounds, once; nothing else does, and without face recognition everything inside the window is a quiet update. After an Unknown Person notification, a later one that does not show an unknown person goes to a second quiet card instead of replacing it. Each camera has its own fixed-length window; analysis, sensors, events and stored results are unchanged. It needs a single companion-app notify service (`notify.mobile_app_*`), is verified on iOS and unverified on Android; see [Notification cooldown](docs/camera-entities.md#notification-cooldown) for the limits.
+- New option **Spoken acknowledgement (voice only)** (`voice_tool_acknowledgement`, empty = off, in Global Options): on a voice turn, the text you set (for example "Let me check.") is spoken as soon as the agent starts working on a request, so a question that takes the agent a few seconds is not met with silence ([#671](https://github.com/goruck/home-generative-agent/issues/671), suggested by @andymcmanus). A second option, **When to speak the acknowledgement**, picks the moment: *As soon as the agent starts* (the default) is heard about a second after the request reaches the agent, ahead of the whole wait, including a local model's seconds of reading its input before its first word (@andymcmanus measured 6 to 8 s on qwen3:8b, which the later moment left uncovered), but it is also said before a reply that needs no tools, so neutral wording such as "One moment." suits it; *Before the first tool call* is said only on turns that use tools, and only when the model has not already said something itself. Either way only on turns from an Assist satellite (a typed chat, or a typed pipeline run that names a device, gets none), and at most once per reply. Home Assistant's pipeline starts speaking a reply only once it passes 60 characters or meets a tool call, so the early phrase is padded with trailing spaces the speech engine drops; a phrase without a closing sentence mark gets a full stop, because a streaming TTS engine holds text back until a sentence ends. It is shown in the chat log with the tool call and never sent back to the model. Needs a streaming text-to-speech engine, such as HGA's own. Known behavior: on a Home Assistant Voice PE the early moment can produce a brief click during the wait, from the device rather than the audio (clicks on 4 of 8 turns in a trial, none with *Before the first tool call*); choose that timing to avoid it.
+- HGA's text-to-speech engine now streams: in an Assist pipeline it receives the agent's reply while the agent is still writing it and speaks it a sentence at a time, so a voice satellite starts talking after the first sentence instead of staying silent until the whole reply is done ([#671](https://github.com/goruck/home-generative-agent/issues/671)). The first sentence is synthesized on its own, and a finished sentence followed by a pause of 0.4 s — the agent stopping to call a tool — is spoken during the pause rather than held until the answer; later sentences are batched into one request per gap, and the pieces are sent as one WAV stream, which Home Assistant converts for the satellite as before. The first piece is padded with a moment of silence: Home Assistant's converter passes nothing on until 64 KB of audio has arrived, which a short first sentence in mp3 took about 8 seconds of speech to reach, so a Voice PE heard nothing and gave up after 2 s. While the agent is still working between sentences, the stream is kept flowing with silence paced to real time (never more than 0.3 s ahead): and the first sentence always ends in at least a quarter second of silence, because Home Assistant's converter holds back the last ~50 ms of audio while it waits for more: without the silence, the tail of a long acknowledgement ("…se" of "please") played seconds later, just before the answer. A message that arrives whole (`tts.speak`, announcements, a reply the pipeline already has in full) is still one request in the preferred format. If a turn fails and the pipeline never ends its text, synthesis gives up after five minutes without text. Home Assistant's pipeline starts streaming once a reply passes about 60 characters or when the agent writes text before a tool call; shorter replies are spoken whole, as before. New dependency: `sentence-stream` (the sentence splitter Home Assistant's own ElevenLabs integration uses).
+- New option **Analyze Ring event recordings** (`video_analyzer_event_recording_enabled`, off by default, in Global Options): when a ring-mqtt `select.*_event_select` entity publishes a new `eventId` together with a signed `recordingUrl` (Ring Protect), the video analyzer downloads the event's MP4, extracts one frame per second with ffmpeg, keeps up to 8 spread across the clip, and analyzes those in place of the retained interval snapshot — which on battery Ring cameras can be up to 10 minutes older than the event, so a capture window there previously could not show the event at all ([#491](https://github.com/goruck/home-generative-agent/issues/491); availability measured by @andymcmanus at 0.4–1.1 s after the `eventId` change). Clip frames are stamped before the trigger, so they order ahead of the snapshots the window captures afterwards, which still join the batch unless they repeat a frame the clip displaced (a battery camera's frozen snapshot must not ride along as if current — @andymcmanus's field report of a stale person blended into a passing car's clip). A window whose recording is still downloading holds its flush for up to 20 s, so a battery camera's event is analyzed and notified once, from the clip, rather than first from the stale snapshot; a clip that lands later still is analyzed on its own. Cameras without a `recordingUrl` keep the snapshot behavior. Needs the ffmpeg binary the official Home Assistant image ships; without it the analyzer logs one warning and keeps using snapshots. The URL and event id come over MQTT and are not trusted: https-only, public hostnames only, redirects followed only to a subdomain of the same host (Ring's signed URL answers 302 to one), a 64 MB download cap, a three-minute decode cap, and no attribute ever names a path. Retries for about 15 s when the recording is not yet fetchable, bounds each ingest at three minutes and three in flight per camera, warns at most hourly per camera on failure, and reports `recording_frames`, `recording_failures`, and `replaced_by_recording` in the hourly metrics. See [Ring cameras via ring-mqtt](docs/camera-entities.md#ring-cameras-via-ring-mqtt).
+- Sentinel rule discovery can now propose rules over the network ([network security plan](docs/network-security-plan.md), step 10): a device connected when it should not be (`network_client_present_when`, for example a device on the network while nobody is home), a device missing when it should be there (`network_client_absent_when`), and a router setting at a value you do not want (`network_posture_equals`, such as UPnP or the guest Wi-Fi turned on). The discovery model sees only a pseudonymized network section: each device's key, the name Home Assistant shows, whether it is connected, the guest flag, and the router's boolean settings. Proposals appear on the proposals card like any other, and an approved rule addresses the device by its pseudonymized key, so it survives a rename and stores no address.
+- `network_client_usage_anomaly`: the Home Assistant security audit reports a connected device that has moved far more data today than it usually has by this hour, upload at medium (a device sending a lot is the shape of a compromise), download at low ([network security plan](docs/network-security-plan.md), step 10). "Usual" is the device's own hourly baseline, so it needs baseline collection on and a few days of samples, plus per-device traffic from the router: with the [eero](https://github.com/schmittx/home-assistant-eero) integration, select **Data Usage (Day)** for clients under Activity in its options; the flow shows that dropdown only when at least one client is named in the clients picker of the previous step, and that client then loses its eero entities but stays visible to Sentinel, which reads eero's client list directly; the docs' *Setting up eero* note walks through it (until then the audit lists the check as not run and says so). A device is reported when its traffic exceeds its usual by 300% and by at least 250 MB, so an idle device's few megabytes never read as a multiple. Each device and direction is its own finding with a one-day cooldown on that device, so one device's alert never hides another's. The per-device traffic counters (keyed by the pseudonymized device key, never an address) are stored as baselines next to the entities without the per-entity establishment notices or weekly rows, expire 30 days after a device was last seen, stay out of the health sensor's baseline counts, and can be reset one device at a time with `sentinel_reset_baseline`. The sensors a router integration creates per client (eero's rate, signal, and traffic sensors) are no longer baselined as entities, so enabling the Activity option does not produce a "Baseline established" notice per device; their rows are removed once.
+- New Sentinel option **Enable LLM triage of findings** (`sentinel_triage_enabled`, off by default) and its **Triage timeout** setting, both in Sentinel → Configure → Advanced. Triage has been in the engine since v3.7 but had no switch anywhere in the UI, so it was unreachable on every install; anyone who found the option name in the docs had no way to turn it on. Turned on, each finding gets one extra call to your chat model that may suppress a low-value alert before it is sent. The model can only suppress or pass a finding — it never alters, creates, or acts on one — it is shown no entity states, area names, or evidence text, and any error or timeout sends the finding anyway. Needs a configured chat model and autonomy level 1 or higher. ([#262](https://github.com/goruck/home-generative-agent/issues/262))
+- New Sentinel option **Share security audit details with the chat model** (`sentinel_network_audit_share_details`, on by default, so nothing changes until you turn it off). Off, the `audit_home_security` tool gives the conversation model only a deterministic digest: how many findings at each severity, each finding's fixed title ("UPnP enabled on router"), which checks ran, and why others could not. Nothing in the digest is copied from your home and no model writes any of it, so from then on an audit hands the chat provider no device, add-on, token, or automation names (a conversation that already received details keeps them in its memory, so start a new one after turning the option off). When a signed-in administrator asks, the full report is posted as a persistent notification, "Security audit report", replaced on each audit, and the agent points you to it; when anyone else asks (a voice satellite, a non-admin account) nothing is posted and the agent says an administrator can get the details. If checks ran on incomplete data, the digest says how many such notes the full report holds rather than claiming a clean bill. Meant for a cloud conversation model, or a voice satellite guests can reach. This replaces the local-model override the [network security plan](docs/network-security-plan.md) described for step 9: that design passed a model-written narrative of the full audit to the chat model, which could not guarantee what stayed local. The `run_network_audit` service is unchanged and always returns the full report.
+- `network_guest_client_present` (medium): the Home Assistant security audit reports a device on your guest Wi-Fi that you never trusted when it is connected while nobody is home ([network security plan](docs/network-security-plan.md), step 7). Guests on the guest network while someone is home are what the network is for, day or night, so nothing is reported then; a home with no `person` entities is never treated as empty, and neither is one whose presence trackers are `unknown` or `unavailable`. Devices you parked on the guest network on purpose were trusted when the device inventory was established, and a visitor's phone stops being reported once you tap **Trust device** on the push (offered when the alert names a single device, so one tap never trusts a device the push did not show), so what is left is a device that was announced when it joined, was never vouched for, and keeps coming back. A device's first day belongs to `network_unknown_device_joined`, so one arrival never pushes twice; at most one alert a day. Needs a router integration that says which clients are on the guest network (the [eero](https://github.com/schmittx/home-assistant-eero) integration today); connected clients that come from a source that does not say are counted in the audit's notes as not checked. `network_unknown_device_joined` now also says when a new device joined over the guest Wi-Fi.
+- Four router settings checks for the Home Assistant security audit, read from the [eero](https://github.com/schmittx/home-assistant-eero) integration today ([network security plan](docs/network-security-plan.md), step 7). Each is a standing condition reported at most once a day:
+  - `network_guest_network_idle` (low): the guest Wi-Fi is on and no guest has connected for `sentinel_network_guest_idle_days` (default 7) days. The idle clock is remembered across restarts and restarts whenever a guest connects or the network is turned off.
+  - `network_wpa3_disabled` (low, advisory): WPA3 is off at the router.
+  - `network_protection_disabled` (medium): the router's malware and threat blocking is off. Ad blocking alone being off is not reported.
+  - `network_ddns_enabled` (low, informational): dynamic DNS gives the home a fixed public name.
+  The last two are eero Plus features and are audited only when Plus is active, so nobody is told to turn on something they cannot.
+- The security audit now reads the [eero](https://github.com/schmittx/home-assistant-eero) integration's own client list and settings directly, so a device that joins your network is seen within one eero poll (about two minutes) instead of only after the integration is reloaded, and the client filters in eero's setup no longer matter. The read touches an explicit allowlist of the integration's data and never its Wi-Fi or guest passwords or Thread keys; if the integration's objects change, the audit falls back to eero's device trackers and says so in its notes. ([network security plan](docs/network-security-plan.md), step 7)
+- The Home Assistant security audit now watches the devices on your network when a router integration is set up ([network security plan](docs/network-security-plan.md), step 7). Any `device_tracker` that reports `source_type: router` counts (FRITZ!Box, UniFi, eero, ASUSWRT, Nmap, …), so no new integration is needed beyond the one you already have. New Sentinel rule `network_unknown_device_joined` (medium; high while nobody is home or at night) reports a client the device inventory had not seen, once it has been known for a grace period (`sentinel_network_unknown_device_grace_min`, default 5 minutes); a device that has since left is still reported, marked "not connected now", because a visitor that came and went is exactly what you want to hear about. The push carries a **Trust device** button; a client whose MAC belongs to a Home Assistant device that a non-router integration set up (a Shelly plug, a printer) is trusted automatically, and a phone's rotated random address on a device whose name is already trusted is reported once at low severity. The first run after the router is seen records its current clients as trusted with one notification, like the radio inventory. Clients are recorded and reported by a per-install pseudonym of their MAC; the inventory, the findings, and anything a language model sees carry no MAC or IP address (a client a router names by its address is shown as "device 3fa2c1b0") and never a client's DHCP hostname, a client the router did not report is kept for 30 days so an integration reload cannot turn your devices into new ones, and the trust services accept inventory keys (`device_key`) for clients that have no Home Assistant device.
+- The [eero](https://github.com/schmittx/home-assistant-eero) integration's network settings are read as router posture: its UPnP switch now decides `network_upnp_enabled` (outranking the UPnP/IGD inference, and able to say UPnP is off), its public-IP sensor feeds `network_public_ip_changed`, and its WPA3, guest-network, IPv6, dynamic-DNS, advanced-security, and ad-blocking switches plus guest-client count and daily threat count enter the audit's capabilities for the guest, WPA3, protection, and DDNS checks that follow. eero Plus features simply show as not run on other accounts. One eero fact worth knowing: it registers a device tracker for a client only when it is set up or reloaded, which is why the audit reads its client list directly (see above) and mentions the tracker limit only when that read fails.
+- Sentinel's model calls no longer see network addresses. Everything the explainer, triage, and rule discovery are shown, and everything the `audit_home_security` tool returns to the chat model, now passes a redaction gate first ([network security plan](docs/network-security-plan.md), step 8): fields holding a MAC, IP, Bluetooth, or Zigbee address are dropped, a network client's hostname is replaced by its manufacturer and pseudonymized key, and an address embedded in a sentence becomes `[mac]`, `[lan ip]`, or `[public ip]` (a bare one inside a name advertised on the LAN, such as `Sonos-7828CA123456`, included), while a name under a local suffix such as `nas.local` becomes `[hostname]`. Device names that carry no address (discovery titles, gateway names) still reach the model, labelled as data, as before. Notifications and the `run_network_audit` service response keep the real values, since they are for you rather than a model; entities you expose to Assist are shown to the conversation model as Home Assistant shows them. This lands ahead of the router adapters that will fill the client list, so none of them can leak an address.
+- The Home Assistant security audit now reads the router's UPnP posture, the first router-class adapter of the [network security plan](docs/network-security-plan.md) (step 7). No router integration is needed: Home Assistant already listens for UPnP gateway announcements on every install, and that announcement is the proof. Three new Sentinel rules:
+  - `network_upnp_enabled` (medium, once a day) reports a router that advertises UPnP, which lets any device on the LAN open ports to the internet unasked unless the router restricts it. Evidence is the SSDP discovery cache, a set-up [UPnP/IGD integration](https://www.home-assistant.io/integrations/upnp) with live entities, or (only when the cache cannot be read) a pending UPnP/IGD discovery; when none is seen the check is listed as not run rather than read as "UPnP is off", since Home Assistant may be on another network segment.
+  - `network_public_ip_changed` (low) notes when the home's public IP address changed since the previous run, for anyone who relies on dynamic DNS, a VPN endpoint, or a port forward by address. Needs the UPnP/IGD integration. The address is pseudonymized before it enters the snapshot.
+  - `network_upnp_port_mapping_added` (medium) reports that the router has more UPnP port mappings open than on the previous run, meaning a device asked to be reachable from the internet. Needs the UPnP/IGD integration's port-mapping count sensor, which is disabled by default; the audit names the sensor to enable.
+- The two change checks compare against the previous run's values, which are kept in the Sentinel device inventory file together with the sensor they were read from, so a change across a Home Assistant restart is still seen and a value from one gateway is never compared with another's. A change whose alert a cooldown or quiet hours held back is reported once the alert can go out.
+- Sentinel persistent notifications for the Home Assistant & network security family now escape Markdown in their text, so a device name advertised on the LAN that is shaped like a link or HTML renders as plain text in the Home Assistant UI. Mobile pushes were already plain text.
+
+### Changed
+
+- Caption deduplication in `notify_on_anomaly` mode now counts the 30-minute window from the last caption that was **sent as a notification**, not from the last caption stored. Each withheld caption used to restart the window for the next, so a subject that stayed in view could produce one notification and then none for as long as similar captions kept arriving; such a scene now notifies again once 30 minutes have passed since its last notification (`reason=renotify` in the debug log). A caption whose notification had no notify service to go to does not count, and neither does a quiet card update sent during a notification cooldown. A caption from a batch in which face recognition saw an Unknown Person is withheld only by an earlier notification that was also for an Unknown Person, so a resident's caption cannot silence a stranger's (before, the closest match decided, whoever it showed). New captions are stored with `notified` and `unknown_person` flags; captions stored before the upgrade count as notified (the recent-caption comparison does not read them, so for the first 30 minutes after the upgrade a repeat can notify once more). Static and empty-scene captions are unaffected and stay withheld. See [Caption deduplication](docs/camera-entities.md#caption-deduplication).
+- Four runtime requirements are now short version ranges instead of exact pins: `aiofiles>=25.1.0`, `ollama>=0.6.1,<0.7`, `anthropic>=0.125.0,<0.126` and `sentence-stream>=1.3.0,<1.4`. Home Assistant's validator (Hassfest) began refusing exact pins on packages Home Assistant itself pins, and an `ollama` pin that excludes the version Home Assistant's own Ollama integration uses (0.6.2). The caps keep a fresh install from drifting to a new minor release, which is what the `anthropic` pin was for. Nothing changes for an existing install: the versions already installed satisfy the ranges.
+- Releases now bundle several changes instead of following every merge, so updates arrive on a
+  monthly cadence rather than most days. Fixes for anything broken in the wild — regressions,
+  Home Assistant compatibility breaks, security and safety failures — still ship the moment
+  they're ready. If you want to test a fix before it reaches a stable release, enable beta
+  versions for this repository in HACS. See
+  [RELEASING.md](https://github.com/goruck/home-generative-agent/blob/main/RELEASING.md).
+- Documentation on speech-to-text phrase biasing now says it steers recognition rather than
+  guaranteeing a spelling, since what matters for a voice assistant is landing close enough for
+  the conversation agent to match the entity. Field testing on OpenRouter's
+  `microsoft/mai-transcribe-2` returned an approximated spelling that Assist resolved correctly
+  every time. ([#610](https://github.com/goruck/home-generative-agent/issues/610))
+
+### Fixed
+
+- In `notify_on_anomaly` mode, a camera caption that closely matched one sent a minute earlier could still notify when an older caption happened to score slightly higher ([#704](https://github.com/goruck/home-generative-agent/issues/704)). Caption deduplication judged only the single best-scoring stored caption by its age, so on a camera that sees the same scenes repeatedly (the same people, the same cars) the best match was usually hours or days old and the notification went out as a new event. A caption of a real subject in action is now withheld when any matching caption was notified in the last 30 minutes, whatever older captions score; when old near-duplicates fill the search results, the camera's recently notified captions are compared with the new one directly. The debug log reports these as `reason=recent_match`.
+- Caption deduplication could compare a camera's caption with another camera's when one camera's entity name begins with the other's (`camera.side` and `camera.side_gate`): the caption store matches names by prefix, so `side` also read `side_gate`'s captions and a scene on one could suppress a notification from the other. Only the camera's own captions are compared now.
+- Two analyses of one camera that overlapped (a snapshot batch and an event recording, for example) could both pass caption deduplication and both notify for the same scene, because each checked the stored captions before the other had stored its own. The check, the notification and the caption store are now one step per camera.
+- A database or embedding-model error during the caption deduplication check (anything other than a timeout) dropped the analysis and its notification. The notification is now sent (`reason=store_error` in the debug log).
+- `sensor.*_recognized_people`, `image.*_last_event` and the caption deduplication check could be given the names from a different analysis of the same camera when two analyses overlapped (a snapshot batch and an event recording, for example): they read a per-camera "last recognized" slot after the summary model call, by which time a second batch could have overwritten it. Each analysis now carries its own names through to those consumers.
+- When the agent gave up after several tool-use attempts, its "I wasn't able to complete this request…" reply replaced the turn's last tool call in the chat log (Show Details lost the call), and with the spoken acknowledgement on, a voice satellite said nothing at all. The reply is now added after the tool call and spoken.
+- Asking whether a lock is locked works again. The extra arguments HGA adds to lock and unlock commands were also added to state questions about a lock, and Home Assistant rejected them ("not a valid option"), so every "is the garage door lock locked?" made the model retry until it gave up with "I wasn't able to complete this request after several tool-use attempts". Broken since v2.8.0. State questions now pass Home Assistant only the filters it accepts (name, domain, area).
+- "Is the front door open?" gets an answer again when the door is closed. For questions about whether something is open, HGA widened the agent's live-state lookup to every door and window sensor and kept only the open ones; that helps "list all open windows", but for one named device it removed a closed front door from the result, and the agent said it could not find it. A lookup that names a specific device is now passed through as the agent asked; category lookups ("Window", "doors") are still widened. Since v3.14.9.
+- Speech from a local server that answers in WAV (Speaches with piper voices does) is no longer cut off after its first sentence. Such a server returns one WAV file per sentence, back to back, and each header gives only its own sentence's length, so only the first sentence was played: a player that asked for WAV heard the start of an announcement (since v3.38.0), and a streamed reply lost the rest of any batch after its first sentence, a fraction of a second when that sentence was "Yes." (reported on the 3.43.0 betas). Every sentence's audio is now read, and a whole message is merged into one file.
+- Answering "Yes" to an offer from the agent ("Want me to turn it off?") now gets the tools to do it. A short reply that accepts an offer names no device or action, so the tool search ran on "Yes" alone, offered media-player controls and no light tool, and the model checked the light's state until the tool-loop limit gave up with "I wasn't able to complete this request after several tool-use attempts" (seen 2026-10-01). Such a reply (yes, sure, OK, go ahead, please, do it, and the same in Czech, Russian and Turkish, up to four words) is now searched together with your previous request and the end of the agent's offer; that also lets the on/off safety net add the device-control tools whenever the offer names an action. The model still sees only what you said.
+- On a shared Assist pipeline with **Prefer handling commands locally**, a request Home Assistant answered itself (the time, turning on a light) reached the agent as a bare question with its answer removed, so a small model answered those questions again in its next reply and claimed actions it never took: "what time is it", "turn on hallway light", then "say hello" got "It's 9:06 PM. I've turned on the hallway light. Hello!" (6 of 6 runs on qwen3:8b; heard aloud once replies streamed, [#671](https://github.com/goruck/home-generative-agent/issues/671), reported by @andymcmanus). Such a request now reaches the agent marked as already handled, with Home Assistant's answer, inside the user's message (0 of 6). The answer is still never shown to the model as an assistant reply, which is what taught it to answer device commands without acting (#588); with the note, a follow-up such as "turn it off" still finds the right device and calls the tool (6 of 6 on qwen3:8b and qwen3.8). Present since v3.33.3.
+- Reasoning a model writes inline as `<think>…</think>` (for example qwen3 or deepseek-r1 behind an OpenAI-compatible server that does not separate it) no longer appears in the streamed chat reply or its Show Details, and is never spoken: it was removed only from the final copy, and with the streaming TTS engine above a voice satellite would have read it aloud as it arrived. A reply that is all reasoning now gets the "unable to respond" apology instead of the raw reasoning. Ollama models configured through HGA were not affected; their reasoning arrives separately.
+- A refused automation no longer eats the retry it asks for. The agent allows three tool rounds per turn before it gives up with "I wasn't able to complete this request after several tool-use attempts"; on the live box the leak-alert request spent two rounds hunting for the phone's notify service, one on the refused guess, and the corrected `add_automation` call arrived in a fourth round that the guard discarded unexecuted, so the user got the apology and no automation. A round in which every tool call was a refused automation now counts as a correction round (up to two per turn) rather than an action round, since nothing ran and the tool handed back exactly what to change; the give-up message repeats the last refusal so the user sees what was wrong instead of a bare apology; and the system prompt now names the configured mobile push service, so the model writes `notify.mobile_app_<phone>` on the first try instead of looking for it with tools that cannot show it.
+- `add_automation` no longer installs an automation that can never run. Home Assistant shows the agent device names, never entity IDs, so the model derives them: asked to "always notify me if there is a leak", it wrote a trigger on `binary_sensor.sink_moisture_sensor` (the friendly name "Sink Moisture Sensor", slugified) and an action calling `notify.mobile_app` (a guess at the mobile push service). Both pass Home Assistant's automation validator, which checks schema only, so the automation registered, the tool answered "Added automation", and nothing was logged; the trigger could never fire, and had it fired the notify call would have failed. The tool now checks every entity reference (`entity_id` in triggers, conditions, action conditions, targets and waits; `zone`, `scene`, a time trigger's `at`, a time condition's `before`/`after` and an `above`/`below` threshold that names an entity; the entities a scene snapshot, scene apply or group set names) and every service call in the validated config against Home Assistant and refuses the automation with each missing name and the closest real one: the entity whose friendly name slugifies to the guess (all of them when several share the name, and in any domain, so `sensor.` for a `binary_sensor.` is corrected too), the mobile push service configured for this integration for a missing `notify.*` alongside any other `notify.mobile_app_*` service, and a domain's real services otherwise (on the `script` and `automation` domains only Home Assistant's own `turn_on`/`turn_off`/`toggle`/`reload`/`trigger`; a user's own script, shell command, REST command or pyscript name is neither confirmed nor denied, since listing the missing ones would reveal the real ones before the PIN gate that guards every such call). Suggestions only ever name entities exposed to Assist, so a typo never reveals an entity you chose to hide; a real entity ID that is not exposed still installs. A `notify.X` written as an entity is told it is a service to call. A state trigger or condition on a value the entity can never report is refused the same way: on the live box the leak alert installed with `to: wet`, the moisture sensor's display label, and never fired, because Home Assistant compares the raw state, which for a binary sensor, switch, light, fan, humidifier, siren, input boolean or automation is only `on` or `off`; the refusal says so and names the raw states (and `away` on a person or device tracker is corrected to `not_home`). A registered entity that is merely unloaded passes; a disabled one is refused and says so. Templates, entity registry IDs, areas, `entity_id: all`, a device action's `device_id` and `type`, event payloads, variables, a script's own arguments and anything under `enabled: false` are left to Home Assistant, and entities the automation creates for itself (`scene.create`, `group.set`, its own `automation.<alias>`) count as existing for its later actions, though not for its triggers or conditions. The camera blueprint's configured push service is checked before the blueprint is built, since its call is templated (a value stored without its `notify.` prefix counts as the notify service it names, as elsewhere in the integration), and that refusal says it is a configuration problem rather than something to retry. The refusal is logged at info with the automation's alias and the missing names.
+- The **Trust device** button on a new-device push no longer trusts devices the push did not show. `radio_new_device_joined` and `network_unknown_device_joined` bundle every device that joined into one alert, and one tap trusted all of them, while the push lists at most ten names and is cut at 220 characters (a field test trusted an unidentified client together with the laptop the owner meant). The button now appears only when the alert names one device, as it already did for `network_guest_client_present`; an alert naming several has no primary button and ends with a line saying to trust the ones you recognize with the `sentinel_trust_network_device` service. A tap from an older notification that would trust several devices is refused and logged.
+- Changing any option no longer logs `Global tool index background task failed` with a `PoolClosed` traceback. The tool index is written by a background task, and a reload closed the database pool under it; the unload now stops that write (the task and the store's batch worker) before the pool closes, an embedding-provider switch cancels a build that would have declared the old provider's vectors ready, and a turn that was in tool discovery across an unload no longer schedules a write onto the closed pool.
+- Sentinel now tells you when its unknown-person rules cannot fire. `unknown_person_camera_no_home`, `unknown_person_camera_night_home`, `alarm_disarmed_during_external_threat` and the approved `unknown_person_camera_when_home` discovery rule all trigger on one thing only: a face-recognition result saying a person was seen but not recognised. Nothing else produces that, so on an install without face recognition all of them had been silently inert — no error, nothing in the log, and still counted as active on the `sentinel_health` sensor, because from Sentinel's side they simply never matched. A repair issue under **Settings → System → Repairs** now names the affected rules and points at the `motion_detected_*` discovery rules, which give camera coverage with no face service. It also appears in the two states that look healthy from the options page but are just as inert: face recognition switched on with no database for the person gallery, and face recognition switched on with the video analyzer disabled (faces are only recognised while the analyzer is processing snapshots). The notice names which of the three you are in and gives that state's fix, rather than listing all three and leaving you to work it out. It clears by itself once the pipeline works, when Sentinel is turned off, and when the entry is unloaded. A face service that is configured but unreachable is not covered — that one already logs a warning. Sentinel's other rules were never affected.
+- Re-running Sentinel **Basic setup** no longer wipes your entity exclusions or camera-to-entry links. Basic setup restores recommended defaults for everything else, but those two are lists you picked by hand and no default can reconstruct them; losing the exclusions brought back exactly the phantom alerts they were added to silence, with nothing in the UI to say why. The overwrite warning now says the two are kept.
+- The integration will keep loading on Home Assistant 2026.12. It imported a helper class that Home Assistant deprecated and removes in that release, at the top of the module — so on 2026.12 the import itself would have failed and the whole integration would not have set up. Until then the only visible sign was a deprecation warning, logged each time the `save_and_analyze_snapshot` service ran and asking you to report it against this repository. Older Home Assistant versions are unaffected.
+- Sentinel rule discovery no longer offers a statistical (baseline or time-of-day) proposal on a cumulative energy counter (a kWh sensor such as `sensor.washing_machine_switch_0_energy`). The counter only ever grows, so such a proposal could never become a rule; it reached the proposals card as "unsupported" with a **Request New Template** button, and had to be rejected by hand. It is now dropped before it is stored and listed under **Filtered Discovery Candidates** with the reason `cumulative_energy_sensor`. Deviation on the same appliance's power sensor, and a threshold on the energy counter ("above 5 kWh"), are still proposed as before.
+
+### Documentation
+
+- The caption deduplication section of the camera docs said notifications for scenes with a person, vehicle, package or animal are always preserved. They are not: a matching caption from the last 30 minutes is suppressed whatever it shows, and only after 30 minutes does a matching caption with an active subject notify again. The text now says so.
+- The seven Home Assistant & network security options in Sentinel → Configure → Advanced now have help text under each field (English and Czech): what the master switch covers and that nothing scans the network, what each threshold waits for and which need a router integration, what leaves the audit with details sharing on or off, and why token age is the only fact the stale-token check has.
+- The [network security plan](docs/network-security-plan.md) opens with a status table per implementation step, the [architecture guide](docs/architecture.md) describes the whole network audit path (adapters and the eero runtime tier, the auth and device inventories, counter baselines, discovery templates, the on-demand audit, and the privacy gate), and the [constants reference](docs/constants.md) lists the network family's remaining code-only constants. This closes step 11 of the plan.
+- The **Enable LLM explanations for sentinel findings** switch now has help text, which it never had. It sits in the same form as the new LLM triage switch and the two names read alike, so the text says which is which: triage decides *whether* an alert reaches you, explanations decide *how it is worded*. It also notes that explanations run only for alerts that are actually sent, and that the Home Assistant & network security and alarm-disarm alerts always keep their exact wording.
+- Documented how to give the agent internet search: the **Control Home Assistant** picker lists every LLM API Home Assistant knows about, not only Assist and MCP servers, so a search tool from [Tools for Assist](https://github.com/skye-harris/llm_intents) (Brave or self-hosted SearXNG) or a search MCP server can be selected there and pinned with Always-included tools. See [Internet search](docs/configuration.md#internet-search). ([#642](https://github.com/goruck/home-generative-agent/issues/642))
+
+## [3.42.0] - 2026-09-14
+
+### Added
+
+- The Home Assistant security audit now covers the home's radio networks. This is step 6 of the [network security plan](docs/network-security-plan.md); the design and its decisions are in the [radio plan](docs/network-security-radio-plan.md). Five new Sentinel rules, all reading what Home Assistant already knows — nothing scans the network or the air: ([#634](https://github.com/goruck/home-generative-agent/pull/634))
+  - `radio_new_device_joined` alerts once when a Zigbee, Z-Wave, Bluetooth, or Matter device is paired. It is low severity by default, medium while nobody is home or at night, and high when the new device is a lock, alarm panel, camera, or entry cover and nobody is home. The push carries a **Trust device** button, which records that you recognize the device (admin users only).
+  - `zwave_insecure_security_class` flags Z-Wave locks, alarm panels, and door/gate/garage covers included with legacy S0 security or none (high), and any other Z-Wave device still on S0 (low). Devices without security that are not security devices are not reported, since most sensors run that way on purpose.
+  - `zigbee_permit_join_open` catches Zigbee2MQTT accepting new devices, higher while nobody is home. Sentinel wakes the moment the bridge's permit-join switch turns on, because a Zigbee2MQTT join window closes within 254 seconds.
+  - `zwave_inclusion_active` reports a Z-Wave controller in inclusion mode.
+  - `radio_coordinator_update_pending` lists firmware waiting for a Zigbee or Z-Wave coordinator, a Home Assistant Connect ZBT-1/ZBT-2 or Yellow radio, a Zigbee2MQTT bridge, or a Bluetooth proxy.
+- New devices are judged against a persistent device inventory that stores device registry ids and names only, never IEEE addresses, node ids, or MAC addresses. Each protocol is recorded silently the first time it is present, with one *Sentinel device inventory established* notification, so upgrading does not alert on the devices you already have. A new device is recorded straight away as untrusted: a cooldown or quiet hours postpone its alert, while delivery, a snooze, triage, or trusting the device settle it. New services: `sentinel_get_network_inventory`, and the admin-only `sentinel_trust_network_device`, `sentinel_untrust_network_device`, and `sentinel_reset_network_inventory`. Deleting the Sentinel subentry deletes the inventory.
+- `run_network_audit` and the agent's `audit_home_security` tool report trusted and untrusted device counts, and name the radio checks that could not run and why.
+
+### Notes
+
+- ZHA's permit-join state is not observable on Home Assistant 2026.9 (its radio library opens the join window without recording it anywhere Home Assistant can read), so `zigbee_permit_join_open` is listed as not run on ZHA-only homes rather than guessed. Z-Wave inclusion is observed only when a Sentinel run lands inside the inclusion window.
+- Home Assistant restores a removed device's registry id when the same hardware is added back, so removing and re-pairing a device alerts only if a Sentinel run saw it gone in between.
+
+## [3.41.2] - 2026-09-12
+
+### Fixed
+
+- Setting up an OpenAI-compatible server now fails at the setup form instead of silently at runtime when the URL does not serve an OpenAI API. The check asked the server for its model catalog (`/v1/models`) and accepted any HTTP 200 without looking at the reply, so a web UI whose catch-all route serves its own HTML page for unknown paths — [Open WebUI](https://docs.openwebui.com/) does this — reported a working endpoint. Setup succeeded and then every conversation and embedding call failed with a 405. A 200 now has to actually be a model catalog, and when it is not, HGA probes the route it would really use (`/chat/completions` for a model provider) and reports what that says. A server with an unusual but genuine catalog is still accepted, because that probe decides rather than the catalog shape. Found by [@yagui75](https://github.com/yagui75). ([#653](https://github.com/goruck/home-generative-agent/issues/653))
+- Setting up a **Local (OpenAI-compatible)** TTS or STT provider no longer fails against a server that serves only audio. The credentials step proved the server was reachable by asking it for its model catalog (`/v1/models`), which single-purpose TTS servers such as [Chatterbox-TTS-Server](https://github.com/devnen/Chatterbox-TTS-Server) do not implement at all — the form reported "Can't reach the provider" for a server whose `/v1/audio/speech` endpoint worked perfectly. When the catalog is missing, HGA now probes the route the provider will actually use (`/v1/audio/speech` for TTS, `/v1/audio/transcriptions` for STT) and accepts the server when that route is served. A URL that serves neither is still rejected, so a typo is still caught, and a server that rejects your API key is still reported as bad credentials rather than as unreachable. Reported by [@yagui75](https://github.com/yagui75). ([#648](https://github.com/goruck/home-generative-agent/issues/648))
+- Two tools were offered to the model with no parameters whenever the tool index was unavailable. `upsert_memory` and `confirm_sensitive_action` take arguments that LangGraph injects at runtime rather than asking the model for, and the schema those two carry cannot be turned into JSON — so the fallback that runs when the tool index is still building or the database is unreachable gave up on them and advertised both as taking no arguments at all. The model was then invited to call the critical-action PIN gate, and the memory tool, with nothing in them. This path is hit at startup before indexing finishes and any time PostgreSQL is down, which is exactly when a working fallback matters most. The startup indexing path already got this right; both paths now share one schema extractor, so they cannot drift apart again. A tool whose schema cannot be read is now logged instead of silently becoming argument-free, one unreadable schema can no longer cost the turn every other fallback tool, and the extracted schema is cached per tool so the fallback is faster than before the fix. Contributed by [@MaestroMetty](https://github.com/MaestroMetty). ([#630](https://github.com/goruck/home-generative-agent/pull/630))
+
+## [3.41.1] - 2026-09-12
+
+### Fixed
+
+- Tool retrieval works again on Home Assistant 2026.9. That release renamed every built-in LLM tool from a bare intent name to a namespaced one — `HassTurnOff` became `intent__HassTurnOff`, `HassLightSet` became `light__HassLightSet`, `GetLiveContext` became `homeassistant__GetLiveContext` — and the tool index has never deleted anything, so upgraded installs carried a complete shadow copy of the old names. Those dead rows embed almost identically to their live twins and score slightly *higher* (same text, one prefix shorter), and the vector search cuts to the configured retrieval limit before the filter that drops dead rows runs. The result: the top five hits were four renamed-away rows and one live one, and the model was handed almost no usable tools. Field report: "turn on the garage lights" worked, and the follow-up "turn it off" came back with one media-player tool and no way to turn the light off. Dead rows are now dropped before the limit is applied, and the startup index pass deletes rows for tools that no longer exist (scoped to providers that enumerated cleanly, so an API that failed to load never loses its tools). No action is needed: the stale rows are removed on the next restart.
+- The critical-action PIN gate covers locks again. `HassTurnOn`/`HassTurnOff` aimed at a lock are treated as critical even though they carry no service argument, but that rule was keyed on the bare tool name, so on HA 2026.9 a lock command arriving as `intent__HassTurnOff` skipped PIN verification entirely. Affects installs with the critical-action PIN enabled on HA 2026.9 or later. The alarm-panel carve-out (panels use their own code, never the generic PIN) is matched the same way and was equally affected.
+- Home Assistant actuation tools are recognised as actuation again. The classifier matched names against intent prefixes (`HassTurn`, `HassLight`, …) but namespaced names start with the domain, so every HA control tool was classified read-only. That silently disabled the actuation-safety retrieval pass, the actuation strip on read-only "is the door open?" questions, the fallback ordering that puts control tools first for a control request, and the recovery path after a rejected tool call.
+- `GetLiveContext` is bound again. The agent force-injects it on every turn so the model can always check live state — the system prompt calls it a primary function — but the injection looked the tool up by its bare name, found the pre-rename row, and discarded it as not live. On an upgraded install the model was told to call a tool it had never been given.
+- Follow-up commands that point back at the previous turn work. "Turn it off" right after "turn on the garage lights" carries no entity, domain, or target of any kind, so ranking tools on those three words landed wherever the phrasing happened to point: five media-player tools, and no way to turn the light off. The model had it right — it asked for the light by name — and the request was refused because the tool had not been retrieved. When a turn is short and leans on a referential word ("it", "them", "that", "again"), the previous user turn is now added to the query used to *rank* tools. What the model is shown is unchanged, both turns are also searched separately so a tool only the new phrasing finds is never displaced, and the widening is kept out of every intent check — otherwise "close it" after "is the garage door open?" would read as a state question and lose its actuation tools.
+- Per-tool exclusions work again. The exclusion list matched tool names exactly, so an exclusion saved before the rename no longer matched the tool it was meant to switch off: the tool came back into the model's hands while the options picker still showed it as excluded. A stored name that carries no namespace is now also matched against the live tool's base name, so excluding `HassTurnOff` keeps excluding it as `intent__HassTurnOff`. A stored name that already carries a namespace is matched exactly and never widened, so switching off one tool can never switch off a same-named tool from another integration. Enforcement, tool retrieval and the always-included list all share one definition of a match.
+- The alarm and lock argument normalizers, which turn a turn-on/turn-off intent into the right service call, match the namespaced names too. The lock payload now always carries the target's name: Home Assistant's turn-on/turn-off intents resolve targets from name, area and floor and never read an `entity_id`, and a domain on its own is enough to satisfy their "cannot target all devices" guard, so a payload of domain plus entity id alone matched *every* exposed lock. A single lock command now names a single lock.
+
+## [3.41.0] - 2026-09-12
+
+### Added
+
+- Speech-to-text providers gain an **extra request body** field: a JSON object merged into the transcription request, for parameters HGA does not expose as its own fields. It is available on both the OpenAI and Local provider types and is merged last, so it can also override a parameter HGA sets, such as `model` or `response_format`. It cannot set `stream`, `file` or `input_audio`, which decide how the audio and the response are carried rather than how the audio is transcribed.
+- Local (OpenAI-compatible) STT providers gain a **request format** option: *Multipart upload* (the default and previous behavior) or *JSON with base64 audio*. The JSON shape posts the audio inline under `input_audio` instead of uploading it as a form file, which is what OpenRouter's transcription endpoint natively speaks. This makes provider-specific options such as keyword biasing (`provider.options`) reachable — OpenRouter's multipart endpoint is an OpenAI compatibility layer that accepts only `file`, `model`, `language`, `temperature`, `response_format` and `timestamp_granularities`, so a nested `provider` block was dropped there regardless of how it was encoded. The JSON request goes through the same configured client, so the pinned timeout, no-retry policy and keyless-Authorization handling are unchanged. It has no translations endpoint, so `translate` degrades to transcription with a warning, and it does not send the `prompt` field, which is not part of that request shape (OpenRouter ignores `prompt` on multipart as well). Multipart remains the default and the only option for the OpenAI provider type, whose API accepts nothing else. ([#610](https://github.com/goruck/home-generative-agent/issues/610))
+
+## [3.40.1] - 2026-09-12
+
+### Fixed
+
+- Multi-line chat replies keep their formatting. A streamed reply was being committed to the conversation log a third time as a copy with every line break replaced by a space, and that flattened copy was the one the chat UI rendered and the one stored in the conversation thread — so a numbered list or a severity-grouped audit came back as one run-on paragraph, and on later turns the model saw its own earlier answers with all formatting stripped. The cause: the agent ran the model's reply through the same text cleaner the notification paths use, which collapses all whitespace to single spaces on purpose. The streaming path then compared the cleaned text against the text it had streamed, found them different, and concluded a mid-stream provider fallback had produced a new answer — a check meant to fire only in that rare case. The cleaner now returns the reply verbatim on the agent and summarization paths, apart from removing leaked reasoning blocks: line breaks, leading and trailing whitespace, and the way multiple content blocks are joined all match what the streaming path delivers, so the comparison is once again true only when a fallback really did change the answer. Notifications, triage and discovery verdicts, explanations, and video summaries still get the collapsed single-line text they expect. Short single-line replies were never affected. ([#628](https://github.com/goruck/home-generative-agent/issues/628))
+
+## [3.40.0] - 2026-09-11
+
+### Added
+
+- The chat agent can now run the Home Assistant security audit on demand. Asking "is my home secure?" (or about network security, privacy, access tokens, or unknown devices) calls the new `audit_home_security` tool, which builds a fresh snapshot, evaluates the thirteen Home Assistant & network security rules with the usual capability gating and entity exclusions, and returns the findings by severity, each with its deterministic summary and suggested actions, plus the checks that could not run and why (which integration or install type would provide the missing fact). The system prompt tells the model to report by severity, name the checks that did not run, and never claim a check passed when it is listed as not run. Until now the audit's results existed only as notifications, audit rows, and health-sensor attributes, so the agent had nothing to say when asked. The on-demand run is read-only: no notification, audit row, cooldown charge, explainer call, or auth-inventory commit, and it bypasses the 24-hour posture cooldown so a standing finding is still listed. This is step 9 of the [network security plan](docs/network-security-plan.md) in its HA-only form; the privacy digest and the `network_audit` provider override wait for router adapters, since no MAC, IP, or hostname exists in the HA-only data.
+- The `sentinel_health` sensor gains a `failed_rules` attribute listing rules whose evaluation raised in the last cycle; such rules were counted as active before. The on-demand audit reports the same rules under `checks_not_run`.
+- New `home_generative_agent.run_network_audit` service returns the same report (`status`, `findings`, `checks_run`, `checks_not_run`, `capabilities`, `missing_capabilities`, `notes`, `privacy_notes`) for dashboards and automations.
+
+## [3.39.6] - 2026-09-11
+
+### Changed
+
+- The Anthropic SDK is now pinned (`anthropic==0.125.0`) instead of floating with `langchain-anthropic`, which only constrained it to a 30-release range. Every other runtime dependency was already pinned exactly; this one arrived as a transitive dependency, so each fresh install resolved whatever was newest that day while existing installs kept whatever they had first resolved. The development environment had settled on 0.97.0, the last release without the credential-discovery module, which is why the event-loop blocking fixed in v3.39.5 was only ever seen on live installs. The pinned version is the one that fix was verified against. Existing installs pick up the pin on this update. ([#618](https://github.com/goruck/home-generative-agent/issues/618), [#587](https://github.com/goruck/home-generative-agent/issues/587))
+- The test suite now runs in CI on every pull request and push to `main`, against the manifest's pinned runtime dependencies, and includes a test that exercises the real Anthropic SDK client constructor rather than a stand-in. Until now CI ran lint, Hassfest, HACS, and CodeQL only.
+
+## [3.39.5] - 2026-09-11
+
+### Fixed
+
+- Conversations on the Anthropic provider no longer block Home Assistant's event loop on every turn. Each request was constructing a fresh Anthropic SDK client on the loop, and since anthropic 0.98 that constructor reads `~/.config/anthropic/active_config` from disk to warn about environment-shadowed credentials, which Home Assistant flags as a stability problem. The cause is that the provider is wrapped in `configurable_fields`, and LangChain honours per-call configuration by rebuilding the model object on every call, which discarded the lazily cached client each time. Home Assistant reports each blocking call site once per start and then only at debug level, so the log made it look like a one-off. The client is now built once, in a worker thread, before the provider is published, and every per-request copy inherits it; the SDK's platform headers, which read `/etc/os-release` on the first request, are computed there too. If that build fails at setup the Anthropic provider is left unset and the fallback chain takes over, instead of every turn retrying the build on the loop. Thanks to [@andrewvlahopoulos](https://github.com/andrewvlahopoulos) for the report. ([#618](https://github.com/goruck/home-generative-agent/issues/618), [#587](https://github.com/goruck/home-generative-agent/issues/587))
+- The test suite cannot observe this behaviour: the development environment resolves anthropic 0.97.0, the last release without the credential-discovery module, while a fresh install resolves 0.125.0. The fix was verified against 0.125.0 directly; pinning or CI-testing the newest allowed SDK is filed as a follow-up in `TODOS.md`.
+
+## [3.39.4] - 2026-09-10
+
+### Fixed
+
+- The agent no longer answers the previous question instead of the new one after a few turns in the same conversation. Every turn's user message (and, for a turn that answered without tools, the reply too) was being appended to the conversation thread a second time on the following turn, under a fresh message id, so the stale copy sat directly before the new request and the model frequently answered it instead: a question about free disk space got the previous turn's movie count. The cause was the chat_log history filter, which exists to pick up turns handled by *another* agent sharing the conversation (Home Assistant's built-in agent on a shared pipeline) but could not tell those from the agent's own turns, which the LangGraph checkpointer already holds. The design dates from when the integration wrote nothing to chat_log; populating it for Show Details in v3.11.0 silently turned every own turn into a duplicate. The filter now groups chat_log into turns, recognises its own turns by `agent_id`, and ingests only foreign turns that follow its latest own turn. The per-entity high-water mark is gone, so two conversations served at once (a voice satellite plus the chat box) no longer starve each other of that shared-agent history either. Threads also stop carrying a stale copy of every turn, which was eating into `max_messages_in_context`. Thanks to [@andrewvlahopoulos](https://github.com/andrewvlahopoulos) for the trace that pinned the shape. ([#621](https://github.com/goruck/home-generative-agent/issues/621), [#590](https://github.com/goruck/home-generative-agent/issues/590))
+- Two related holes in the non-streaming path (schema-first YAML mode) are closed with it: a turn that failed with any error now still records its own entry in chat_log, so the foreign history already checkpointed with that request is not prepended again on the next turn; and the chat_log backfill for Show Details now writes only the messages produced this turn. It sliced the returned thread by the input length, but the graph returns the whole checkpointed thread, so from the second turn on it also wrote every earlier reply to chat_log again. Messages ingested from chat_log now carry an id derived from their position, so a turn cancelled before it could leave its mark only upserts the same messages next time instead of appending duplicates.
+- Conversations continued under a fixed, user-supplied `conversation_id` (for example `conversation.process` calls from an automation) keep the history already duplicated by earlier versions until it is trimmed past `max_messages_in_context`; start such a conversation under a new id for an immediate fix. Frontend and voice-satellite conversations start fresh after the restart.
+
+## [3.39.3] - 2026-09-10
+
+### Fixed
+
+- Ollama chat, ad-hoc image analysis, and conversation summarization no longer send `num_predict: -2` (Ollama's "fill context" sentinel). A model served by Ollama Cloud rejects it with `max_tokens must be positive, got: -2`, which failed every request on such a setup. The three agent-path output limits (`CHAT_MODEL_MAX_TOKENS`, `VLM_NUM_PREDICT`, `SUMMARIZATION_MODEL_PREDICT`) are now unset, so the option is omitted from the request and the server applies its own default. On a local Ollama server that is the same behaviour as before: `-2`, `-1`, and no value all stop at the same runner limit (verified against Ollama 0.32.13). On Ollama Cloud the model's own default applies. The video pipeline's fixed caps (`VIDEO_VLM_NUM_PREDICT`, `VIDEO_SUMMARY_NUM_PREDICT`) are unchanged. Thanks to [@hruba202](https://github.com/hruba202) for the report and the fix. ([#614](https://github.com/goruck/home-generative-agent/issues/614), [#620](https://github.com/goruck/home-generative-agent/pull/620))
+
+## [3.39.2] - 2026-09-09
+
+### Fixed
+
+- Prompt caching now hits. The system prompt began with Home Assistant's `Current time is HH:MM:SS` line, which changed the first bytes of every request and invalidated the provider's exact-prefix cache on every turn: Anthropic reported `cache_creation` of the whole prompt and `cache_read: 0` on each call. The prompt is now rendered as a stable prefix (your instructions, timezone, PIN and YAML-mode guidance, the tool-error rule, the exposed-entity context) followed by a volatile tail (date/time, retrieved memories, the running summary). For Anthropic the stable prefix carries an explicit `cache_control` breakpoint, alongside the client's existing automatic last-block breakpoint, so the prefix is written once and read back on every later call that binds the same tools; the same ordering lets OpenAI's and Gemini's implicit caching match the prefix too. Every other provider, including non-Anthropic fallback-chain members, receives a single plain string with no Anthropic-only field, so the key never reaches an API that rejects unknown content fields; the only change for them is that the date/time line, memories and summary now end the prompt instead of opening it. Two related per-turn sources of cache misses were closed at the same time: inside a tool loop the memory search fell back to a recency listing that differed from the semantic result of the first call, so the `<memories>` block changed between the call that requested a tool and the call that answered (memories are now retrieved once per turn and reused by every model call in it, which also removes the extra embedding call per tool round), and retrieved tools were bound in relevance order, so the same tool set arrived in a different order on different turns (they are now bound in name order; the tool array is the head of the cached prefix). Note that the cache is a hierarchy `tools → system → messages`: a turn whose retrieved tool set differs from the previous turn's still cannot read the previous prefix. ([#617](https://github.com/goruck/home-generative-agent/issues/617))
+- When the agent has no tools at all, the system prompt no longer collapses to just the exposed-entity context: an operator-precedence slip made the whole instruction block conditional on tools rather than only the tool-error rule.
+
+## [3.39.1] - 2026-09-09
+
+### Fixed
+
+- An entry that loads without a Database subentry no longer does so silently. Setup logs a warning naming what is unavailable (conversation history across reloads, long-term memory, the person gallery for face recognition, the Sentinel baseline anomaly detector) and, once a Model Provider exists, raises a repair issue in **Settings → Repairs** that explains how to add the database through **+ Setup**. The issue clears as soon as the entry loads with a Database subentry, even one that cannot connect yet, is dropped while the entry is unloaded or disabled, and is removed with the entry (together with the critical-action PIN repair issue, which was previously left behind). Two paths lead to this state: **+ Setup** never run after adding the integration, or the Advanced wizard closed at its final Database step, which writes the feature subentries first. ([#615](https://github.com/goruck/home-generative-agent/issues/615), reported in [#612](https://github.com/goruck/home-generative-agent/discussions/612))
+- `home_generative_agent.enroll_person` and the enrollment upload endpoint now fail with a clear "Face recognition needs a configured database" message when the entry has no person gallery, instead of an `AttributeError: 'NoneType' object has no attribute 'enroll_from_image'` traceback (service) or a misleading "may be reloading" 503 (upload card). Both refuse before any I/O: the service no longer reads the caller's file or fetches a media source first, and the endpoint no longer buffers the upload body first. The endpoint's 503 for this case carries `"code": "database_not_configured"` so scripted callers can tell it from the transient reload 503s. The service also no longer risks an `AttributeError` when a reload lands during the image read.
+- The enrollment upload endpoint now caps a request at 25 images (HTTP 413 past that); the per-image 10 MiB limit alone left the number of images, and so the memory one request could consume, unbounded.
+
+## [3.39.0] - 2026-09-09
+
+### Added
+
+- **Home Assistant security audit (Sentinel).** Thirteen new deterministic rules audit Home Assistant's own attack surface on every detection cycle, with no router or third-party integration required: a new administrator account or long-lived access token, locks, alarm panels, and door/garage covers exposed to Alexa or Google Assistant (or to Assist while the Critical Action PIN is not enforceable), long-lived tokens older than a configurable age, failed login attempts, Cloud remote access, Supervisor add-ons with host-mapped ports or protection mode off, automations with public webhook triggers (high when they can unlock or open an entry, screened by the same allowlist the automation PIN gate uses), trusted-network login bypass, IP banning that cannot trigger, locks/alarms/cameras unavailable for too long, devices Home Assistant discovered on the LAN that nobody configured, and pending router firmware updates. Each rule reports one aggregated finding per cycle so a second item is never starved by the type cooldown, and none of them is ever merged into a compound with a live event. Each rule declares the snapshot facts it needs and is skipped, visibly, on an install that cannot provide them (a Container install has no Supervisor, for example): the `sentinel_health` sensor's new `inactive_rules`, `inactive_rule_count`, and `network_capabilities` attributes say which checks are not running and why, so a missing capability never reads as a clean bill of health. The auth-change rule compares against a small persistent inventory of user ids, token ids, client names, and HMAC-pseudonymized last-used addresses (never token values, user names, or raw IPs), written as a private file and updated only after the alert was delivered so a snoozed change is reported later rather than baselined; the first run records everything as known and posts one *auth inventory established* notification instead of alerting on pre-existing tokens. Standing conditions such as an old token re-alert at most once a day, and their notification text is deterministic and control-character-safe even with the LLM explainer on. New Sentinel options (Advanced setup): `sentinel_network_enabled` (master switch, default on), `sentinel_network_offline_device_min`, `sentinel_ha_token_stale_days`, `sentinel_auth_ip_retention_days`; new admin-only service `home_generative_agent.sentinel_reset_auth_inventory`. This is the first phase of the [network security and privacy audit plan](docs/network-security-plan.md); router, DNS, and radio-protocol adapters follow.
+
+### Changed
+
+- The home-state snapshot is now schema version 2: every entity carries its entity-registry `platform`, and the snapshot has a `network` section built from capability-declaring adapters (`snapshot/network.py`). Both additions are optional at the schema level, so persisted audit records and older fixtures remain valid.
+
+### Fixed
+
+- Sentinel's exposed-entity rule no longer lets the Critical Action PIN silence Assist exposure when an Assist pipeline runs on another conversation agent (the built-in agent or another LLM integration), which the PIN never covered; such agents are named in the finding.
+- Sentinel add-on rules skip, and the snapshot notes name, add-ons whose details the Supervisor has not reported yet instead of treating them as protected with no ports.
+- Sentinel's auth inventory retries a failed store write on the next cycle and posts the "inventory established" notification only once the file exists.
+- Removing the Sentinel subentry reloads the entry only after the auth inventory and pseudonymization salt have been deleted.
+- The burst-batch digest body is capped and says how many findings were left out.
+- The snapshot no longer reports a derived `http_use_x_forwarded_for` value; core never stores that setting.
+- Sentinel no longer calls the LLM explainer for findings whose notification copy is deterministic (the Home Assistant security audit rules and the alarm-disarm rules); the prose never reached the user, so every such call was wasted compute.
+- Sentinel burst-batch digest ("N home updates: …") now lists each held finding's own push body under the header instead of only its type label, so a rate-limited finding such as `network_unconfigured_discovered_device` still names every device.
+
+## [3.38.1] - 2026-09-04
+
+### Fixed
+
+- **No more device-registry deprecation warning on Home Assistant 2026.9.** Home Assistant 2026.9 deprecated using the device registry's `devices` collection as a mapping and removes that use in 2027.9. The home-state snapshot looked devices up that way while resolving entity areas, so the first snapshot build after startup logged a deprecation warning against this integration. The snapshot now resolves devices through the registry's public lookup, which is supported on every Home Assistant release the integration runs on. No behavior or configuration changes.
+
+## [3.38.0] - 2026-09-04
+
+### Added
+
+- **Built-in text-to-speech.** A new **+ TTS Provider** subentry gives Assist pipelines a TTS engine backed by the OpenAI speech API (`gpt-4o-mini-tts`, `tts-1`, `tts-1-hd`) or by any local server exposing the OpenAI `/v1/audio/speech` endpoint — such as the same [Speaches](https://speaches.ai/) container that already serves speech-to-text, voicing replies with Kokoro or piper voices. Together with the local STT provider this keeps the whole voice pipeline on your network. The flow mirrors the STT one: reuse an OpenAI model provider's key or enter a separate one, or point at a local server URL (a missing `/v1` is added; a blank key means no `Authorization` header is sent); then pick a model, voice, speed, and — for OpenAI's `gpt-4o-mini-tts` models — optional voice instructions. The configured voice becomes the pipeline's default and the OpenAI voice list is offered in the pipeline's voice picker. Audio containers are negotiated per backend (Speaches has no opus/aac) and Home Assistant converts to whatever the satellite needs, so a Voice PE works with either provider. Setup and Speaches notes — including why an old CPU should pick a piper voice over Kokoro — are in the [configuration guide](https://github.com/goruck/home-generative-agent/blob/main/docs/configuration.md#text-to-speech-tts).
+
+### Fixed
+
+- **Adding a local STT provider no longer labels it "STT - OpenAI".** The provider form pre-fills the default type's name before the dropdown is touched, so submitting it unchanged for a local provider stored the OpenAI label — which is exactly what the Assist pipeline dropdown shows. A submitted name that is another type's default is now treated as the stale pre-fill and replaced; typed names are kept, and reconfiguring an existing entry without changing its type never renames it.
+- **A wedged speech server now fails one utterance, not three.** The OpenAI SDK's default of two retries meant a local STT server that accepted the connection but never answered cost three full timeouts of silence before the pipeline heard an error. The STT and TTS clients now make one attempt.
+
+### Changed
+
+- The STT and TTS provider flows share one implementation of the OpenAI-compatible endpoint handling (URL normalization, validation, keyless servers), and both platforms share one runtime for key resolution and the cached OpenAI client. No stored settings change.
+
+## [3.37.1] - 2026-09-03
+
+### Fixed
+
+- **Local STT with a blank API key works again on current Home Assistant.** Home Assistant 2026.8 and 2026.9 ship a newer OpenAI SDK whose client refuses an empty API key with `Missing credentials`, so every utterance against a keyless local server (Speaches, for example) failed before a request was ever sent. The entity now hands the SDK a placeholder that never reaches the wire and strips the `Authorization` header from each request, so a keyless server still receives no bearer token at all — the behavior v3.37.0 intended. Entries that worked around this by entering a dummy key can leave the key blank again.
+- **The recommended local model no longer points at a repository that has gone private.** `Systran/faster-whisper-large-v3-turbo` disappeared from Hugging Face, so a Speaches server could not download the v3.37.0 default. The recommended (and pre-filled) model is now `deepdml/faster-whisper-large-v3-turbo-ct2`, the public CTranslate2 conversion of the same weights. Existing entries keep whatever model name they have; a server that already holds the Systran files keeps serving them.
+- **Docs:** the Speaches `docker-compose` example now pre-downloads the model — Speaches only serves models already on disk — keeps it resident between utterances, and notes the compute type needed on Pascal-generation GPUs.
+
+## [3.37.0] - 2026-09-03
+
+### Added
+
+- **Fully local speech-to-text.** The STT provider's **Local (OpenAI-compatible)** option — shown as "coming soon" since STT shipped — now works. Point it at any server exposing the OpenAI `/v1/audio/transcriptions` endpoint, such as [Speaches](https://speaches.ai/) running faster-whisper on the same GPU box as Ollama, and Assist speech-to-text runs entirely on your network with no cloud calls. Enter the server URL (a missing `/v1` suffix is added automatically; the endpoint is validated when you submit the form) and an optional API key — leave it blank for keyless servers, and no `Authorization` header is sent at all. The model name is free text (recommended: `Systran/faster-whisper-large-v3-turbo`), and **Translate to English** works with every local whisper model, not just `whisper-1`; a local non-whisper model falls back to plain transcription the way the OpenAI path always has. Setup instructions and a ready-to-use Speaches `docker-compose` example are in the [configuration guide](https://github.com/goruck/home-generative-agent/blob/main/docs/configuration.md#speech-to-text-stt).
+
+### Fixed
+
+- **Switching an STT provider between types no longer carries the old type's settings across.** Reconfiguring an OpenAI STT entry to Local used to pre-fill the local server's optional key field with the stored OpenAI API key — a password field of dots that read as a remembered value, and submitting would have sent that key to a plaintext LAN endpoint. The old type's model name and default title also leaked into the new type's form. Changing the provider type now starts from clean settings, the right model default, and a title matching the new type (a name you typed yourself is kept).
+- **A failed local STT connection test no longer discards what you typed.** The credentials form used to redisplay empty (or silently revert to the previously saved URL) after a validation error, so retrying against a server that was still starting up meant retyping the URL every time. The form now keeps your input.
+- **Translate plus a configured language no longer fails every utterance.** The translations endpoint has no language parameter, so a `whisper-1` configuration with both **Translate to English** and a language set failed with an unhelpful log entry on every single utterance. The language is now dropped on the translation path (its output is always English anyway).
+
+## [3.36.1] - 2026-09-02
+
+### Fixed
+
+- **The integration loads again on Home Assistant 2026.9.** HA 2026.9 swapped its schema library from voluptuous to probatio and dropped voluptuous-openapi from core's requirements, so setup died with `No module named 'voluptuous_openapi'` before the integration loaded at all. The OpenAPI tool-schema converter is now taken from Home Assistant's own `llm` helper — the exact pair the running core was built against, on 2026.8 and 2026.9 alike — with the previous library detection kept as a fallback ([#599](https://github.com/goruck/home-generative-agent/issues/599)).
+- **Gemini on HA 2026.9 no longer floods the log.** Probatio marks every closed tool schema with `additionalProperties: false`, which the Gemini client library warns about once per tool on every conversation turn. The key is stripped for Gemini only — it carries no meaning for Gemini's schema format, while other providers (OpenAI strict mode included) keep it.
+- **A tool serializer built against the wrong schema library is now recognized.** Upgrading core does not uninstall the old converter library, and a third-party LLM API's serializer built against it could hand back a "cannot render this" marker that was mistaken for a real schema. The markers of both libraries are accepted wherever either is installed.
+
+## [3.36.0] - 2026-09-01
+
+### Changed
+
+- **Gemini 3 models are no longer quietly detuned.** Google strongly recommends leaving Gemini 3 models at their default temperature of `1.0` — lower values can cause looping or degraded reasoning — but every feature here sent its own default of `0.2`, and since the Gemini defaults moved to `gemini-3.5-flash-lite` (v3.33.1) that meant every out-of-the-box Gemini install was running detuned on every turn, with nothing in the log to say so. When a Gemini 3-family model is selected and the feature's temperature is still the recommended default, `1.0` is now sent instead and `top_p` is left to the API default. **A temperature you set yourself is still sent exactly as configured**, with a warning at setup pointing at Google's guidance. Gemini 2.5 and earlier models — and non-Gemini models serving the same feature, fallback chains included — keep the configured values.
+
+## [3.35.0] - 2026-09-01
+
+### Added
+
+- **Per-model thinking configuration and budget.** The Conversation feature's model form now has a **Thinking / reasoning** setting for every chat provider, plus a **Thinking budget (tokens)** field for providers whose API supports one (OpenAI-compatible servers such as llama.cpp, Gemini, Anthropic). Settings are **remembered per model name**, so switching the chat model from, say, Gemma (thinking on, budget 512) to Qwen (thinking off) and back restores each model's configuration automatically — the conversation itself is untouched. Each choice maps to what the provider actually understands: Ollama's `reasoning` field (with effort pass-through for gpt-oss), `reasoning_effort` and `chat_template_kwargs.enable_thinking` for OpenAI-compatible servers, `reasoning_effort` for cloud OpenAI, `thinking_budget` for Gemini, and extended thinking with `budget_tokens` for Anthropic (budget clamped and `max_tokens`/temperature adjusted as the API requires). Entering a budget with the select at Provider default counts as turning thinking on. Full per-provider details are in the new "Per-Model Thinking / Reasoning" section of the [configuration guide](https://github.com/goruck/home-generative-agent/blob/main/docs/configuration.md). Requested by [@krishgcek](https://github.com/krishgcek) ([#580](https://github.com/goruck/home-generative-agent/issues/580)).
+
+### Fixed
+
+- **llama.cpp reasoning could not be controlled through HGA.** The OpenAI-compatible provider previously sent no reasoning fields at all, so neither `--reasoning on` nor system-prompt instructions had any effect while the llama.cpp WebUI worked with the same model and server. HGA now sends the same per-request fields the WebUI uses. Note: a `--reasoning-budget` set on the server command line still overrides the per-request budget. Reported by [@krishgcek](https://github.com/krishgcek) ([#580](https://github.com/goruck/home-generative-agent/issues/580)).
+- **A rejected `reasoning_effort` no longer fails chat.** A model that rejects the parameter (for example a non-reasoning cloud OpenAI model) is automatically retried without it, the same way unsupported `temperature`/`top_p` values already were.
+
+## [3.34.0] - 2026-08-31
+
+### Added
+
+- **Tools you choose can now always reach the model.** Tool retrieval ranks tools by how similar their description is to your message, and that ranking systematically misses general-purpose tools on exactly the questions they exist for — "Who won the FIFA World Cup?" shares no vocabulary with a `web_search` tool's description, so the tool was filtered out before the model ever saw the list, and no system-prompt instruction could reach it. A new **Always-included tools** picker in the Options flow, beside the excluded-tools picker, lists the same tools across every selected LLM API (MCP servers included); anything you tick is appended after retrieval, on top of the retrieval limit, so it never crowds out a ranked tool. The model still decides whether to actually call it. An exclusion always beats an inclusion — the form refuses a tool ticked in both lists, and the runtime enforces the same rule — and an inclusion binds only while its API is active and the server actually advertises the tool. Requested by [@krishgcek](https://github.com/krishgcek) ([#579](https://github.com/goruck/home-generative-agent/issues/579)).
+
+## [3.33.5] - 2026-08-30
+
+### Fixed
+
+- **Embeddings no longer break silently when a provider is switched to Anthropic.** Anthropic has no embeddings endpoint, but a feature stays pointed at the same provider entry across a reconfigure, so switching your only provider from Gemini to Anthropic left the Embeddings feature aimed at a service that cannot do embeddings — nothing warned you, and long-term semantic memory simply stopped working. A feature is now checked against what its provider can actually serve, and an able provider is used instead. The log names the feature that moved, the provider it came off, and the one now serving it, so the switch is no longer silent. Reported by [@bgiuriceo](https://github.com/bgiuriceo) ([#593](https://github.com/goruck/home-generative-agent/issues/593)).
+- **A feature moved to a different provider now gets a model that provider actually has.** The model name is stored with the feature, so handing the feature to a stand-in provider would have handed over the old provider's model name with it — a Gemini embedding model requested from OpenAI, which rejects every call while setup still reports healthy. The stand-in now starts from its own recommended model. A feature still using the provider you chose keeps the model you chose.
+- **Switching to a provider that cannot serve a feature no longer discards your fallback order.** If you had ranked fallback providers for that feature, the whole list used to be thrown away and rebuilt in the order the providers happened to be added, which could promote one you never ranked. Your next ranked choice is used instead.
+
+### Changed
+
+- **Adding a cloud provider is no longer hidden behind the Deployment step.** Two cloud providers side by side always worked, but the first step of **+ Model Provider** arrived with **Edge** already chosen and said nothing about what that choice did, so accepting it led to a provider list of Ollama and OpenAI Compatible only — and it looked as though OpenAI, Gemini and Anthropic could not be added at all. Nothing is preselected now, and the two choices say what is behind them: **Edge - self-hosted (Ollama, OpenAI Compatible)** and **Cloud - hosted API (OpenAI, Gemini, Anthropic)**.
+- **A feature with no provider to offer now says why.** "No model provider is configured" was shown even when providers *were* configured and simply could not serve that feature — the message for the Embeddings feature on an Anthropic-only install, which read as a dead end. The two cases are now told apart, and the second names the provider types that can do the job. The provider picker also stops offering a provider the integration would then refuse to use.
+- **Switching a provider to a different type no longer carries the old service's API key into the new one's field.** Every cloud provider stores its key in the same place, so reconfiguring — say Gemini to Anthropic — pre-filled the Anthropic key field with the Gemini key. It is a password field, so it showed as dots and read as a remembered value; submitting sent that key to Anthropic to be checked and came back **Invalid credentials** for a key that was never wrong. Changing a provider's type now starts from an empty credential field. Reconfiguring a provider as the *same* type still remembers its key.
+- **Choosing Cloud no longer pre-fills a provider you cannot pick.** The provider step always started on Ollama, so after choosing Cloud the field showed a lowercase `ollama` that was not in its own dropdown, and the name below it read "Primary Ollama". Accepting that name as offered created a provider whose title named the wrong service entirely — an Anthropic provider called "Primary Ollama". The step now starts on a type the deployment actually offers, and a new provider's name is left blank so it follows whatever you pick. Reconfiguring keeps the name you gave it.
+- **The docs say how to add a second provider.** Reconfiguring an existing provider replaces it in place and takes every feature using it along; **+ Model Provider** is what adds another alongside. That, and Anthropic's missing embeddings endpoint, are now written down in the README and the configuration guide.
+
+## [3.33.4] - 2026-08-29
+
+### Fixed
+
+- **Two Sentinel suggestions about one low battery are now recognised as one idea.** When the discovery model wrote a suggestion for a battery it names only in passing — "`low_battery_sensor_0xffffaa67127301f8`", with the address in the text but no sensor actually cited — nothing tied that card to the properly-worked-out suggestion about the very same sensor, so both sat in the Proposals list forever looking like two different ideas. The address is now resolved against your own battery sensors and the sensor is attached to the suggestion, which makes the two cards match and collapse into one, whichever arrives first. Reported by [@hruba202](https://github.com/hruba202) ([#571](https://github.com/goruck/home-generative-agent/issues/571)).
+- **Those suggestions can also be approved now.** A card citing no sensor had nothing to build a rule from, so approving it could only ever mark it unsupported. With the sensor attached it becomes a real low-battery rule.
+- **Two suggestions worded identically about different batteries stop merging.** They previously matched on their wording alone, so one of them was dropped and that battery warning was never seen. Each now carries its own sensor and they stay apart. This applies when both addresses resolve to a sensor; identically-worded suggestions that resolve nothing still merge.
+- **A device address is now found in the suggestion's internal name whatever language surrounds it.** The address used to be located by removing English words (`low`, `battery`, `sensor`, …) and seeing what was left, so an internal name written in your own language kept nothing recognisable and the improvement shipped in v3.32.1 quietly did nothing for you — as did any name the model decorated with an extra word. The address is now recognised by its own shape and everything around it is ignored.
+
+The address is only used when exactly one of your battery sensors carries it, so a name that matches nothing — or two sensors — changes nothing rather than risking the wrong sensor being attached and a real warning being hidden. **After upgrading, a previously dismissed low-battery suggestion may reappear once** while stored identifiers catch up, then settles after one Sentinel run.
+
+## [3.33.3] - 2026-08-29
+
+### Fixed
+
+- **The agent no longer learns to stop controlling your home.** When a command was handled by another assistant sharing the conversation — Home Assistant's own built-in one, for instance — the agent read that turn back as if the assistant had simply *said* "Turned on the light" without doing anything. That is a perfect example of the wrong behaviour, and the model copied it: the next command got a confident spoken reply and no action, which was then read back as another example, and so on. Nothing in the log looked wrong, because from the agent's side nothing failed. The whole of a turn that used tools is now kept out of the history rather than just the part that names the tool, so a reply that no longer shows its actions can't be mistaken for one that never needed any ([#588](https://github.com/goruck/home-generative-agent/issues/588)).
+
+  This is more likely to bite smaller local models, which follow the shape of a conversation more readily than the large cloud ones. **Conversations that already went wrong stay wrong** — the old messages are saved with the conversation. Start a new one and it will be clean.
+
+## [3.33.2] - 2026-08-28
+
+### Fixed
+
+- **Claude no longer fails a turn because of how Home Assistant describes its timer commands.** Two of Assist's built-in commands — start a timer and shorten a timer — say "give me hours, or minutes, or seconds" in a form Anthropic's API refuses to accept, and it refuses the whole request rather than the one command, so any turn that happened to offer Claude one of those two tools died with `input_schema does not support oneOf, allOf, or anyOf at the top level` and the user heard an error. The requirement is now restated in the tool's own description before the request is sent, exactly as is already done for OpenAI and Gemini, so Claude still knows a duration is needed. **If you excluded the `Hass*` tools to work around this, you can restore them.** Reported by [@a4bell64](https://github.com/a4bell64) ([#585](https://github.com/goruck/home-generative-agent/issues/585)).
+- **One tool a provider refuses to accept no longer takes the whole reply down with it.** Providers validate every tool before reading the conversation, so a single schema they dislike fails the turn. When that happens the offending tool is now dropped and the turn is retried without it — a lost tool instead of a lost answer.
+- **The log now names the tool a provider rejected.** Providers identify it only by its position in the request ("tools.3"), and because the set of tools sent changes from turn to turn that position points at something different each time. The name is now resolved and written to the log, so the tool to exclude is stated outright instead of having to be deduced.
+
+## [3.33.1] - 2026-08-28
+
+### Changed
+
+- **New Gemini setups now default to `gemini-3.5-flash-lite`** for chat, image analysis and summarization, replacing `gemini-2.5-flash-lite`. Google has stopped handing out the 2.5 model to accounts that were not already using it, so a fresh Gemini install failed on its first message with `404 ... This model models/gemini-2.5-flash-lite is no longer available to new users`, and Google's own advice in that message is to move to `gemini-3.5-flash-lite`. Reported by [@Xornop](https://github.com/Xornop) ([#575](https://github.com/goruck/home-generative-agent/issues/575)).
+- **Nothing changes for an install that is already running.** The model you picked is stored with the feature that uses it and is not rewritten, and every 2.5 model stays on the list for accounts that still have access to them. If your install is one of the ones seeing the 404, open the affected feature — Chat, Image analysis or Summarization — and choose `gemini-3.5-flash-lite` yourself; nothing else needs to change.
+
+Note on temperature: Google recommends running the Gemini 3 family at its default temperature of `1.0` and warns that lower values can cause looping or weaker reasoning on harder questions. The integration still sends `0.2`, unchanged in this release. If a Gemini 3 model starts repeating itself or reasoning poorly, raise the temperature to `1.0` in that feature's settings.
+
+## [3.33.0] - 2026-08-27
+
+### Fixed
+
+- **A Gemini conversation no longer dies because Google declined to count its tokens.** Before each reply the integration asks Gemini how large the conversation is, so it knows how much history to trim. When that call failed — an unavailable model, a rejected key, an unreachable Google — nothing caught it and the failure took the entire reply down with it, leaving `Unexpected error in streaming task` in the log and no answer on screen. Counting now falls back to an estimate and the conversation carries on. The exact counter is then set aside for five minutes, because it is called many times per message and a failing endpoint would otherwise be re-dialled on each one. Reported by [@Xornop](https://github.com/Xornop) ([#575](https://github.com/goruck/home-generative-agent/issues/575)).
+- **Your Gemini API key no longer appears in Home Assistant's logs.** The key was sent as part of the request URL, and Python quotes the whole URL in any error it raises — so one failed request wrote the key verbatim into the log, into the traceback Home Assistant shows in the UI, and from there into screenshots and bug reports. The key now travels in a request header, which no error message repeats, and anything key-shaped is stripped from these messages as a second line of defence. **If a `generativelanguage.googleapis.com` error has ever appeared in your log, treat that key as public: delete it at [Google AI Studio](https://aistudio.google.com/apikey) and issue a new one.** The key check run when you save your Gemini settings was doing the same thing and is fixed alongside it.
+- **A failed Gemini request now says what went wrong.** Google puts the reason in the body of its reply — which model it could not find, which quota you crossed, that the key is disabled — and the integration threw that away and reported only the status number. The reason is now included, with any credential removed, so a 404 names the model instead of leaving you to guess.
+- **A rejected Gemini key is reported as an authentication problem rather than a connection one.** Google answers a bad or blocked key with 400 or 403, never 401, and only 401 was recognised — so entering an invalid key told you Home Assistant could not reach Google, sending you after a network fault you did not have.
+- **Approximate token counting for Ollama no longer insists on an Ollama URL.** The URL was required on every count even though only the exact-counting mode ever uses it.
+
+### Added
+
+- **Gemini 3 models can be selected** for chat, image analysis, and summarization: `gemini-3.7-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, and `gemini-3.1-flash-lite`, alongside the 2.5 models already offered. Defaults are unchanged. Google does not grant every account access to every model, so if one reports "not found", choose another from the list.
+
+## [3.32.1] - 2026-08-27
+
+### Fixed
+
+- **A suggestion the model labelled itself can no longer bury an unrelated one.** Sentinel lets the model attach its own internal label to a suggestion. When a suggestion had no label the system could compute for it, whatever the model had written there was stored anyway and then trusted — so a suggestion about, say, a stale phone tracker could carry the label belonging to "open windows at night while nobody is home" and quietly suppress that real proposal for as long as it stayed in recent history. Model-supplied labels are now dropped on that path and never trusted when read back, so suggestions already stored with a borrowed label stop hiding anything on the next Sentinel run rather than waiting weeks to age out. Contributed by [@hruba202](https://github.com/hruba202) ([#573](https://github.com/goruck/home-generative-agent/pull/573), following [#571](https://github.com/goruck/home-generative-agent/issues/571)).
+- **Repeated low-battery suggestions for the same device stop stacking up.** The model rewrites its wording every cycle and usually quotes the current reading ("battery at 12%", then "11%"), and unlabelled suggestions were told apart by that wording alone — so one device could mint a fresh card every run. Where the suggestion's id contains a hardware address (the `0x…` form Zigbee devices use), that address is now used as the device's identity instead of the drifting text, and the two are matched together so a re-proposal is recognised whichever of the two stayed put. This was the remaining half of [#571](https://github.com/goruck/home-generative-agent/issues/571)'s report.
+- **Two different devices are never merged into one card by a shared name.** Only a genuine `0x` hardware address counts as a device identity. Anything else — a room name, a room name with a number, a unit code, a placeholder address — falls back to matching on wording exactly as before, because a suggestion hidden by a false match is a battery warning you never see, while a suggestion the system declines to match costs only a repeat card.
+- **Low-battery suggestions written in your own language are recognised again.** The check that decides whether a suggestion is about a battery read a narrower part of the text than the rest of the system did, so a suggestion whose only English battery wording sat in a field the check skipped was treated inconsistently and kept re-proposing. Both now read the same text.
+
+Note: [#571](https://github.com/goruck/home-generative-agent/issues/571) stays open. A low-battery suggestion you rejected while it named no entity can still return once it starts citing one, because those two forms are identified in fundamentally different ways.
+
+## [3.32.0] - 2026-08-26
+
+### Added
+
+- **Pick exactly which tools the agent may use.** A new **Excluded tools** option lists every tool of every selected LLM API — each MCP server's tools grouped under its name, plus Assist's own intent tools — and anything you tick there is removed from the agent entirely: never advertised to the model, never retrieved, and never executed, so a call to it by name is rejected instead of run. Tool retrieval ranks by similarity and can hand back a near neighbour of what you meant (`web_search` vs `web_search_images`); this is the deterministic complement to it, and it matters most for local and smaller models, where a large MCP server's tool definitions eat a real share of the context window. Requested by [@krishgcek](https://github.com/krishgcek) ([#570](https://github.com/goruck/home-generative-agent/issues/570)).
+
+  The picker subtracts, which keeps three things predictable: excluding nothing (the default) behaves exactly as before; a tool a server adds later arrives enabled, so you are never silently missing new capability; and if a server is unreachable when you open the Options page, its stored exclusions are kept and shown as `Server: tool_name (not currently available)` rather than being dropped — deselecting one is always your explicit action. Excluded tools stay in the vector index, so re-enabling one takes effect on the next turn with no re-index.
+
+  Tool names come from whatever MCP server you configured, so the names shown in the picker are stripped of hidden characters, length-capped, and have their parentheses rewritten to square brackets before display. Without that, a server could name a tool `something (not currently available)` and have it render exactly like a tool that is already switched off — so you would scan past a dangerous tool believing it inactive while it was live and callable. Hidden right-to-left overrides could achieve the same thing by reversing the text around them. The same stripping already applied to tool names written to the log, and both now share one routine.
+
+  Tools that Home Assistant only exposes to capable devices — the timer intents, offered only to timer-capable voice satellites — can be excluded too. An options page has no device to ask on behalf of, so those names are taken from the tool index instead. Previously they would have been callable on every voice turn with no way to switch them off.
+
+## [3.31.3] - 2026-08-25
+
+### Fixed
+
+- **Low-battery suggestions for different sensors no longer hide each other.** When the model proposed a low-battery idea without citing a machine-readable entity — common when it names the device only in prose — every such proposal was filed under one identical internal label, regardless of which sensor it was about. The first one through claimed the slot and later ones for *other* sensors were silently discarded as duplicates, so a second device's dying battery could simply never reach you. Those proposals are now told apart by their own wording, so proposals that name their sensor stay separate. Two proposals worded identically still count as one, and re-proposals whose text carries a changing reading ("battery at 12%", then "11%") can still show up more than once — both are being tracked for a follow-up. Reported by [@hruba202](https://github.com/hruba202) ([#571](https://github.com/goruck/home-generative-agent/issues/571)); fix contributed by [@hruba202](https://github.com/hruba202).
+- **A low-battery proposal for a lock, alarm panel, or door/window contact is no longer mistaken for an unrelated one.** These devices report battery through a companion sensor the proposal does not always cite, and a fix for the case above initially stripped them of their "low battery" identity — which would have let any other unlabelled suggestion about the same device displace them, or them displace it. Whichever arrived first would win and the other would vanish. They keep their own identity, so a dead alarm-panel battery is never swallowed by an unrelated suggestion about the same panel.
+
+Note: after upgrading, low-battery suggestions you had already dismissed may reappear once while their stored identifiers migrate to the new form; they settle after a single Sentinel run.
+
+## [3.31.2] - 2026-08-24
+
+### Fixed
+
+- **The options page can be saved again after an MCP server is removed.** Deleting an MCP server integration left its LLM API id stored in the Home Generative Agent configuration; the **Control Home Assistant** selector rejected the now-unknown id on save with "value must be one of […]", leaving the whole settings form permanently unsaveable ([#568](https://github.com/goruck/home-generative-agent/issues/568)). Unavailable ids now stay selected and appear in the list as `<id> (no longer available)`, so the form always saves and the new server can be selected — while your selection is never dropped behind your back: removing a dead entry is always an explicit deselection, and a server that is merely reloading when you open the form keeps its place. Reported by [@krishgcek](https://github.com/krishgcek).
+- **Corrupted or legacy LLM API values can no longer break the integration.** A stored `None`, empty string, or non-string list element — reachable through programmatic options updates or old config versions — could crash the options form build or block the conversation entity from loading at startup. All readers now share one normalizer that quietly drops the degenerate shapes.
+
+## [3.31.1] - 2026-08-23
+
+### Fixed
+
+- **Baseline anomaly notifications no longer describe every sensor as a power appliance.** A humidity, temperature, or other non-power sensor watched by a `baseline_deviation` / `time_of_day_anomaly` rule used to alert as "power higher than expected … Check appliance." It now renders the sensor's own reading with its real unit — e.g. "Playroom Attic Humidity: 65.0% vs usual 49.2% (32% above normal). Worth checking." — with a matching subtitle in English and Czech. Power and energy sensors keep the appliance wording, including sensors that only reveal their power class through their unit (kWh under an exotic device class).
+- **Day-of-week time-of-day alerts show the actual readings again.** These findings stored their comparison value under a different evidence key, so the notification always fell back to a value-less "power N% above normal" line; they now show current-vs-expected values like every other baseline alert.
+- **A single bad sensor reading can no longer silently break anomaly detection for an entity.** `nan`/`inf` sensor states are rejected at baseline ingestion, previously poisoned stored averages self-heal on the next update instead of propagating forever, and notification rendering degrades gracefully instead of crashing the Sentinel run loop.
+- **Explanations no longer claim a near-zero thermometer "is not drawing power."** The LLM explanation guidance for near-zero readings is now conditioned on instantaneous power sensors: the model is instructed never to describe cumulative energy counters (which reset) as "off" and to use neutral "reading is near zero" phrasing for other sensor types. (Prompt guidance, not output validation — the explanation remains model prose.)
+- **Notification copy hardening.** The sensor unit shown in mobile alerts is length-capped and stripped of control/bidi characters before rendering, closing a text-spoofing vector via crafted `unit_of_measurement` attributes.
+
+## [3.31.0] - 2026-08-23
+
+### Added
+
+- **Sentinel notifications now speak your Home Assistant language.** The fixed parts of every Sentinel notification — the title (`Security Alert` / `Home Alert` / `Home Update`), the subtitle, finding-type labels, the burst-batch summary, the daily digest, and the permanent-snooze confirmation prompt — now follow the Home Assistant server language (**Settings → System → General**), currently in English and Czech with automatic fallback to English. This is independent of the `sentinel_response_language` option, which only affects the LLM-written explanation text. The deterministic security message bodies deliberately stay English: they quote exact cameras, entries, and times that a translation could blur. Contributed by [@hruba202](https://github.com/hruba202) ([#565](https://github.com/goruck/home-generative-agent/pull/565)).
+
+### Fixed
+
+- **Notification delivery can no longer be broken by unexpected stored data.** The daily digest now tolerates malformed audit records and findings with a missing severity, and a bad placeholder in any localized string degrades gracefully to the English text instead of raising on the alert path.
+
+## [3.30.11] - 2026-08-22
+
+### Fixed
+
+- **Sentinel's unknown-person rules now actually alert on strangers.** `unknown_person_camera_no_home`, `unknown_person_camera_night_home`, `alarm_disarmed_during_external_threat`, and the two dynamic unknown-person templates had never fired on face-recognition installs: they treated any non-empty recognition list as "a known person is here", but face recognition always leaves labels in that list — including "Unknown Person" itself, so a real stranger suppressed the very alert meant to catch them. The rules now fire on a positive "Unknown Person" sighting.
+- **A misconfigured camera can no longer silently disable Sentinel.** A timezone-naive timestamp from a third-party camera attribute could crash the evaluation loop until the integration was reloaded; timestamps are now normalized safely, and a timestamp more than two minutes in the future no longer counts as a fresh sighting.
+- **Stranger notifications say what was seen.** The alarm-disarmed alert now reads "saw an unrecognized person" instead of the vague "detected unrecognized outdoor activity", and privacy redaction no longer rewrites "an unknown person was seen" into "a recognised person was seen" — only enrolled residents' names are redacted.
+
+### Changed
+
+- **Unknown-person alerts require face recognition.** These rules key on face recognition's "Unknown Person" label; unless face recognition is enabled (the `face_recognition` option, off by default) with a configured face-service they do not fire — use the `motion_detected_*` discovery templates for motion-based intrusion alerts instead (see docs/sentinel.md).
+- **Alerts fire only on fresh, unaccompanied sightings.** A sighting must be within 10 minutes of the detection cycle (so one old sighting can't re-alert for hours), freshness is judged by the recognition event itself rather than camera motion a pet can refresh, and a stranger recognized alongside an enrolled resident is treated as an accompanied guest rather than an intruder.
+
+### Added
+
+- **Camera analysis results wake Sentinel immediately.** A completed camera analysis (which is when recognition labels can change) now triggers an evaluation cycle, so a stranger sighting is checked while it is still fresh even on installs with a long polling interval.
+
+## [3.30.10] - 2026-08-21
+
+### Changed
+
+- **Home Assistant now refuses a second copy of the integration.** The integration has always been designed around a single config entry — its services, database, and Sentinel are one-per-home — but nothing stopped adding a second entry, and a second copy would have silently competed for the same service names and face-gallery uploads. The manifest now declares `single_config_entry`, so the UI simply won't offer a second one. No existing installation is affected.
+
+### Fixed
+
+- **Reloading before Home Assistant finishes starting can no longer resurrect camera entities belonging to the removed copy.** When no cameras exist yet at setup, the camera image entities and recognized-people sensors wait for startup to finish and then discover cameras — but unloading the integration during that window did not call off the wait, so the old copy's entities were added anyway, tied to configuration that no longer existed. This is the same leak fixed for the background engines in 3.30.8; these two platform listeners were the sites that release explicitly documented as still open. Both now cancel on unload, and a discovery that lands while the entry is mid-teardown is refused rather than honored.
+- **One failing shutdown step can no longer leave the rest of the integration running with no way back.** Unloading tears down the video analyzer, the anomaly engines, the notifier, and the database pool in sequence, and an unexpected error in any one of them abandoned everything after it: Home Assistant marked the entry as failed-to-unload — a state only a restart clears — and skipped the cleanup callbacks, leaving startup listeners armed and engines running. Exactly the orphaned-copy problem the 3.30.7 and 3.30.8 fixes closed, reachable again through a single exception. Each step is now contained: a failure is logged and the remaining teardown still runs to completion.
+- **The integration's services no longer outlive it.** All seventeen `home_generative_agent.*` services (enroll a person, query the audit trail, approve rule proposals, reset baselines, and so on) stayed registered after the integration unloaded, still wired to the removed copy — calling one reached a closed database pool or a stopped engine and failed with a confusing internal error instead of "this service does not exist." Every service is now removed when the entry unloads and comes back on the next load.
+- **The person-enrollment upload endpoint now survives removing and re-adding the integration.** The web endpoint behind the enrollment card was permanently bound to whichever copy of the integration first registered it. A reload kept that copy's identity, but removing the integration and adding it back creates a new one — after which every upload failed with an internal error until Home Assistant restarted. The endpoint now looks up the currently loaded integration on every request, and reports "Home Generative Agent is not loaded" (HTTP 503) if none is, instead of crashing. A reload that lands in the middle of a multi-image upload is caught the same way — the request answers 503 "try again" rather than an internal error.
+
+## [3.30.9] - 2026-08-20
+
+### Added
+
+- **A warning when your critical-action PIN is not actually protecting anything.** If you have the PIN switched on while a voice assistant that uses this integration also has **Prefer handling commands locally** switched on, the two settings contradict each other: Home Assistant matches simple commands against its own built-in sentences and carries them out itself — unlocking a lock included — before the agent is ever asked. The agent never sees the command, so it cannot hold it for a PIN. Nothing indicated this; the PIN simply appeared to be on. A repair notice now appears under **Settings → System → Repairs**, names the affected voice assistants, and tells you which setting to turn off. This is a warning, not a fix: no integration can intercept commands Home Assistant answers by itself.
+
+### Changed
+
+- The **Critical Action PIN** documentation is much clearer about what the PIN does and does not cover. It still tells you to turn off "Prefer handling commands locally" — that instruction was correct — but now explains why, and adds the two other paths that bypass the PIN no matter what you do with that setting: sentence triggers you write yourself, which Home Assistant runs before any conversation agent, and anything that is not the conversation agent at all, such as dashboard buttons and scripts. If a lock or cover should never be voice-operable, the reliable control is to stop exposing it to Assist rather than to rely on the PIN.
+
+### Fixed
+
+- **The integration no longer under-reports what it can do when no model API is explicitly selected.** Deselecting every model API stores no setting at all, which the rest of the integration reads as "use the recommended default" — so the Assist API stayed active while the conversation agent told Home Assistant it had no entity control. The practical effect was small (Home Assistant answered "is the door locked?" from its own sentence matcher instead of asking the agent, which has live state access and answers better), but the two disagreed, and one shared definition now settles it for every part of the integration that reads the setting.
+
+## [3.30.8] - 2026-08-19
+
+### Fixed
+
+- **Reloading the integration no longer leaves pieces of the old copy running.** When Home Assistant was still starting up, the anomaly engine, the rule-discovery engine, and the baseline collector each waited for startup to finish before beginning work — but a reload during that window did not call off the wait. The old engines woke up later and ran alongside their replacements, with the settings they had been created with rather than the ones just saved: anomalies evaluated twice, duplicate notifications and actions, duplicate rule proposals, duplicate baseline writes, and nothing to shut any of it down short of restarting Home Assistant. All three now cancel cleanly, and an engine that has been shut down refuses to start again no matter how late the wake-up call arrives. The video analyzer was fixed this way in 3.30.7; these are the three that shared its code and were left behind.
+- **Editing settings repeatedly no longer accumulates dead copies of the integration in memory.** Every reload registered another shutdown handler and never removed the previous one, so each one held its generation's engines and its network connection alive until Home Assistant restarted. After ten settings changes, shutdown ran eleven handlers, ten of them against objects that had been dead for hours. Handlers are now tied to the copy that created them.
+- **A failed startup no longer leaks a network connection each time.** The integration opens a connection pool for OpenAI-compatible services early in setup. If setup then failed — most commonly waiting for a database that is not up yet — that pool was abandoned rather than closed, and retrying setup was exactly what users did. Cleanup is now registered the moment the pool is created, so it runs on every failure path as well as on normal shutdown.
+- **Reloading no longer disconnects a conversation that is still running.** The conversation entity borrows the integration's database connection for its memory and, on OpenAI setups, its connection to the model. Reloads closed both while a conversation could still be using them, which could surface as a reply failing part way through or a conversation losing its last memory write. Entities are now shut down first, and everything they borrow is released afterwards.
+- **A component that refuses to shut down no longer leaves the integration in a state only a restart can fix.** That refusal was previously reported as success, so Home Assistant kept the integration loaded while its engines and database pool had already been torn down — and because a stopped engine now refuses to restart, nothing short of restarting Home Assistant brought it back. The shutdown is now attempted first and aborted safely if any part declines, leaving everything running.
+
+## [3.30.7] - 2026-08-19
+
+### Fixed
+
+- **Reloading the integration after Home Assistant has finished starting no longer dumps a listener traceback into the log.** When the integration set up before Home Assistant finished starting, it deferred the video analyzer's start to the `homeassistant_started` event and registered a cancel so a reload could not leave an orphaned analyzer armed. A one-time event listener already unsubscribes itself when it fires, though, so on any later reload that cancel ran against a listener that was no longer there and Home Assistant logged `Unable to remove unknown job listener` with a full traceback. The cancel now runs only while the listener is still armed. (#559)
+- **An entry that unloads while Home Assistant is still starting can no longer leave a second video analyzer running.** Two orderings could resurrect the analyzer belonging to the entry that was going away. The deferred start ran on a worker thread rather than the event loop, so it could land after the entry had been torn down and its runtime data deleted — the analyzer would come up with no configuration to read, and where it did come up it brought its own capture loop and its own retention deque, which deletes snapshot files. And because Home Assistant runs an entry's cancel callbacks only after the unload itself returns, the start event could fire during the unload and beat the cancel to it. The start now runs on the event loop in the same step that consumes the listener, and stopping an analyzer permanently retires it, so a start arriving from any direction after the entry is gone is refused rather than honored. Users on a busy or slow-starting system are the ones who would have seen this, as duplicate camera analysis and snapshots disappearing earlier than the retention setting should allow. (#559)
+
+## [3.30.6] - 2026-08-17
+
+### Fixed
+
+- **Caption deduplication can no longer invent a second person out of one flapping face.** Field validation caught a phantom that survived every earlier fix: "A person walks across a paved walkway, then Nico stands near a green bush outside the house" — one person in frame, narrated as two. Neither the summarizer nor face recognition was at fault. The camera captured the same human twice in a row with byte-identical captions; recognition named him on the first frame and, one frame later at a hard angle, returned "Unknown Person" whose nearest gallery match was a different enrolled person just past the merge bound, so the identity merge correctly refused to consolidate them. Deduplication then collapsed the two identical captions into one frame and merged their identity lists, handing the summarizer a single frame carrying two identities — which is precisely the evidence its single-actor bias and the verified-single-person constraint both stand down for, since a frame that really shows two people must be allowed to say so. The two-actor summary was faithful to a prompt that had been given a fact no frame ever contained. Identities merged across a run of duplicate frames are now capped at the largest number of faces any single contributing frame actually held, so a temporal union can no longer masquerade as people standing together. Excess entries are dropped weakest-evidence first (empty, then "None", then "Indeterminate", then "Unknown Person", matched in every legacy gallery spelling), and a second real name is never dropped — two enrolled people across a run stay ambiguous between one flapping human and a genuine pair, and erasing someone who is present is a worse failure than naming them imprecisely. A frame that genuinely recorded two faces keeps both, and recognized-people lists can only get more precise, never emptier, so no Sentinel rule changes its firing. (#543)
+
+- **The repeated-scene sentinel no longer leaks into summaries as a person's action.** A frame the vision model answered with the control reply "Scene unchanged." is normally dropped, but it is deliberately kept when face recognition found someone the model missed — otherwise the detection would vanish from the summary, the sensor and the notification. The frame was kept carrying that control reply verbatim as its scene description, so the summarizer was handed a frame that said nothing had happened alongside an identity it was required to mention, and wrote around the contradiction: "A man in a gray shirt walks out of an open door onto the porch, then stands still as Lindo." The frame is still kept, now under a neutral stand-in caption instead of the control reply, mirroring the treatment the empty-and-failed-caption path already used for the same reason. That stand-in has to continue the subject rather than introduce one: the first wording, "A person is present.", was an indefinite introduction, and placed after a frame that had already introduced the same human the summarizer read it as somebody new arriving — "A man in a dark shirt stands on the porch at dusk, then remains there as a person becomes visible nearby", one human in frame, narrated as two. The summary prompt's introduce-once rule could not undo it, because that rule governs what the model writes while this caption is what the model is given. The caption now continues the subject, still states that a person is there so the detection survives into the summary even when the vision model missed them entirely, and still makes no claim about motion, since the sentinel means the model saw no change. Describing only the scene was measured and rejected: it dropped the person from the summary in three runs out of ten whenever recognition had no name, which is the erasure this branch exists to prevent, and it would also have stopped the frame's snapshot from being eligible as the notification image. Consecutive sentinel frames holding a person share that caption and collapse into one frame, which the identity cap above keeps from claiming two people. (#543)
+
+- **Camera summaries stop introducing one person twice.** With face recognition unable to identify anyone — night infrared, subject facing away — the summarizer has no name and no verified-single-person block to work from, only its own rules. Those rules told it to assume one unknown person across separate frames for the purpose of *counting*, but said nothing about how to *refer* to that person, and every frame is captioned independently on purpose, so one man produced "a person" in one frame and "a man in shorts" in another. The summary stitched them together: "A person walks near the house entrance, then later a man in shorts stands at an open doorway with a black cat nearby" — two people to any reader, without ever using a plural for the counting rules to catch. The rules now cover reference as well as counting: when the frames describe one individual, that person is introduced once, by name when there is one and otherwise by the most specific description any frame gives, and every later mention continues the same subject instead of starting over. The verified-single-person block carries the same direction, which also removes the last case where it named the right person in the wrong place ("A person walks across a paved walkway, then Nico stands near a green bush"). Frames that genuinely show two people are still narrated as two. Measured against the local summarization model on the real prompts, ten samples per case: the unidentified-person summary went from zero clean runs to ten of ten, the verified-single-person summary from three of eight to ten of ten, and a genuine pair stayed correctly plural throughout. (#543)
+
+## [3.30.5] - 2026-08-16
+
+### Fixed
+
+- **Voice transcription no longer blocks Home Assistant at the start of every utterance.** OpenAI speech-to-text built a brand-new API client for each audio stream, and building one reads the bundled certificate-authority file from disk — synchronous file I/O landing on the event loop at the most latency-sensitive moment of a voice interaction, between the end of the recording and the start of transcription. Home Assistant's blocking-call detector reported it on every voice command (`Detected blocking call to load_verify_locations ... stt.py, line 285`). The integration now hands the OpenAI SDK the shared HTTP client Home Assistant has already built off the event loop, so no certificate context is created during a voice turn at all, and it keeps one client per speech-to-text entity instead of one per utterance — so utterances close together reuse a pooled connection instead of repeating the TLS handshake, and the per-utterance client objects (each of which carried its own close-on-garbage-collection finalizer) are gone. Re-entering the API key still takes effect on the next utterance without a restart, whether that key lives on the speech-to-text entry itself or on a linked model provider. The request timeout is now pinned at 120 seconds, matching the chat provider, rather than inherited from Home Assistant's shared client where a future Home Assistant change could have silently retimed transcription; a failure while building the client now fails that one utterance instead of raising into the assist pipeline. Translation, response formats, error handling and the empty-audio guard are unchanged. (#556)
+
+## [3.30.4] - 2026-08-15
+
+### Fixed
+
+- **Voice satellites can set timers now.** "Set a timer for two minutes" used to make the agent cancel zero timers and then claim it cannot set timers at all — on every timer-capable satellite (HA Voice PE, ESPHome satellites), on the very first try. Home Assistant exposes the seven real timer tools (`HassStartTimer`, `HassCancelTimer`, …) only to requests from timer-capable devices, but the retrieval index was built once at startup with no device, so those tools could never enter it and never be retrieved — the model saw exactly one timer-shaped tool, the unconditionally exposed `HassCancelAllTimers`, and used it. The index now reconciles with the live tool set every turn: a cheap key comparison detects live tools the index has never seen, and any gap is indexed inline — sourced from the APIs already loaded for the turn, no second network round trip — before retrieval runs, so `HassStartTimer` is retrievable on the triggering turn itself (selection still follows normal relevance ranking). Turns where nothing is missing cost one set comparison, no discovery calls, no store writes. A failed top-up write never disables the index: the existing index keeps serving and the next turn retries automatically. (#554)
+- **Tools of a configured-but-failed LLM API are no longer offered to the model.** The same reconciliation gap had a mirror image: when an MCP server failed to load for a turn, its tools were still retrieved from the index and bound, and every call died at dispatch with "API not available". Retrieval candidates — including the `GetLiveContext` and `add_automation` force-injections — are now filtered against the tools actually loaded this turn, which also keeps device-gated tools indexed by one device (satellite timer tools) from binding in another context that doesn't have them (browser chat). PIN-confirmation injection is deliberately exempt. (#554)
+- **The Tool Index sensor stays truthful under per-turn reconciliation.** It reports the cumulative indexed total rather than the last batch size, returns to `ready` even when a top-up write fails mid-turn, and a stalled write gives up after 30 seconds instead of hanging the voice turn. One tool with an unserializable schema no longer blocks its API's other tools from being indexed, and phantom speech-to-text turns (background noise) never trigger index writes. (#554)
+
+## [3.30.3] - 2026-08-15
+
+### Fixed
+
+- **Environmental discovery proposals no longer advertise occupancy or time-of-day conditioning the rule doesn't have.** Field validation caught the discovery model decorating every environmental statistical candidate with context the prompt explicitly bans ("Garage Temperature Statistical Deviation While Away During Day", "iPhone Pressure Baseline Deviation During Daytime Home"): the rule that Approve activates was always the context-free baseline detector, but the approval card showed the decorated title, summary, and evidence — and approving would mint a rule permanently named `..._away_day`. Candidates are now sanitized deterministically at ingestion and again at the promote, approve, and preview boundaries (so candidates stored before this fix can't mint decorated drafts): occupancy/night evidence paths come off in every spelling the canonical parser recognizes, pure-decoration clauses and parentheticals are removed from prose while substantive wording ("home temperature", "Home Assistant", "the 7-day average") always survives, trailing context tokens are dropped from the ID that seeds the rule name, and a sanitized candidate must derive exactly the same dedup key as the original or the change is reverted wholesale. Candidates with numeric-threshold prose — whose night/occupancy conditions are real rule parameters — pass through untouched, hostile oversized prose can no longer stall Home Assistant in the stripping pass, and the honesty guards that drop hallucinated-entity candidates still judge the model's original output.
+
+## [3.30.2] - 2026-08-14
+
+### Fixed
+
+- **Frame captions can no longer invent a second person from the previous frame's text.** Field validation of v3.30.1 caught the last phantom-person channel: each frame's caption request includes the previous frame's description as motion context, and the captioner could describe the current frame's person as "another man ..." relative to that text — inventing a cross-frame distinction no single image can actually show. The batch summarizer then faithfully narrated two people ("A person stands on a porch ... while another man in dark shirt and light pants descends"), and the invented "another" also falsely tripped the single-person statement's contrast-cue veto, withholding the v3.30.1 fix exactly when it was needed. The captioner now describes each person from the current image alone, using the previous text for motion and continuity only; "another person" wording is reserved for a single image that itself shows two or more people at once.
+
+## [3.30.1] - 2026-08-14
+
+### Fixed
+
+- **One person no longer becomes two in the summary itself.** v3.30.0's identity merge fixed the identity-tag side of the phantom-person bug, but field validation caught the caption side: frames where no face was detectable (back turned, looking down at a phone) still got narrated as a second actor — "a person stands in an open doorway, then Lindo appears." When a batch's full face evidence proves exactly one enrolled person, the summary request now states that fact to the summarizer outright, overriding the prompt rule that previously turned faceless person-mentioning frames into an extra actor. Documented in Camera Entities → Batch Identity Consolidation.
+- The single-person statement is deliberately hard to earn, and it licenses attribution rather than denying plurality. It is decided over the batch's complete evidence — including frames whose scene analysis failed after face recognition succeeded, and frames beyond the summary's frame cap — and is withheld whenever anything suggests a second person: any unknown or second known face anywhere in the batch, any frame with two detected face boxes even when one embedding was unreadable, or any caption that affirmatively mentions multiple people (the camera's caption is the only sensor that can see a face-averted companion). Even when emitted, the statement only tells the summarizer who the lone person is — it never forbids narrating a second one — so a caption that genuinely describes two people, in wording or a language the vetoes don't recognize, remains narratable under the base rules — the design's worst-case failure is a mislabeled name rather than an erased companion. Person names that fail a strict character grammar are never interpolated into the summarizer instruction, and a name that passes is quoted inside a data tag, never spliced into the instruction prose.
+
+## [3.30.0] - 2026-08-13
+
+### Added
+
+- **One person no longer becomes two in camera notifications.** When someone walks through a camera's view, face recognition can identify them in some frames and return "Unknown Person" in others (face turned, motion blur, distance) — so summaries reported things like "Nico walks toward the entrance while an unknown person is present nearby" when only Nico was there. The video analyzer now consolidates identities within each batch: an "Unknown Person" face is renamed to the batch's known person, but only under strict conditions — exactly one known person appears in the batch, no frame shows two or more detected faces (a companion detected in the same frame always blocks the merge, including frames whose scene analysis failed after recognition succeeded), and the known person is the face's *nearest* enrolled match within a cosine distance of 0.85 (`VIDEO_ANALYZER_FACE_MERGE_THRESHOLD`). Anything short of all three keeps both identities. The merged result flows to summaries, notifications, `sensor.*_recognized_people`, and Sentinel evidence; Sentinel's unknown-person rules are unaffected by design, since they fire only when the camera's recognized list is empty — and a merge renames an existing entry, it never empties or fills the list. Documented in Camera Entities → Face Recognition, including a note for automations that key on the literal `"Unknown Person"` string.
+- **Merge decisions are observable and tunable.** Five per-camera counters in the hourly video-analyzer metrics report (`unknown_merged` plus four refusal reasons: same-frame co-occurrence, distance/nearest-match, multiple known names, and no-usable-lookup), with DEBUG logs carrying the measured distances. Face debug crops keep raw pre-merge names, so the threshold can be tuned from real data.
+
+### Fixed
+
+- **Face-recognition evidence now survives scene-analysis failures.** Frames whose VLM call timed out or was dropped by model-contention gates used to lose their face-recognition results entirely; the merge's companion guard now still sees them, so a two-person frame that failed scene analysis blocks the merge instead of blinding it.
+- **A malformed face-API response no longer discards a whole camera batch.** A face entry with a missing, wrong-sized, or non-finite embedding now degrades to "Indeterminate" for that face with a warning, instead of failing every frame in the batch.
+- **Reserved identity labels can no longer be enrolled as person names.** Enrolling someone as "Unknown Person", "Indeterminate", "None", or an empty name (in any casing) is refused, and gallery rows that already carry such names from older versions are never treated as a mergeable identity.
+
+### Changed
+
+- Identity-merge database lookups are bounded: five seconds per lookup and fifteen seconds per batch, degrading to a refusal instead of stalling the camera worker when the database is slow; after a database failure the remaining lookups in the batch are skipped.
+- The face-recognition match threshold (0.7) is now the named constant `FACE_RECOGNITION_THRESHOLD` in `person_gallery.py`.
+
+## [3.29.1] - 2026-08-13
+
+### Fixed
+
+- **Sentinel settings no longer shows "Translation error: MALFORMED_ARGUMENT" under the advanced exclusions field.** Two different template engines read the integration's translation strings and disagree about braces: hassfest validates them with `str.format` semantics, where a literal brace is doubled (`{{`), while the Home Assistant frontend renders the same strings through ICU MessageFormat, where `{{` is not an escape at all but a malformed argument. The advanced-exclusions help text carried a literal JSON example, so it could satisfy one engine or the other but never both — v3.29.0 shipped the spelling that passes CI and fails to render. The JSON examples are now written as prose, which both engines accept. The same defect is fixed in the two "must be a JSON object..." validation errors for camera entry links and rule entity exclusions, which have carried it longer and would have replaced the message explaining a bad entry with the same render error. A test now rejects literal braces in any translation value, in either spelling, across `strings.json` and all four translation files.
+
+## [3.29.0] - 2026-08-12
+
+### Added
+
+- **An entity picker for the common "ignore this everywhere" exclusion.** Excluding a phantom entry point — an ESPHome touch panel's template lock that only mirrors a real lock elsewhere — previously meant hand-typing raw JSON (`{"*": ["lock.x"]}`) into a single-line text field. The Sentinel settings form now has an **Exclude entities from all Sentinel rules** picker for that case, and the JSON field is relabelled **Advanced** for what the picker cannot express: per-rule keys and glob patterns. Both write to the same stored map with the same shape, so hand-edited storage and the documented JSON examples keep working. The picker's help text now also states the consequence the docs already carried: an excluded entity stops waking Sentinel, so anomalies involving it are caught on the next poll rather than instantly.
+
+### Fixed
+
+- **`camera_entry_unsecured` now honors entity exclusions for the unsecured lock or door.** That rule names only the camera in its triggering entities and carries the unsecured entity in its evidence, so the engine's generic exclusion filter — which inspects triggering entities — could never suppress it, and excluding a phantom lock had no effect no matter how it was configured. The rule now applies the exclusion itself, before the entity becomes evidence, for both same-area entities and cross-area `camera_entry_links` entities. A co-located *real* unsecured entry still alerts; only the excluded entity is dropped.
+- **An excluded entity can no longer serve as a camera's activity timestamp.** When a camera advertises no `last_activity`, the rule falls back to the most recent `last_changed` among nearby sensors. That fallback ignored exclusions, so a chatty phantom sensor kept the camera looking permanently active and kept firing the alerts it was excluded to stop — the exclusion appeared to do nothing. Exclusions now apply to the fallback too, and every in-rule suppression is counted in the rule's debug skip tally rather than happening silently.
+- **A glob exclusion under `"*"` no longer makes the Sentinel settings form unsubmittable.** Home Assistant's entity picker rejects anything that is not a literal entity ID, and voluptuous validates a field's default even when the field is untouched, so a stored `{"*": ["camera.map_*"]}` — a configuration `docs/sentinel.md` recommends — would have rejected every submission of the whole form, with the offending value invisible in both fields. The form now splits the stored map on entry shape rather than on the map key: literal entity IDs go to the picker, globs stay in the advanced JSON field where they can still be edited.
+- **Picker entries are validated the same way JSON entries are.** The picker accepts a bare entity-registry UUID, which the engine silently discards at load because it has no dot. Such entries are now rejected by the form instead of being persisted as an exclusion that never takes effect.
+## [3.28.1] - 2026-08-12
+
+### Fixed
+
+- **Voice timers work again on OpenAI** ([#545](https://github.com/goruck/home-generative-agent/pull/545)). Speaking to an OpenAI-powered assistant from a timer-capable voice satellite failed every request with `Invalid schema for function 'HassStartTimer': schema must have type 'object' and not have 'oneOf'/'anyOf'/'allOf'/... at the top level`. Home Assistant's timer intents (`HassStartTimer`, `HassDecreaseTimer`) declare "give at least one of hours, minutes, seconds" as a top-level `anyOf` that OpenAI's function-calling validator rejects — and since those tools only join the tool list for requests coming from a device that can ring a timer, the failure hit voice interactions while the chat box kept working, making it look intermittent. The schema is now flattened for OpenAI-family providers only, with the at-least-one constraint restated in the tool description so the model still knows not to send an empty timer call. Anthropic and Ollama keep the original schema untouched, and Gemini keeps its own existing rewrite. Credit to @hruba202 for finding and diagnosing the failure (his PR #545 is superseded by this release — his version removed the constraint for every provider).
+- **One malformed tool schema can no longer break OpenAI conversations.** Hardening from pre-release adversarial review: tool schemas arriving with a non-dict `properties` or a string-valued `required` (possible from third-party LLM APIs or stale store entries) are now skipped gracefully during the new flattening instead of raising mid-conversation, and flattening events are debug-logged so field reports of odd tool-calling on OpenAI-compatible backends are diagnosable.
+
+## [3.28.0] - 2026-08-11
+
+### Added
+
+- **Sentinel discovery now sees environmental sensors** ([#541](https://github.com/goruck/home-generative-agent/issues/541)). Temperature, humidity, pressure, CO₂, CO, particulate/air-quality, soil-moisture, and illuminance readings were invisible to the discovery model — wanting to monitor an attic sensor, it could only reach the device's battery entity and produced physically-wrong "power consumption anomaly" cards. Environmental sensors now appear in the discovery snapshot (with readings rounded to whole numbers to save prompt tokens; rules still evaluate full precision), baseline-ready ones are surfaced as monitoring gaps, and their candidates promote to real rules: statistical prose registers a baseline-deviation rule, an explicit numeric threshold ("above 95") registers a threshold rule that keeps its night/occupancy conditions, and illuminance uses the per-hour time-of-day template so routine dawn and dusk swings don't trip rolling-average alerts. Because environmental readings follow weather and HVAC rather than occupancy, the prompt bans conditioning them on who is home, and statistical variants share one context-free dedup key that matches the promoted rule — the same anti-pile-up discipline applied to battery candidates in v3.27.1.
+
+### Fixed
+
+- **Environmental candidates cannot hijack or be hijacked by neighboring rule shapes.** Adversarial review of the new routing surfaced and closed four edges before release: a stale-sensor candidate ("has not updated in over 12 hours") keeps registering a dead-sensor staleness rule instead of misreading "over 12" as a 12-degree threshold; common names like `sensor.outdoor_temperature` no longer key as door candidates (which made an approved rule unable to suppress re-proposals of itself); incidental prose like "may mean a window was left open" no longer breaks that same dedup; and a fleet of frequently-reporting environmental sensors can no longer systematically crowd idle door contacts and locks out of the discovery snapshot. Two of the hardening fixes reach beyond environmental sensors: numeric-threshold parsing (comma thousands like "1,000", locale decimals like "20,5", and duration phrases like "over 2 hours" that must never read as value thresholds) and signal-bearing target selection (the rule registers on the sensor that carries the power or environmental signal, not the alphabetically-first cited entity) apply to power candidates too.
+
+## [3.27.1] - 2026-08-10
+
+### Fixed
+
+- **Sentinel discovery no longer proposes battery anomalies conditioned on who is home or the time of day.** The discovery card could fill with near-duplicate candidates like "Garage Temp Sensor Battery Anomaly During Night While Home" — battery health is a physical quantity that does not depend on occupancy or the hour, and the conditions were doubly misleading because promoting such a candidate always produced a plain low-battery threshold rule that never evaluated them. Three layers conspired: baseline-ready battery sensors were fed to the discovery model as "monitoring gaps", inviting statistical candidates for a monotonically declining percentage; the prompt taught occupancy/night conditioning with no exemption for device health; and each context variant counted as a distinct novel candidate because the dedup key preserved the conditioning. Battery-level sensors are now excluded from the monitoring-gap hint, the prompt states that battery candidates must never carry occupancy or nighttime context, and battery candidates share one context-free dedup key — so new context variants stop appearing, and clearing the existing pile requires rejecting only one of them.
+- **A battery candidate's dedup key now matches the rule its promotion registers even without "low battery" wording.** A "battery baseline deviation" candidate keyed as a power anomaly while Promote to Draft registered a low-battery threshold rule, so the activated rule never covered re-proposals and the same idea returned every discovery cycle. The battery keying now mirrors the promotion routing for battery-named sensor evidence, guarded so that mixed candidates — a motion or camera proposal that merely cites a battery sensor with "low" somewhere in its prose — keep their original keying instead of being swallowed by an unrelated battery rule.
+- **Device-named battery sensors classify correctly on both surfaces.** The canonical Home Assistant device-battery names — `sensor.front_door_battery`, `sensor.smoke_detector_battery`, `sensor.garage_temperature_sensor_battery` — are charge levels and are kept out of the monitoring-gap hint, while a measurement token after the battery token (`sensor.battery_power`, `sensor.battery_temperature` on a home battery) marks real telemetry that stays eligible for baseline monitoring.
+
+## [3.27.0] - 2026-08-09
+
+### Added
+
+- **Critical-action PIN prompts and confirmation messages now follow the Home Assistant server language**, contributed by [@hruba202](https://github.com/hruba202) ([#537](https://github.com/goruck/home-generative-agent/pull/537)). The PIN flow added in v3.26.0 returns its user-facing text — confirmation prompts, PIN validation errors, pending-action expiry notices — as fixed strings straight from Python, so it never passes through Home Assistant's translation files and a Czech-configured instance saw the whole flow in English. These strings are deterministic security copy, not model output, so they are translated by a static English/Czech lookup table (`agent/pin_messages.py`) resolved from the server language (**Settings → System → General**; region suffixes like `cs-CZ` resolve to their base language). Any other language falls back to English, and diagnostic log lines stay English deliberately. Maintainer hardening on top of the contribution restored a missing English string (one error path replied with its raw message id instead of a sentence), routed the remaining PIN-flow error messages through the same table, and added parity tests so every language must carry the complete key set with matching placeholders — adding a language is a single new table entry.
+
+## [3.26.1] - 2026-08-09
+
+### Fixed
+
+- **Gemini no longer rejects the tool schemas Home Assistant's own intents produce**, reported with a root-cause analysis, patch and repro tests by [@hruba202](https://github.com/hruba202) in [#527](https://github.com/goruck/home-generative-agent/pull/527). Gemini validates function declarations through protobuf and refuses an `anyOf` branch that carries `required` without being `type: object`, or one whose `required` names a property that branch does not define (`any_of[N].required: only allowed for OBJECT type`). `voluptuous_openapi` emits exactly that shape for the "at least one target" pattern behind `HassTurnOn` and its siblings — `vol.Required(vol.Any("name", "area", "floor"))` becomes parent-level properties plus bare-`required` variants — so a Gemini install could fail on any turn where those tools were offered. Those branches are now stripped before the declaration is sent, variants emptied by the strip are dropped (and a fully emptied `anyOf` removed) so no `TYPE_UNSPECIFIED` entry reaches the proto, and what the strip drops is restated in the schema description — "At least one of: name, area, floor is required." — so the model still reads the constraint it can no longer be made to validate. `_ensure_array_items()` ([#430](https://github.com/goruck/home-generative-agent/pull/430)) already normalized the neighbouring `items`/`anyOf` problem but never touched `required`.
+- **The strip is gated on Gemini and applied to no other provider.** Those branches are valid JSON Schema, and OpenAI, Anthropic and Ollama all honour them; running the pass unconditionally would advertise a schema permitting a targetless `HassTurnOn`, which the model would duly emit and Home Assistant's own voluptuous validation would then reject at run time — trading a provider-specific error for a silent capability loss everywhere else. A variant carrying `properties` but no explicit type is treated as an object rather than stripped wholesale, and a malformed `anyOf` or `required` from a custom tool serializer is skipped rather than raised, so one bad schema cannot take down tool selection for the whole turn.
+
+## [3.26.0] - 2026-08-05
+
+### Security
+
+- **Creating an automation that performs a critical action now requires the PIN.** `add_automation` wrote automation YAML and reloaded Home Assistant without ever passing the critical-action gate: `_is_critical_action` inspects a tool call's `domain`/`service` arguments, and this tool's payload is opaque `automation_yaml`. "Unlock the front door whenever I get home" therefore installed a `lock.unlock` automation with no PIN, while the direct command "unlock the front door" was gated — a durable bypass rather than a one-off action, since the installed automation keeps firing. Both adversarial reviewers converged on this independently during the v3.20.2 ship, where the automation-intent force-binding made the tool reliably reachable from everyday phrasings. With the PIN configured, a critical automation is now held as a pending action and the model is asked for the PIN exactly as it is for a direct unlock. Nothing touches `automations.yaml` or triggers a reload until the PIN is confirmed. Installs without a PIN are unaffected.
+- **Screening is an allowlist over Home Assistant's own action taxonomy, not a list of blocked service names.** A service call is not the only way an automation can unlock a door, and the first version of this gate — which only understood `action:`/`service:` steps — was defeated by four verified bypasses during pre-landing review, each confirmed against a real Home Assistant install by two independent reviewers. Every step is now classified with `cv.determine_script_action` and waved through only when it is provably inert or resolves to something no rule matches. Newly covered: **device actions** (`device_id` + `domain` + `type`), which carry no service name at all yet map straight to `lock.unlock`; **`scene.apply`**, which carries target states inline and reproduces an `unlocked` lock by calling `lock.unlock` (`scene.create` only snapshots state, but the scene it stores can be activated later, so it is screened too); and **`homeassistant.turn_on` / `turn_off` / `toggle`**, now screened against each target entity's own domain. An action type a future Home Assistant release adds is gated rather than skipped, so the screen degrades to over-prompting instead of to a hole.
+- **Screening fails closed on anything it cannot resolve** — a templated service name; a target that is an area, device, label, floor, **group**, or **entity registry ID** (both of which look like ordinary strings but resolve to entities named nowhere in the config); `entity_id: all`; and indirection through a scene, script, another automation, or a fired event. Expect a PIN prompt when an automation calls a script or activates a scene, even a harmless one: what those do lives in configuration this check cannot see, and guessing is what the gate exists to avoid. Screening runs after Home Assistant validates the automation, so blueprints are substituted and both `service:`/`action:` spellings normalized, and every nested branch is walked at any depth. Notification action labels nested in a step's `data` are still not mistaken for service calls.
+- **`cover.toggle` and `cover.set_cover_position` now count as opening a door.** The recommended critical actions listed only `open_cover` and `open`, but toggling a *closed* garage door opens it just as surely. `lock.toggle` and `garage_door.toggle` were added for the same reason. This closes the hole for direct commands as well as automations, so a household with the PIN enabled may now see a prompt for a phrasing that previously went through silently.
+- **Device actions are screened on their domain, not on their `type` string.** A device action's `type` is not the service it calls — each integration maps it in its own code, and `cover` turns `set_position` into `cover.set_cover_position`. Matching the raw type therefore only worked for locks, where the two names coincide by accident, leaving every cover device action open; a `type: set_position` with `position: 100` opened a garage door with no PIN. A device action on a domain any rule guards is now gated whenever its type does not match a rule outright. This also covers user-added rules for domains this project ships no defaults for.
+- **A resolvable target no longer masks an unresolvable one beside it.** `homeassistant.toggle` aimed at `[light.kitchen, <lock registry ID>]` screened only the light and passed. Failing closed on the unresolvable remainder is now scoped by service name, so an area-wide `homeassistant.turn_on` — an everyday automation — still does not prompt.
+- **The generic domain cannot be used to reach a script or scene.** `homeassistant.turn_on` aimed at `script.unlock_front_door` forwards to `script.turn_on` and runs it, but a `script.*` target was treated as merely unresolvable, and unresolvable targets were gated only when the service name itself was guarded — no rule names `turn_on`. Targeting a script, scene, or automation entity is now indirection whatever the service is, matching how a direct `script.turn_on` call is already treated.
+- **Services that run stored configuration are gated**: `python_script` (whose sandbox permits `hass.services.call`), `shell_command`, `rest_command`, `button.press` / `input_button.press` (a template button's press field is a full script), and `conversation.process` (free text dispatches an intent, and an `intent_script` can unlock a door). Each has a device-action spelling as well, which is gated the same way.
+- **Any generic `homeassistant.*` call whose targets are not all named entities is gated.** An earlier iteration only gated unresolvable targets when the service name itself was guarded, to avoid prompting on an area-wide `homeassistant.turn_on`. That was unsound: the generic domain forwards by *resolved* domain, and an area, group, or registry ID can resolve to a script or to a template entity whose `turn_on` runs one. Screening happens before the automation is written and has no entity registry to consult, so it now asks rather than guesses. `data_template`, still accepted by Home Assistant, is inspected for targets alongside `target` and `data`.
+- **An automation cannot be installed while the PIN is enabled but unset.** The direct-command guard allows a call in that state with a logged warning; this path refuses instead and tells the user to set a PIN, because an automation persists and keeps firing rather than acting once.
+- The rule-matching semantics behind both gates live in one shared helper so the direct-command guard and the automation screen cannot drift apart. The test that pins them now asserts an absolute expected verdict on each side rather than merely that the two agree — the earlier version stayed green with the shared matcher stubbed out entirely.
+
+### Fixed
+
+- **A confirmed automation is claimed before it is written**, so two confirmations of the same action in one concurrent tool batch cannot install it twice.
+- **Abandoned PIN challenges no longer accumulate.** Expired confirmations were only ever dropped when that exact action was later confirmed, so a challenge the model never resolved was retained for the life of the config entry — and once more than one piled up, the single-pending-action convenience path stopped resolving. Registering a confirmation now sweeps expired entries and caps the store.
+- **Documentation corrected:** the Critical Action PIN section stated that enabling the guard without setting a PIN causes the agent to reject requests. For direct commands it does not — it logs a warning and allows the action. The docs now describe the actual behavior of each path.
+
+### Known limitations
+
+- **Raw protocol writes are not screened.** Screening matches domains and services, so a call that addresses a device beneath the entity layer — `mqtt.publish` to a lock's command topic, `zwave_js.set_value` writing a Door Lock command class, `zha.issue_zigbee_cluster_command` — can reach a lock without naming the `lock` domain. These are deliberately not gated by default because they are routine on those stacks; `docs/configuration.md` documents a per-transport rule you can add to `critical_actions` if you run locks on one of them.
+- **Targets that resolve at run time cannot be inspected.** Screening happens before the automation is written and has no entity registry, so a group, area, or registry ID cannot be expanded and a template entity cannot be told apart from an ordinary one. Unresolvable targets are gated rather than reasoned about, which is why some automations prompt more than a human reader would expect.
+- A blueprint-based automation is stored as a `use_blueprint:` reference and re-substituted by Home Assistant on every reload, so the PIN attests to what the blueprint did **at approval time**. Editing that blueprint file afterwards changes what the approved automation runs without a fresh prompt. Plain YAML automations are written exactly as screened.
+
+## [3.25.1] - 2026-08-03
+
+### Fixed
+
+- **`sentinel_response_language` now reaches the mobile push for informational findings**, reported by [@hruba202](https://github.com/hruba202) from field testing of [#523](https://github.com/goruck/home-generative-agent/pull/523). Six finding types render their mobile message from a deterministic English formatter that quotes exact figures and entity names, and that formatter was consulted *before* the translated explanation, so a Czech install still got "hfoun: 1.0W vs usual X.XW (below normal). Check appliance." on the phone. Worse, the persistent notification already preferred the explanation, so the same finding arrived in two different languages depending on where you read it. The four informational types (`appliance_power_duration`, `baseline_deviation`, `time_of_day_anomaly`, `entity_staleness`) now prefer the translated explanation when a language is set, matching the persistent notification. The two security types (`alarm_disarmed_during_external_threat`, `alarm_disarmed_open_entry`) are deliberately exempt and stay English: their copy carries the camera or entry, the disarm time, and the call to action, and a paraphrase can drop those or assert things the evidence does not support — losing that detail matters more than the language it is in. With no language set the deterministic copy still wins everywhere, so English installs are unchanged.
+- **A too-long or empty translated explanation no longer degrades to vague English.** The explainer capped output at 220 characters and substituted an English compact fallback ("Open entry at night: Front Door. Urgent: check and secure it now."), which fits the mobile cap and so outranked the notifier's far more precise deterministic copy. With a response language set the explainer now reports the failure honestly instead, letting the notifier fall back to its exact-figure string.
+- **The notification batch buffer now holds the redacted explanation.** `_held_batch` stored the raw text while the redacted copy went to the message builders. The flush discards that slot today so nothing leaked, but storing the unredacted variant would have silently bypassed sensitive-finding redaction the moment anyone rendered it.
+
+  Three surfaces remain English regardless of the setting, because they are fixed strings built from counts and finding-type labels rather than model output: notification titles and subtitles, the burst-batch summary (more than three non-high-severity notifications within 60 seconds collapse into one `"N home updates: …"` push), and the daily digest.
+
+## [3.25.0] - 2026-08-02
+
+### Changed
+
+- **Discovery now understands home/away/night context structurally, not by English keywords** ([#524](https://github.com/goruck/home-generative-agent/issues/524)). Away/home/night context for Sentinel discovery candidates resolves primarily from the structured evidence paths the model cites (`derived.anyone_home`, `not derived.anyone_home`, `derived.is_night`) through a new shared resolver used identically by rule normalization, dedup keys, and the proposals card — the English keyword matching remains only as a legacy fallback. A candidate whose title/summary carries no English direction words (the exact situation a future translated-discovery feature creates, and one the model can produce today) previously inverted silently: a "window open while someone is home" idea became a while-away rule, its dedup key never matched the activated rule so the same idea was re-proposed every cycle, and the card's away badge and severity never fired. All spelling variants the model emits now canonicalize to the same signal — `NOT`/`!` prefixes, `== false`/`off`/`no` comparisons (including the `is` idiom), quote-wrapped paths, stacked negations, bare `anyone_home`/`is_night` without the `derived.` prefix, and an explicit `derived.is_night == false` now correctly blocks the night fallback instead of triggering it. The discovery prompt tells the model to cite these paths whenever a candidate depends on occupancy or nighttime — and to omit them when it doesn't, so an over-cited path can't silently narrow an occupancy-agnostic rule.
+- **A threshold or entry rule citing `derived.anyone_home` with no other occupancy signal now scopes to occupied hours** instead of defaulting to while-away semantics — the structured path is trusted as the model's stated intent (proposals still require your approval before any rule activates). English away wording still overrides a bare positive path, so existing English candidates keep their meaning.
+- **An always-on unavailable-sensors rule now covers its while-home variant in dedup** — without this, the structured keying would re-propose the occupancy-scoped version of a rule you already approved, and approving the duplicate would double-alert on every occupied-hours outage. Coverage is deliberately limited to the unavailable family: templates whose firing condition lives outside the dedup key (motion-without-camera, alarm-disarmed entry) are never treated as supersets, so genuinely distinct night/away ideas still surface. Some previously seen candidates may be re-proposed once after upgrading while their stored dedup keys migrate to the structured form; they dedup normally afterwards.
+
+### Fixed
+
+- **Proposals card severity now recognizes structured away candidates** — the severity heuristic only matched English prose, so a candidate citing `not derived.anyone_home` with no English wording under-reported as medium while the server registered the higher-value away rule. The card's context detection, rule-id preview, and GitHub issue prefill now share the same canonicalized evidence handling as the server (including identical whitespace and quoting behavior; canonicalization test vectors pin the server resolver's behavior the JS mirror is written against).
+
+## [3.24.0] - 2026-08-02
+
+### Added
+
+- **Sentinel finding explanations can now be written in your language** — a new optional `sentinel_response_language` setting in the Sentinel subentry (next to the explanation toggle), contributed by [@hruba202](https://github.com/hruba202) ([#523](https://github.com/goruck/home-generative-agent/pull/523)). Set it to e.g. `Czech` and the LLM-authored explanation shown in mobile and persistent notifications is generated in that language; leave it empty (the default) for English. The option is deliberately scoped to the explainer only: discovery candidate titles/summaries and triage decisions are parsed by code downstream (normalization, dedup, evidence matching) and always stay in English — [#524](https://github.com/goruck/home-generative-agent/issues/524) tracks making discovery prose translatable safely. Mirrors `vlm_response_language`'s convention.
+- **Privacy redaction stays deterministic under translation** — inflected languages decline names by grammatical case ("Petra" becomes "Petru"), which would let a translated explanation slip a recognized person's name past the notifier's exact-match redaction. For sensitive findings with a response language set, recognized names are now removed from the model's input before the explanation is generated — walking the entire evidence structure (values, keys, captions, nested containers), matching longest-first so overlapping names like "Alex"/"Alexander" can't leave a partial name behind. A name the model never sees cannot be emitted in any inflection; the prompt's keep-names-nominative instruction remains as defense in depth. English behavior is unchanged. Found and iterated through cross-model adversarial review.
+
+## [3.23.1] - 2026-08-01
+
+### Fixed
+
+- **Locale-language battery proposals can now be approved** — [@hruba202](https://github.com/hruba202)'s Czech-prose discovery proposal for a door-lock battery ([#522](https://github.com/goruck/home-generative-agent/issues/522)) was marked *unsupported* for three stacked reasons, all fixed: the `entities[sensor.x].state` evidence format is now parsed (index-based brackets still resolve nothing), the English low-battery signal is read from the machine-generated candidate ID when the title/summary are written in the home's language (matched on whole slug tokens, and scoped to battery routing only, so it can never change a proposal's night/occupancy coverage), and a single unambiguous locale-named sensor (Czech `baterie`) is promoted as the battery sensor. Thresholds now parse comma decimals ("pod 20,5 %" → 20.5) and candidate-ID-embedded values (`…_battery_below_10` → 10%), with an explicit percent in the summary taking precedence.
+- **Approving a battery proposal now verifies the sensor really is a battery** — each cited entity must exist and look like a battery-percent reading (battery device class, a `%` unit, or a battery-named ID, with a numeric state; a transiently `unavailable`/`unknown` sensor is tolerated). Sensors that fail the check are dropped from the rule, and when none survive the approval is refused with an honest reason (`not_battery_sensor` for entities that exist but aren't battery readings, `entities_unresolved` when nothing resolved) instead of registering a rule that would alert forever on, say, a temperature reading (21 °C is "below 40") or silently never fire on a text state.
+- **Battery proposals now dedup correctly against their approved rules** — the semantic keys that suppress re-proposals mirror the normalizer exactly: unified qualifier words (low/below/under/weak), battery candidates keyed on the battery sensor rather than a cited lock or contextual entity, and night/occupancy wording no longer stops a battery candidate from matching its always-on rule. The evidence-mismatch guard and the proposals card parse the new evidence format too, so card badges, severity, and the GitHub issue prefill agree with what the server registers — and ASCII locale candidate IDs slug to the same rule id on both sides (candidate IDs containing non-ASCII characters additionally get a short server-side digest suffix so distinct locale names cannot collapse into one rule).
+
+## [3.23.0] - 2026-07-30
+
+### Added
+
+- **Sentinel can now alert on motion detected while nobody is home, at any hour** — a new deterministic rule template, `motion_detected_while_away`, proposed by [@hruba202](https://github.com/hruba202) in [#518](https://github.com/goruck/home-generative-agent/issues/518). It is the day-agnostic sibling of `motion_detected_at_night_while_away` (v3.22.0): same any-of sensor semantics, same departure/arrival grace suppression, same advisory *check camera* action (a motion finding has no specific door or window to close, so nothing is actuated). It defaults to low severity — daytime motion while away has more benign explanations (cleaners, deliveries, pets) than night motion — and the same pet/outdoor-VMD noise caveat applies: scope it to interior sensors pets can't reach, or snooze per rule.
+
+### Fixed
+
+- **Discovery candidates with index-based evidence paths can now normalize** — the discovery LLM sometimes cites evidence as `entities[31].state` instead of naming the entity; the index is only meaningful against the snapshot the candidate was drafted from, so such candidates could never resolve their motion sensor and stayed unsupported even when the summary named the entity outright (the exact shape of [#518](https://github.com/goruck/home-generative-agent/issues/518)). Motion-named `binary_sensor` IDs written in the candidate's prose are now promoted as motion evidence, and the semantic dedup key uses the same prose fallback — without it, an activated rule would never suppress re-proposals of its own candidate. Evidence-path entity IDs still win when they resolve; prose IDs are restricted to `binary_sensor.*` (other domains would register rules whose `state=='on'` evaluator can never match — the #514 invariant), so `derived.*` paths and stray dotted words never become rule targets.
+- **Prose-derived entity IDs are resolved against live states at approval** — candidate prose is LLM output, so a hallucinated or paraphrased sensor name (e.g. `…_motion_sensor` vs the real `…_motion`) would have registered a rule whose evaluator fails closed forever while its dedup key suppressed re-proposals: a silent, permanent monitoring gap the user believes is active. Approval now drops IDs that don't resolve and refuses the proposal (`entities_unresolved`) when none remain. Found by cross-model adversarial review.
+- **A prose battery/lock/staleness/open-entry condition no longer collapses into a plain motion rule** — "battery of `binary_sensor.kitchen_motion` below 20% while away" with index-based evidence would have registered a rule alerting on *motion*, silently dropping the battery predicate; a "sensor stale for days" candidate would have inverted into alerting on normal motion. Such candidates now stay unsupported with an explicit missing-entity reason. Applies to the night template's branch as well.
+- **Motion findings no longer list idle sensors as triggering entities** — the away-motion evaluators (night template included) passed every resolved sensor to the finding, so a user's entity exclusion on an idle sensor could silently discard a genuine alert from the sensor that fired, notifications could name the wrong sensor, and cooldowns were recorded against sensors that never triggered. Only sensors actually reporting motion are listed now; the finding evidence still records every configured sensor's state.
+- **Approving an away-motion rule already covered by a same-template any-of rule reports `covered_by_existing_rule`** — including when the existing rule's sensor set is a superset (an `[kitchen, hall]` rule already alerts on kitchen), so duplicate rules producing duplicate findings can no longer be registered. Restricted to the two any-of away-motion templates; all-of templates (`motion_while_alarm_disarmed_and_home_present`) are never treated as covering a subset. Note: a night-template rule and a day-agnostic rule on the same sensors are different templates and will both alert on night motion — the docs now advise replacing the night rule when adopting the day-agnostic sibling (an evaluator-level dedup was tried and reverted: it ran before snooze/exclusion suppression and could silently lose the day rule's alert while the night rule was snoozed).
+- **"Day or night" candidates keep their all-hours coverage** — contrastive phrasing ("day or night", "any time, including night", "not only at night") contains the substring "night" and silently narrowed to the night-gated template, discarding the daytime coverage the candidate explicitly proposed. Such candidates now route to `motion_detected_while_away`.
+- **Daytime unknown-person and camera-correlation candidates keep their camera templates** — the new day branch would otherwise have captured "unknown person + motion while away" (downgrading a sensitive high-confidence camera rule to a low advisory) and "motion with no camera activity" candidates (widening camera-correlation semantics to every motion event).
+- **Semantic dedup keys now match their activated rules in three more shapes** — (1) a candidate citing a person tracker in evidence plus an index-based motion path normalizes from prose but keyed `subject=unknown`, so the activated rule never suppressed its re-proposals; (2) door-named motion sensors (`binary_sensor.front_door_motion`) keyed `subject=entry_door` before `motion` — the #516 motion-vs-entry disambiguation now applies to the key module too; (3) away phrasings the normalizer accepts ("no one at home", "without occupants") keyed `home=1` via the bare "home" substring. All three verified by cross-model review with empirical reproductions.
+- **Proposals card no longer uses a regex lookbehind** — the JS lookbehind literal is an early `SyntaxError` on WebKit < 16.4 (older iPad wall panels), which would have stopped the entire card script from parsing, not just the new branch. Replaced with an engine-portable capture-group form; the card also mirrors the server's per-class fallback trigger and new guards, so its template preview matches what approval actually registers.
+
+## [3.22.0] - 2026-07-30
+
+### Added
+
+- **Sentinel can now alert on motion detected at night while nobody is home** — a new deterministic rule template, `motion_detected_at_night_while_away`, proposed by [@hruba202](https://github.com/hruba202) in [#516](https://github.com/goruck/home-generative-agent/issues/516). Discovery candidates matching this pattern were previously marked unsupported; they now normalize into an approvable rule that fires when any of its motion sensors reports ON at night with everyone away. The rule suggests the advisory *check camera* action (a motion finding has no specific door or window to close, so nothing is actuated), is suppressed during a resident's departure/arrival grace window so walking out the door at night doesn't page you, and keeps working when one of several configured sensors is renamed or removed — the remaining sensors still alert, with the missing ones recorded in the finding evidence. Note: PIR sensors tripped by pets and outdoor camera VMD entities can make this rule noisy; scope it to interior sensors pets can't reach, or snooze per rule.
+
+### Fixed
+
+- **Candidates phrased "nobody is home" or "no one is home" now route to away templates** — the away-phrase matcher only recognized "nobody home"/"no one home", so the most natural phrasing silently failed to normalize. All away-scoped templates benefit.
+- **Motion sensors named like entries are no longer misread as doors** — `binary_sensor.outdoor_motion` and `*_doorbell_motion` contain the substring "door" and were classified as entry sensors, blocking their motion candidates entirely.
+- **Availability and battery candidates can no longer be captured by motion templates** — a candidate about a motion sensor being *unavailable* (or its battery being low) now keeps routing to the availability/battery templates whose evaluators can actually match, instead of registering a motion rule that could never fire (the issue #514 invariant, re-verified for the new branch).
+- **Notifications for approved discovery rules now show a readable label** — dynamic rules carry slugified candidate IDs (e.g. `v1_subject_motion_sensor…`) as their type; notification titles and explanation prompts now fall back to the rule's template label ("Motion at night while away", "Open entry at night") instead of showing the raw slug.
+- **Departure/arrival grace suppression now covers approved discovery rules** — presence-sensitive matching previously keyed on exact rule IDs, so dynamic rules created from candidates (including existing `open_entry_while_away` variants) never received grace-window suppression; matching now also considers the rule's template.
+- **Discovery no longer re-proposes an already-approved away rule** — candidates that express absence only through the `not derived.anyone_home` evidence path (no away wording) now produce the same semantic key as their activated rule, so they deduplicate instead of reappearing every discovery cycle.
+
+## [3.21.3] - 2026-07-29
+
+### Fixed
+
+- **Power sensors reporting in any Home Assistant power unit are now measured correctly** — the `appliance_power_duration` rule and the power-history enrichment converted only kW readings to watts; a sensor denominated in MW, mW, GW, TW, or BTU/h was compared raw against the watts threshold, so a 0.25 MW (250,000 W) reading looked like 0.25 W and could never trigger — silently. All HA power units are now normalized to watts before any comparison, and a `device_class: power` sensor reporting a unit that *isn't* power (e.g. VA apparent power) is skipped rather than compared wrongly — skipped ends any in-progress episode, so a sensor that changes units mid-run restarts its clock. Surfaced by [@andymcmanus](https://github.com/andymcmanus)'s unit-mixing question in [#461](https://github.com/goruck/home-generative-agent/issues/461).
+- **Cycle-completion detection now works for kW-denominated appliances** — the baseline anomaly detector compared a sensor's native baseline value against its 100 W activity floor without unit conversion, so a washer reporting 1.2 (kW) never passed `1.2 >= 100` and its cycle-end power drops were never downgraded to low severity. The floor now compares in watts (1.2 kW = 1200 W). The baseline standby-noise guard gets the same treatment: deviations are normalized to watts from any power unit before the 50 W minimum, instead of only kW.
+
+- **Hand-typed unit spellings keep their sensors monitored** — ESPHome/MQTT/template sensors carry free-text units, and a `device_class: power` sensor labeled `"w"` or `"KW"` would have been skipped by the new normalization (it was previously compared raw). Unit strings are now matched case-insensitively where unambiguous; `mW` vs `MW` must match exact-case since lowercase "mw" could mean either. Sensors whose unit still can't be recognized are logged (debug, once per unit string) instead of disappearing silently.
+- **A malformed sensor attribute can no longer stop Sentinel** — an entity whose `unit_of_measurement` is a list or dict (settable via the REST API or misbehaving custom integrations) crashed the power-sensor filter, and in the enrichment step that exception killed the entire Sentinel detection loop until the integration was reloaded. The filter now coerces attribute values safely, and snapshot enrichment as a whole is guarded so a failure degrades to un-enriched snapshots instead of ending detection. Found by adversarial review with an empirical reproduction.
+- **Recorder history is read in each row's own unit** — when a sensor's unit was reconfigured mid-window (say W → kW in a template), the "on since" search interpreted old readings in the new unit, missing the off boundary and pushing the on-since time arbitrarily far back. Historical rows now honor their recorded `unit_of_measurement`, falling back to the current unit when absent. `nan`/`inf` readings are also rejected in this walk (they compared as "on") — mirroring the guard the rule already had — and a finite reading that overflows to infinity in watts (a garbage 1e300 TW value) is rejected after conversion everywhere, since an infinite value in a finding would crash notification dispatch.
+
+### Changed
+
+- The appliance power rule's episode tracker now also resets eagerly when a sensor stops identifying as a power sensor (attributes change), closing a narrow path where a stale episode start could survive an evaluation error.
+- The power enrichment's 10 W "off" level and 30-day recorder lookback are now documented in `docs/constants.md`.
+
+## [3.21.2] - 2026-07-28
+
+### Fixed
+
+- **"Multiple occupancy sensors unavailable" is now a supported Sentinel proposal** — discovery candidates whose evidence cites `binary_sensor.*` entities (occupancy and presence sensors) with an unavailability pattern were rejected as unsupported, because rule normalization only accepted `sensor.*` entity IDs for the unavailable-sensors templates. Both domains are accepted now, so approving such a candidate registers an `unavailable_sensors` rule that alerts when every listed sensor is simultaneously unavailable — a likely hub or network outage — and stays quiet while any of them is still reporting. Diagnostics for availability candidates that remain unsupported now correctly reflect which entity kinds were recognized. Requested by [@hruba202](https://github.com/hruba202) in [#514](https://github.com/goruck/home-generative-agent/issues/514).
+- **Availability rules no longer get silently scoped to occupied hours by incidental wording** — prose like "presence sensors" or "sensors around the home" in a discovery candidate previously counted as a someone-is-home condition, routing the rule to the while-home template that is silent exactly when nobody is home — the moment a hub-outage alert matters most. The while-home variant now requires an explicit occupancy condition (the `anyone_home` evidence path or phrasing like "while someone is home"), and home/away wording is matched on whole words across normalization and the proposals card.
+- **Unavailable door-contact and battery sensors no longer become rules that can never fire** — a candidate like "front door contact sensor is unavailable" was captured by the open-entry template (which only matches `on`/`open` states) and a "battery sensor unavailable" candidate by the low-battery template (which needs a numeric reading), producing approved rules that silently never alerted. Availability candidates now route to the unavailable-sensors template ahead of those branches, while person-tracker "offline / last seen" candidates keep their staleness routing.
+- **Contextual condition entities are excluded from availability targets** — in a compound candidate ("temperature sensor unavailable while occupancy is off"), the contextual entity was included in the rule's all-of target list, so the rule could never fire because `off` never equals `unavailable`. When a candidate's pattern carries per-entity predicates, only entities explicitly compared to `unavailable` become targets; entities compared to other states (or omitted from the pattern) are treated as context, and candidates with no availability target at all stay unsupported instead of registering a rule that watches for the wrong state.
+- **Approving a second while-home availability proposal no longer collides with the first** — every `unavailable_sensors_while_home` rule shared one hardcoded rule ID, so a proposal for one batch of sensors marked any later proposal for different sensors as already covered. Rule IDs now derive from the candidate, matching the presence-agnostic variant.
+
+## [3.21.1] - 2026-07-27
+
+### Fixed
+
+- **Sentinel audit history no longer fills up with findings you never saw** — findings filtered out by LLM triage or blocked by the execution policy were recorded in the audit trail as if they had been notified. The audit store protects notified records from eviction, so during busy periods the hot buffer could fill with this invisible noise and push out genuine alert history; the same mislabeling inflated the "notified" health-sensor KPIs and daily digest counts. These findings now get their own reason codes (`triage_suppressed`, `policy_blocked`), records stored before this fix are relabeled automatically on load, user responses (dismiss / false-positive taps) attach to the record that actually produced the notification instead of a newer suppressed duplicate, and the trigger-source health breakdown counts only real notifications. Notified-KPI values and digest counts may show a one-time corrective drop after upgrading. Reported and fixed by [@hruba202](https://github.com/hruba202) in [#511](https://github.com/goruck/home-generative-agent/pull/511).
+
+## [3.21.0] - 2026-07-26
+
+### Added
+
+- **"Window open at night" is now a supported Sentinel rule** — a new `open_entry_at_night` template alerts when a door or window is open during night hours, whether or not anyone is home. Previously, night-time entry candidates with unknown occupancy were forced into the "while away" template, which never fires for someone asleep at home with a bedroom window open. Requested by [@hruba202](https://github.com/hruba202) in [#504](https://github.com/goruck/home-generative-agent/issues/504).
+- **Discovery proposals now work with entity names in any language** — rule candidates for sensors named in the user's locale (e.g. Czech `binary_sensor.bedroom_loznice_okno`, where "okno" means window) were rejected as unsupported because entry detection only recognized English "door"/"window"/"entry" tokens in the entity ID. When the candidate's English description names a door or window, matching binary sensors and covers are now promoted to entry sensors — with word-boundary matching so "indoor", "outdoor", and "doorbell" don't count, and with sensor kinds that are never door/window contacts (motion, occupancy, smoke, gas, leak, battery, tamper, and similar) never promoted. Lock and alarm candidates keep their original routing. Quote-wrapped entity IDs in LLM evidence paths (`entities[entity_ids contains 'binary_sensor.x']`) are also accepted now, across normalization, camera matching, and duplicate detection.
+
+### Fixed
+
+- **Entry rules bound to cover entities actually fire now** — Home Assistant covers report `open`/`closed` rather than a binary sensor's `on`/`off`, so any approved entry rule watching a `cover.*` entity silently never alerted. Both states now count as open across the entry, alarm-entry, and multiple-entries templates.
+- **"During night hours" no longer misroutes to a duration rule** — candidate text like "the window was opened during night hours" matched the bare word "hours" and produced a rule that only alerts after the window has been open two hours, ignoring night entirely. Duration wording now requires a real duration phrase or a numeric threshold ("open for 2 hours"), and duration keywords are word-bounded so "before" no longer counts as "for".
+
+### Changed
+
+- **Night-time entry candidates with unknown occupancy now map to `open_entry_at_night`** instead of `open_entry_while_away`. If you previously approved an `open_entry_while_away_*` rule from such a candidate and discovery re-proposes it, decline the new proposal to avoid duplicate alerts — the two rules would both fire on the same open window at night while away.
+
+### Security
+
+- **The Sentinel proposals card now escapes LLM-generated text before rendering** — discovery candidate titles, summaries, and IDs are HTML-escaped in the Lovelace card, closing a stored-XSS path where a prompt-injected candidate could have executed script in the dashboard.
+
+## [3.20.2] - 2026-07-24
+
+### Fixed
+
+- **Creating automations from chat works reliably again** — asking for an automation in plain English ("Always turn on the garage light when the garage door is unlocked and send a notification") could silently fail: the tool selector ranked entity-control tools above the automation tool, so the agent either replied that it can't create automations or just acted directly. The automation tool is now guaranteed to be available whenever a message signals automation intent — explicit wording ("automate", "remind me every 30 minutes", "every morning"), conditional phrasings ("turn on the porch light when motion is detected"), and notify-me requests ("tell me when the front door opens", "let me know when the washing machine finishes", "warn me if the basement gets wet"). It also stays available through short follow-ups like "yes" or "make it persistent and use mobile notification" — counted in user turns so long tool-heavy exchanges don't break the chain, and surviving conversation summarization. Read-only questions ("check if the garage door is open") deliberately do not trigger it, intent detection is capped against pathologically long messages, and schema-first YAML mode is unaffected. Intent phrases are English-only for now; other languages fall back to the previous similarity-ranking behavior. Field-validated on a local qwen3.5:35b edge deployment, including the original demo phrase and a two-turn create-then-refine flow.
+
+## [3.20.1] - 2026-07-23
+
+### Fixed
+
+- **Chat and camera analysis no longer fail on models that pin their sampling settings** — some OpenAI models (o-series and other reasoning-style deployments) only accept their default `temperature`/`top_p` and reject any other value with a 400 error, which previously killed the whole turn. The integration now detects that rejection and retries without the rejected setting (once per rejected parameter), everywhere a model is called: conversation turns (including tool-using turns, which need a full re-bind because binding tools freezes the model's sampling settings), camera image analysis, conversation summaries, the video analyzer, and Sentinel triage/discovery. In multi-provider fallback chains, a provider that keeps rejecting its sampling settings now fails over to the next provider and counts toward the circuit breaker instead of aborting the call. And when a turn still fails, the chat reply now shows the real reason (e.g. the provider's error message) instead of the generic "unable to respond in time" — while errors not raised by the integration show only their type, so internal details never leak into chat, voice replies, or the model's future context. Reported by [@hruba202](https://github.com/hruba202) in [#502](https://github.com/goruck/home-generative-agent/issues/502).
+- **Cameras with spaces or diacritics in their names are found again** — asking to check "kamera obývák 2" used to fail because the camera tool guessed `camera.kamera obývák 2` as the entity id. Camera names from chat are now resolved properly: the exact entity id first, then a diacritics-insensitive match against each camera's friendly name or entity id slug ("kamera obývák 2" finds `camera.kamera_obyvak_2`; Cyrillic and other non-Latin names match too). When two cameras' names collide after normalization the tool refuses to guess rather than risk analyzing the wrong room, and an unknown name returns the list of available cameras (capped at 25 names) so the assistant can correct itself instead of retrying a bad guess. Based on the fix contributed by [@hruba202](https://github.com/hruba202) in [#502](https://github.com/goruck/home-generative-agent/issues/502).
+
+## [3.20.0] - 2026-07-21
+
+### Added
+
+- **Camera descriptions in your own language, and your own house rules for the camera analyst** — two new optional fields in the integration's Options flow, right below the system prompt. **Camera description language** (e.g. `Czech`) makes every VLM camera description — the chat camera tool, the `save_and_analyze_snapshot` service, and the proactive video analyzer — come back in that language instead of hardcoded English. **Additional camera analysis instructions** is free-form multiline text appended to the VLM system prompt for scene-specific guidance like `Ignore cars in the driveway`. Both are appended after the built-in prompt rules, never replacing them — though where your extra instructions conflict with or narrow the built-in description request, your instructions win (field testing on chat-tuned VLMs showed the instruction must also ride on the per-image request itself, not just the system prompt, to be honored; live in-chat "check the camera for X" requests always keep priority over stored instructions) — so the repeated-scene detection from [#493](https://github.com/goruck/home-generative-agent/issues/493) stays intact: the internal `Scene unchanged.` reply is explicitly carved out to stay in English, word for word, because it is matched by code rather than shown to users. Both fields default to empty — behavior is unchanged unless you opt in. Designed, implemented, and field-tested with Czech by [@hruba202](https://github.com/hruba202) in [#497](https://github.com/goruck/home-generative-agent/issues/497).
+
+## [3.19.1] - 2026-07-20
+
+### Fixed
+
+- **The "snapshot appears frozen" warning no longer sends you chasing a crash that never happened** — field testing on battery Ring cameras ([@andymcmanus](https://github.com/andymcmanus) in [#466](https://github.com/goruck/home-generative-agent/issues/466)) proved that ring-mqtt's `Auto` (default) and `Motion` snapshot modes never request snapshots from battery cameras at all (also filed upstream at the time as tsightler/ring-mqtt#1103, since deleted by that project): nothing froze, and restarting the add-on doesn't help in those modes. The stale-snapshot warning now names both possible causes and the matching remedy — switch the camera's snapshot mode to `Interval`, or add a small automation that presses the camera's take-snapshot button on each Ring event. The [camera documentation](docs/camera-entities.md) now tells the full battery-camera snapshot story, including a copy-paste automation example with the guard condition that keeps it from waking every camera after a Home Assistant or MQTT restart, what happens to the previous event's leftover frame, and the side effects to expect on quiet or very busy cameras.
+
+## [3.19.0] - 2026-07-19
+
+### Added
+
+- **Czech translation** — the entire configuration UI (setup flows, Sentinel options, error messages, selectors) is now available in Czech. The new `cs` translation has full key parity with the English source, verified by tests that also guard every translation file against key drift, placeholder mismatches, and formatting Home Assistant would reject. Contributed by [@hruba202](https://github.com/hruba202). Closes [#494](https://github.com/goruck/home-generative-agent/issues/494).
+
+### Fixed
+
+- **The Basic/Advanced setup step can now actually be localized** — the "Basic setup"/"Advanced setup" choice labels and the "already configured — Basic setup will overwrite your settings" warning on the Feature and Sentinel setup screens were hardcoded English strings in Python, so they stayed English in every language even though the title and description on the very same form translated correctly. The labels now go through Home Assistant's standard selector translation mechanism (each language's frontend shows its own labels), and the warning text is loaded from the integration's translation files following the server-configured language, falling back to English if a translation is missing. Reported, diagnosed, and drafted by [@hruba202](https://github.com/hruba202) in [#494](https://github.com/goruck/home-generative-agent/issues/494).
+
+## [3.18.2] - 2026-07-19
+
+### Fixed
+
+- **Camera snapshots no longer pile up on disk when analysis fails or Home Assistant restarts** — snapshot cleanup is bookkeeping-driven (the analyzer tracks the last 200 files per camera and deletes the oldest), but that bookkeeping only happened after a batch finished analysis. Any batch that didn't finish — every frame erroring during a VLM outage, a summary timeout, an internal crash, frames dropped under backlog pressure, or frames evicted from a full event buffer — left its files on disk forever. Files are now tracked the moment they are captured, so nothing that happens downstream can leak them. On startup the analyzer also folds snapshots left over from before a restart into the same cleanup (previously they were orphaned permanently, since the bookkeeping lives in memory): only files the integration itself wrote (`snapshot_*.jpg`) are claimed — a photo you drop into a camera's snapshot folder yourself is never touched — and pre-existing files are treated as the oldest entries, so a backlog is cleaned before any new frame. The published `latest.jpg` and images attached to recent notifications remain protected from cleanup, exactly as before.
+- **A stale reload can no longer run a second copy of the video analyzer** — if the integration was reloaded before Home Assistant finished starting, a leftover startup listener could start the previous analyzer instance alongside the new one (duplicate capture loops, and with the new cleanup, two bookkeepers deleting files independently). The listener is now cancelled when the integration unloads.
+
+## [3.18.1] - 2026-07-18
+
+### Fixed
+
+- **The image attached to a camera alert now matches what the alert says** — since 3.18.0's repeated-scene suppression, the notification text describes only the frames with real activity (typically the first seconds of an event), but the attached reference image was still taken from the middle of the whole snapshot batch. For a "man walks down the stairs" alert, that was usually an empty porch several unchanged frames after he left. The reference image (and the camera's latest-event frame shown by the image entity) is now chosen from the frames that actually fed the summary, preferring a frame where a person was detected — a recognized face, or a caption that affirmatively mentions a person. The caption check is word-bounded, plural-aware, and negation-aware, so "no people visible", "no person is present", or "a manicured lawn" cannot masquerade as person frames, while "two men" counts. When identical captions are merged, the surviving image is the frame where the recognized person is actually identifiable, so an alert naming someone can no longer attach the frame from before they appeared. If frame selection ever fails internally, the alert still goes out with the previous middle-of-batch image rather than being dropped.
+
+## [3.18.0] - 2026-07-18
+
+### Added
+
+- **Static camera scenes no longer get the full environment re-described on every frame** — when a frame shows the same static setting as the previous one (no people, no animals, nothing moved), the VLM now replies with a short `Scene unchanged.` sentinel instead of restating the porch, the railing, and the parked car for the tenth time. The analyzer detects the sentinel tolerantly (models drift from mandated phrasing, so variants like "The scene is unchanged." or "Nothing has changed." also count), but only replies that explicitly claim equality with the previous frame qualify — stillness-only phrases such as "No activity." never do, because a newly delivered package is "no activity" yet a changed scene. Qualifying frames are dropped from the summary input, so multi-frame summaries of quiet events stay anchored on the one real description instead of a pile of near-duplicates. The previous frame's *full* description always remains the comparison anchor — a sentinel never becomes context for later frames, so a slow real change (a package appearing, a car leaving) is still caught against actual scene content. If face recognition spots a person the VLM missed ("Unknown Person" or a known name), the frame is kept regardless, so an unrecognized visitor can never be suppressed by a no-change reply. Dropped frames are counted in a new per-camera `sentinel_dropped` metric and logged at debug level for diagnosability. A model that never emits the sentinel simply behaves exactly as before. Idea and prompt draft by [@hruba202](https://github.com/hruba202). Closes [#493](https://github.com/goruck/home-generative-agent/issues/493).
+
+### Fixed
+
+- **Frame-description deduplication now actually merges duplicates** — `dedupe_desc()` compared descriptions with their `t+<n>s.` timestamp prefix included, which differs on every frame, so byte-identical descriptions at different offsets never collapsed and the function was effectively inert. The prefix is now stripped before comparison; identities recognized only on a dropped duplicate frame are merged into the kept entry so no face result is lost, and the merge no longer mutates caller-owned face lists.
+- **A failed VLM call can no longer leak its error text into summaries, notifications, or the vector store** — the literal `Error analyzing image with VLM model.` caption returned on a model failure was previously appended to the frame list like a real description (and, with dedupe now live, an all-error batch would have collapsed to that single caption and shipped it as the event's mobile notification). Error and empty captions are now skipped, matching how every other per-frame error path already behaves, and they can never become the previous-frame context injected into later VLM prompts; the one exception is a frame where face recognition detected a person — that frame is kept under a neutral caption ("A person is present; scene analysis unavailable.") so a failed VLM reply can no longer erase a real detection, while the raw error text stays out of camera event summaries and notifications.
+
+## [3.17.1] - 2026-07-17
+
+### Fixed
+
+- **Battery Ring cameras no longer burn ~10 identical VLM calls per event** — ring-mqtt's `Auto` snapshot mode refreshes battery cameras' snapshot image only every 600 seconds (wired: 30 s), so the `event_select` capture window introduced in 3.16.0 batched near-byte-identical copies of one frame and analyzed each of them. The perceptual-hash duplicate filter is now always active for capture loops the `event_select` trigger started — no configuration needed, and the global `video_analyzer_uniqueness_enabled` option still governs all other cameras. The first frame of every window is always analyzed, so each event still produces a result; the forced filter survives a lagging motion sensor taking over the loop mid-window (common on battery hardware, where motion follows the `eventId` by seconds) and also engages when motion fires *first* and the `eventId` lands on an already-running loop. Skipped duplicates are registered with the normal snapshot-retention pruning, so they no longer accumulate on disk, and the frame hash is now computed off the event loop instead of stalling Home Assistant on a full JPEG decode per frame. Field data by [@andymcmanus](https://github.com/andymcmanus). Closes [#489](https://github.com/goruck/home-generative-agent/issues/489).
+- **A frozen ring-mqtt interval snapshot no longer feeds days-old imagery to the VLM as if it were current** — the interval snapshot can silently stop updating on battery Ring cameras (observed in the field at 5 days stale, surviving real motion events), after which MQTT serves the retained frame indefinitely and every analysis "succeeds" against an image unrelated to the event. Before each capture, the analyzer now checks the ring-mqtt snapshot camera's `timestamp` attribute and skips capture when the retained frame is older than 30 minutes, logging a snapshot failure that names the ring-mqtt add-on restart workaround (escalating WARNING → ERROR via the existing issue-#464 machinery; recorded once per staleness episode and re-recorded hourly rather than every 3 seconds, and a freeze that recurs after an unobserved recovery is still reported). The guard is scoped strictly to ring-mqtt cameras — identified by an `event_select` sibling entity via naming, the motion→camera override map, or the device registry (covering renamed entities) — so cameras from other integrations that publish a `timestamp` attribute with different semantics are never suppressed, and values that are not plausible current epochs (non-numeric, millisecond-scale, far-future, or corrupt) are ignored rather than trusted or crashing the capture loop. Field diagnosis by [@andymcmanus](https://github.com/andymcmanus). Closes [#490](https://github.com/goruck/home-generative-agent/issues/490).
+
+## [3.17.0] - 2026-07-16
+
+### Added
+
+- **Sentinel entity exclusions now silence event-driven triggering too, and accept glob patterns** — Sentinel treats every `camera.*` and `person.*` entity as security-relevant, so non-security uses of those domains (most notably `person_location` map-snapshot cameras, whose state flips on every GPS update) could flood the bounded trigger queue with security-critical wake-ups and crowd out real events — one report measured ~1,970 dropped triggers in 23 minutes with no actual security activity. Entities excluded via `sentinel_rule_entity_exclusions` (for their domain-mapped anomaly type, or under the `"*"` key) now stop waking the engine at all: their findings were already filtered, and their state changes no longer occupy trigger-queue slots. Detection for other rules involving an excluded entity continues on the polling cadence and via other entities' triggers — don't per-type-exclude a real security camera you want low-latency alerts from; the Sentinel guide documents the trade-off. Exclusion entries may now be fnmatch-style glob patterns (e.g. `camera.map_*`), so a fleet of per-person map cameras doesn't need listing one by one; patterns are precompiled and matching stays cheap on the per-event hot path. Suppressed wake-ups are observable: the Sentinel health sensor gains a `triggers_excluded` attribute, each suppression logs at debug level, and the engine logs a one-time notice at startup when exclusions are active so upgrading users learn the new behavior. Thanks [@hruba202](https://github.com/hruba202) for the precise diagnosis and proposed approach — credited as commit co-author. Closes [#481](https://github.com/goruck/home-generative-agent/issues/481).
+
+### Changed
+
+- **Exclusion entries are validated against match-everything mistakes** — with glob support, a stray `"*"` or `"*.*"` entry would silently match every entity and could disable the entire detection engine (findings *and* triggers) with nothing in the UI to show for it. Entries are restricted to the entity-ID alphabet plus the `*` and `?` wildcards — fnmatch character classes are rejected outright, because their syntax defeats literal-character checks (`[!.]*.*` reads as having literals yet matches every entity ID) — and every entry must contain a dot and at least one literal character. The settings form rejects offending entries (and over-long ones beyond 256 characters) with a validation error, and hand-edited `.storage` entries failing the rules are ignored at startup with a log warning — fail-closed, so the affected entity resumes alerting rather than going dark. The engine also warns when an exclusion *type key* contains glob characters, since type keys are matched exactly and such a key would be silently inert. Pre-existing stored entries that fail the new validation stop applying after upgrade.
+
+## [3.16.0] - 2026-07-16
+
+### Added
+
+- **Battery-powered Ring cameras now trigger proactive video analysis reliably via ring-mqtt's `event_select` entity** — battery Ring hardware (e.g. Ring Battery Doorbell Plus) often doesn't push `binary_sensor.*_motion` promptly or at all over MQTT, so motion events were missed entirely unless users built workaround automations. The video analyzer now also listens for `eventId` attribute changes on `select.<camera>_event_select` entities, which ring-mqtt publishes for every Ring event. When the `eventId` changes, the camera is resolved through the same three-tier lookup as motion sensors (override map → device registry → name heuristics, including the `camera.<name>_snapshot` variant) and the standard motion snapshot loop starts — no configuration needed. Because `event_select` has no "event over" signal, the loop ends on a fixed 30-second window that each new `eventId` extends, capped at 5 minutes total so continuous events can't defer the analysis flush indefinitely. The window only ever governs loops it started: a loop the motion binary sensor started (or takes over by firing `on`) is immune to the timer and runs until motion returns to `off`, exactly as before, so hybrid cameras with both signals keep their full motion window. Retained-state replays are ignored — an `eventId` that appears when the entity leaves `unknown`/`unavailable` (HA restart, MQTT broker reconnect, ring-mqtt add-on restart) belongs to the previous event and no longer risks a spurious burst of snapshots on every camera at once. Thanks [@andymcmanus](https://github.com/andymcmanus) for identifying the `event_select` signal during #460 testing. Closes [#466](https://github.com/goruck/home-generative-agent/issues/466).
+
+### Fixed
+
+- **A camera leaving the `recording` state no longer flushes a motion-triggered analysis batch mid-event** — when a motion (or event_select) loop owned a camera whose entity also toggled through `recording`, the recording-exit handler flushed the held frames early, splitting one event into two analysis batches. The flush is now skipped while a motion loop owns the camera; the motion lifecycle flushes the whole window as one batch.
+- **A crashed snapshot loop no longer strands its captured frames** — if the per-camera snapshot loop died unexpectedly (e.g. a filesystem error), frames it had already buffered were silently dropped or leaked into the next event's batch. The loop teardown now always flushes whatever was captured.
+
+## [3.15.0] - 2026-07-15
+
+### Added
+
+- **Sentinel rules can now be tuned and scoped per entity from the settings UI** — two long-requested controls land in the Sentinel subentry's Advanced settings. First, a generic per-rule entity exclusion map (`sentinel_rule_entity_exclusions`): a JSON object mapping an anomaly type to a list of entity IDs (with `"*"` as a wildcard for all types) that the engine applies to every finding source — built-in static rules, approved dynamic rules, and baseline deviations — before correlation and dispatch. This is the supported way to stop, say, inverter air-conditioner power sensors from tripping `appliance_power_duration` during perfectly normal all-day compressor runs, while the rule stays live for ovens, irons, and anything genuinely left on; previously the only options were snoozing the entire finding type (losing the safety value for every appliance) or hiding the sensors. Second, the `appliance_power_duration` thresholds are now configurable: `sentinel_appliance_power_threshold_w` (default 100 W) and `sentinel_appliance_duration_min` (default 60 min) replace the previously hardcoded values, so households with legitimately long-running high-draw devices can raise the bar instead of suppressing alerts. Malformed exclusion values (hand-edited `.storage`, bad restore) are validated in the settings form and additionally degrade safely at runtime — a bad entry is dropped rather than ever disabling the detection engine. Documented in the Sentinel guide under Built-in Static Rules. Thanks [@andymcmanus](https://github.com/andymcmanus) for the detailed feature request with real-world Daikin inverter data. Closes [#462](https://github.com/goruck/home-generative-agent/issues/462).
+
+## [3.14.35] - 2026-07-14
+
+### Fixed
+
+- **Appliance power-duration findings now measure how long the appliance has actually been drawing power** — the `appliance_power_duration` rule compared the current time against the sensor's `last_changed`, which Home Assistant only advances when the reported *value* changes. For steady or quantized readings (e.g. an estimated compressor power that sits on one value for hours) the reported `duration_min` was really "minutes since the number last changed", and for real-power sensors whose wattage fluctuates every few seconds the clock reset constantly, so the rule could stay silent even though the recorder-history enrichment added in 3.14.24 usually corrected the timestamp before rules ran. The rule now tracks the rising edge itself — remembering when each sensor was first observed at or above the power threshold across evaluation cycles — and reports exactly that observed running time, independent of recorder availability. This also removes a false-positive path where an appliance idling between 10 W and the 100 W threshold (so the recorder enrichment considered it "on" the whole time) could fire instantly on a brief spike with a duration of up to 30 days. Dropping below the threshold, going unavailable, or disappearing from the snapshot ends the episode and starts a fresh clock; after a restart an already-running appliance is re-detected once it has been observed above the threshold for the full duration. Repeated findings for one ongoing episode now also share one anomaly identity instead of minting a new one each evaluation cycle, so snoozing works for the whole episode. Thanks [@andymcmanus](https://github.com/andymcmanus) for the detailed report with audit-trail evidence. Closes [#461](https://github.com/goruck/home-generative-agent/issues/461).
+
+## [3.14.34] - 2026-07-14
+
+### Fixed
+
+- **Camera snapshot failures are no longer silent or undiagnosable** — when a snapshot never landed on disk, the only evidence was a generic "Snapshot failed to appear on disk" warning: the `camera.snapshot` service was dispatched fire-and-forget, so the actual error (camera unavailable, write failure, disallowed path) vanished, and the analysis for that event was dropped with no metric or escalation. The service is now called blocking under a 15-second budget, producing three distinguishable diagnostics — the service call failed (logged with the underlying error), the call timed out (camera unresponsive), or the call succeeded but the file never appeared (points at a media mount/permissions problem). Failures count toward a new `snapshot_failures` field in the hourly per-camera metrics line, and three consecutive failures on the same camera escalate the log from WARNING to ERROR so a camera that stops producing snapshots is visible instead of quietly dark. A per-camera in-flight guard also prevents the 1.5s recording poll from stacking overlapping snapshot calls on a slow or wedged camera. The two root causes suspected in the original report were fixed in 3.14.30 (un-pulled Ollama VLM killing the snapshot worker) and 3.14.31 (startup race after reload); this closes the remaining observability gap. Thanks [@andymcmanus](https://github.com/andymcmanus) for the detailed report. Closes [#464](https://github.com/goruck/home-generative-agent/issues/464).
+
+## [3.14.33] - 2026-07-14
+
+### Fixed
+
+- **Sentinel quiet hours can now be enabled from the UI** — the quiet-hours options (`sentinel_quiet_hours_start`, `sentinel_quiet_hours_end`, `sentinel_quiet_hours_severities`) were fully implemented in the suppression engine but never exposed in the Sentinel settings form, and the runtime option resolver didn't pass them through even if stored, so the feature was unreachable. The Sentinel subentry's Advanced settings now offer start/end hour dropdowns (with a Disabled option) and a severity multi-select (default: low only); setting only one of start/end or an out-of-range hour returns a form error instead of saving a broken window. While wiring this up, the newly reachable engine seam was hardened so a corrupted stored value (hand-edited `.storage`, bad restore) degrades to "quiet hours off" instead of raising inside the Sentinel run loop, unknown severity values are filtered on save and at runtime, an invalid timezone now logs a warning on the UTC fallback, and start = end is defined as a full 24-hour window (previously a silent no-op, and all-day suppression was inexpressible). Documented in the Sentinel guide under Notification Behavior. Thanks [@andymcmanus](https://github.com/andymcmanus) for the report. Closes [#463](https://github.com/goruck/home-generative-agent/issues/463).
+
+## [3.14.32] - 2026-07-13
+
+### Fixed
+
+- **Sentinel Discovery no longer dies silently on LLM provider errors** — a provider error during the discovery LLM call (e.g. `ollama.ResponseError` when the configured model isn't pulled, or an httpx transport failure while the Ollama server restarts) escaped the narrow exception handling and permanently killed the discovery background loop; no proposals were ever produced again until an integration reload, with the error only surfacing if the task was cancelled mid-call at unload. Provider errors are now caught and logged (rate-limited, with recovery messages), and the discovery loop itself is additionally guarded so no unexpected error in any cycle stage can end it — mirroring the snapshot-worker resilience fix from #473. The same narrow-catch escape is fixed in LLM triage (which now truly fails open to notify on any exception, as documented) and LLM explanations (which degrade to the deterministic fallback text). Discovery audit payloads now also record the actually-configured model name (previously always `unknown` for bound models), making model misconfiguration diagnosable from the Sentinel audit trail. Note: discovery was already using the configured chat model — the model selection reported in the issue could not be reproduced, but the silent-failure mode it described is real and fixed. Closes [#465](https://github.com/goruck/home-generative-agent/issues/465).
+
+## [3.14.31] - 2026-07-13
+
+### Fixed
+
+- **Video analyzer no longer delays Home Assistant startup when cameras are already active** — motion/recording snapshot loops could start during HGA config-entry setup, so Home Assistant counted long-lived `_motion_snapshot_loop()` tasks and in-flight `camera.snapshot` calls as startup work. On busy camera systems this produced bootstrap warnings and delayed startup until HA timed out waiting on those tasks. The video analyzer now starts after `EVENT_HOMEASSISTANT_STARTED`, and its snapshot loops/workers are created as HA background tasks so they do not block startup accounting. Runtime motion/recording behavior after startup is unchanged.
+
+## [3.14.30] - 2026-07-13
+
+### Fixed
+
+- **Selecting an Ollama VLM that was never pulled no longer silently kills camera analysis** — a missing model made the Ollama server return a 404 (`ollama.ResponseError`), which escaped the video pipeline's error handling and permanently stopped the per-camera snapshot worker with a single log line as the only evidence; camera analysis and Sentinel camera-activity signals stayed dead until an integration reload. The worker now survives unexpected errors (the failed batch is dropped, logged, and processing resumes after a short backoff), and if a worker ever exits its queue entry is cleaned up so the next snapshot starts a fresh one. The `ResponseError` is also handled at each call boundary: video frames are skipped and logged (never turned into bogus "Error analyzing image" captions that could reach notifications), the camera chat tool returns a clear error message to the conversation, and the snapshot-and-analyze service raises a proper Home Assistant error. Closes [#473](https://github.com/goruck/home-generative-agent/issues/473).
+
+- **`think: false` is no longer sent to Ollama vision/summarization models that don't support thinking** — camera frame analysis and video summarization force-disabled reasoning for all edge deployments, bypassing the per-model heuristic that correctly omits the field for non-thinking models like `gemma3` and `qwen2.5vl`. Some Ollama server builds reject a non-nil `think` for models without the thinking capability (HTTP 400), which fed the same worker-death failure chain above. Reasoning is now only force-disabled for models that actually support it.
+
+## [3.14.29] - 2026-07-13
+
+### Added
+
+- **`gemma3:4b` is now a selectable Ollama VLM for Camera Image Analysis** — listed alongside `qwen2.5vl:7b` and `qwen3-vl:8b` in the VLM model dropdown. Tested for caption stability: across repeated captions of identical frames it reproduces the same core scene with only cosmetic wording differences, which is what the semantic notification dedup in `notify_on_anomaly` mode depends on. A lighter option than the 7B/8B models for smaller GPUs (requires Ollama 0.6+; on iGPUs consider lowering the VLM context size, since the 32k default dominates memory use regardless of model size). Docs updated to reflect that a stable 4B model is now a viable choice. Closes [#469](https://github.com/goruck/home-generative-agent/issues/469). Credit to @andymcmanus for the caption-consistency benchmarking on an AMD Radeon 780M iGPU that motivated this.
+
+## [3.14.28] - 2026-07-12
+
+### Added
+
+- **Embeddings feature in the UI** — a new **Embeddings** feature under **+ Setup** lets you explicitly assign the embedding provider and model, just like Conversation/VLM/Summarization. Previously the embedding provider was inherited silently from the chat provider with no UI to change it. When the feature is off, provider selection stays automatic (Conversation provider if embedding-capable, else the first capable provider), preserving existing behavior. Closes [#457](https://github.com/goruck/home-generative-agent/issues/457).
+
+- **Separate embedding endpoints** — chat and embeddings can now run on different servers. Assigning the Embeddings feature to a second OpenAI-compatible provider (e.g. a dedicated llama.cpp embedding instance) or an Ollama provider on another host propagates that provider's own base URL, API key, and dims into the embedding client, without clobbering the chat provider's base URL. Ollama embedding endpoints get their own health probe instead of piggybacking on the global Ollama URL.
+
+### Fixed
+
+- **`AttributeError: 'list' object has no attribute 'data'` with llama.cpp embeddings** — OpenAI-compatible base URLs are now normalized to end with `/v1` before being handed to the OpenAI SDK. The SDK appends bare paths (`/embeddings`, `/chat/completions`) to the base URL, and the config flow validated URLs *without* the `/v1` prefix — so embedding requests hit llama-server's native `/embeddings` route, which returns a raw JSON list instead of the OpenAI `{"data": [...]}` shape and crashed the tool index build and semantic search. Chat only worked by accident because llama-server aliases `/chat/completions` in OpenAI format. Base URLs may now be entered with or without a trailing `/v1`. Root cause of the incompatibility previously documented (and worked around) in #394.
+
+- **Single-provider auto-assignment respects capabilities** — when exactly one model provider exists it is auto-assigned to unconfigured features, but it is no longer assigned to features whose category it cannot serve (e.g. an Anthropic-only setup no longer claims the Embeddings feature).
+
+## [3.14.27] - 2026-07-10
+
+### Added
+
+- **UI-configurable motion sensor → camera override map** — a new `video_analyzer_motion_camera_map` option in Global Options lets you pin specific `binary_sensor.*` entities to specific `camera.*` entities, one pair per line (`binary_sensor.X: camera.Y`). Previously this mapping required editing `const.py`. Useful when automatic resolution picks the wrong camera for a given sensor.
+
+- **UI toggle for perceptual-hash (dHash) frame deduplication** — `video_analyzer_uniqueness_enabled` (default off) replaces the hardcoded `_UNIQUENESS_ENABLED = False` constant. When enabled, visually identical frames are dropped before VLM analysis. Caveat: enabling this removes the visual continuity the summary model uses to narrate motion; only enable it if a static scene generates excessive duplicate snapshots and you accept that motion context may be lost.
+
+- **Event-driven recording state loop for UniFi Protect and similar cameras** — cameras that expose a `recording` HA state (e.g. UniFi Protect) now start a snapshot loop on `recording` entry and flush the collected batch on exit, replacing the previous 1.5s polling loop. If a motion binary sensor fires for the same camera while a recording loop is already running, the motion loop takes ownership and controls the queue flush.
+
+### Fixed
+
+- **Ring-MQTT cameras triggered phantom notifications from interior PIR sensors** — `_resolve_camera_from_motion` matched `binary_sensor.front_door_motion` (a Ring Alarm wall PIR that stays ON for up to 3 minutes) to the doorbell camera instead of the doorbell's own motion sensor (`binary_sensor.front_door_motion_3`). This caused up to 62 snapshot-analysis cycles and mobile notifications per motion event on the wrong subject. Root cause: name heuristics could not distinguish two sensors that share a name prefix but belong to different physical devices.
+
+  Fix: motion → camera resolution is now a **three-tier lookup**:
+  1. Explicit override map (UI-configurable, checked first)
+  2. HA device registry — finds the `camera.*` entity on the same HA device as the motion sensor; correctly separates Ring Alarm PIRs from doorbell cameras because they are registered to different devices
+  3. Name heuristics — fallback for integrations without device links (direct substitution, VMD-suffix strip, `_motion`-suffix strip)
+
+  Closes [#459](https://github.com/goruck/home-generative-agent/issues/459). Credit to @andymcmanus for detailed bug reports, debug log analysis, and patient re-testing that identified the PIR/doorbell sensor collision as the root cause.
+
+- **Motion/recording snapshots were analyzed per frame instead of as one event batch** — frames captured by a motion or recording loop were enqueued into the per-camera live worker queue, whose worker consumed them immediately. For long-held motion sensors (ring-mqtt holds ON up to 180s), this produced an analysis cycle and notification every few seconds while motion remained active, and the OFF-event "flush" only drained leftovers. Fix: loop-captured frames are now held in a per-camera buffer (bypassing the live worker) and flushed as a single ordered batch when motion turns OFF or recording exits — one summary and at most one notification per event. The live worker queue still serves the recording-poll safety-net path. The hold buffer is capped at 50 frames (oldest dropped first).
+
+## [3.14.26] - 2026-06-27
+
+### Fixed
+
+- **Sentinel discovery proposed unsupported candidates for cumulative energy sensors** — the baseline DB tracks all numeric entities, including kWh energy counters (`_energy` suffix). These appeared in the `unmonitored_baseline_entities` list injected into the discovery prompt, causing the LLM to propose appliance anomaly candidates (microwave, washing machine, fridge, dishwasher) that referenced cumulative sensors. Normalization correctly rejects them (`reason_code=cumulative_energy_sensor`) because a monotonically increasing counter cannot produce a meaningful rolling-average baseline, but the proposals showed as "unsupported" in the UI with no actionable path. Fix: added `_is_cumulative_energy_entity()` to filter cumulative sensors from the unmonitored list before prompt injection, and added an `ENERGY SENSOR RULE` hint to the discovery prompt directing the LLM to use `_power` (instantaneous Watts) sensors in `evidence_paths` instead of `_energy` (cumulative kWh) sensors. Corrected proposals map to the existing `baseline_deviation` or `time_of_day_anomaly` templates without any further code changes.
+
+## [3.14.25] - 2026-06-25
+
+### Fixed
+
+- **Video analyzer sent burst notifications from near-camera motion artifacts (e.g. spider webs)** — a spider web in front of a camera repeatedly triggers the motion sensor, causing the video analyzer to generate multiple notifications for the same static background scene. The LLM-generated captions described the same empty scene with slightly different phrasing (e.g. "paved patio enclosed by a white picket gate" vs "paved patio with a white picket fence"), scoring ~0.87 cosine similarity — just below the old 0.89 suppress threshold — so each one fired a mobile notification. Fix: lower `VIDEO_ANALYZER_SIMILARITY_THRESHOLD` from 0.89 to 0.85, catching "same scene, different wording" duplicates within the existing 30-minute dedup window. Genuine events with semantically different content (person arriving, vehicle with headlights) still score below 0.85 against empty-scene captions and correctly notify.
+
+## [3.14.24] - 2026-06-24
+
+### Fixed
+
+- **Sentinel notifications showed HA restart time instead of actual state-change time** — when Home Assistant restarts, entities re-report their current state with a new `last_changed` stamped at startup time. Three Sentinel rule categories were computing falsely short durations as a result ("Alarm disarmed since 5:16 AM", "Garage door lock unlocked for about 15 minutes", "Dishwasher running for 5 minutes" — all actually much older). Fixes:
+  - New `alarm_enrichment.py`: queries 30 days of HA recorder history (date-range query, replaces count-based `get_last_state_changes`), walks newest-to-oldest skipping `unavailable`/`unknown` transient states, finds the true `armed_*→disarmed` transition, and corrects `last_changed` before rule evaluation. Falls back to the oldest within-window disarmed record when the armed record has been purged from the DB; clears `last_changed` to `""` (suppressing the misleading timestamp) when the alarm has been disarmed for more than the 30-day lookback window.
+  - New `lock_enrichment.py`: same recorder-based pattern for unlocked lock entities. Finds the last `non-unlocked→unlocked` transition (handles `locked`, `locking`, `unlocking`, `jammed` as anchors); uses the oldest within-window record as a fallback for purged records; clears `last_changed` to `""` when the lock has been open for more than 30 days.
+  - New `power_enrichment.py`: for power sensors currently drawing more than 10 W, finds the last `off→on` transition in 30-day history. Handles both W and kW units. Leaves `last_changed` unchanged (rather than clearing) when no useful transition can be determined.
+  - `engine.py`: calls all three enrichments in sequence after snapshot build, before rule evaluation.
+  - `dynamic_rules.py`: lock evidence now uses `lock.get("last_changed") or None` so an empty-string `last_changed` (set by enrichment when the lock has been open >30 days) propagates as `None` to LLM context.
+
+- **Disarm notifications showed time-only for old disarms** — notifications like "Alarm disarmed since 1:46 PM" were ambiguous when the disarm occurred on a previous day. `notifier.py` now uses a `_format_disarm_since()` helper that prepends the date ("14 Jun at 1:46 PM") when the disarm was on a different calendar day, and shows time-only for same-day disarms.
+
+## [3.14.23] - 2026-06-19
+
+### Fixed
+
+- **Sentinel: `alarm_disarmed_open_entry` notifications were confusing and showed the wrong timestamp** — the notification subtitle was derived from the raw rule ID ("Alarm disarmed open entry alarm control panel home alarm") and the message body showed the window sensor's `last_changed` time instead of when the alarm was actually disarmed. Fixes:
+  - Added a dedicated subtitle and mobile message formatter for the `alarm_disarmed_open_entry` template; subtitle now reads e.g. "Family Room Right Window open, alarm disarmed" and the body shows the actual disarm time ("Alarm disarmed since 10:15 PM").
+  - Dynamic rule evaluator now stores `alarm_last_changed` and `entry_last_changed` as separate evidence fields so the correct timestamp is always available.
+  - "Ask Agent" handoff prompt now distinguishes read-only `binary_sensor` entries (cannot be closed programmatically) from actuatable `cover.*` entities. For sensors it explicitly forbids arming the alarm as a substitute and instructs the agent to advise the user to close the entry manually or use "Snooze 24h"/"Snooze Always" if the open window is expected.
+  - Added direct regression tests for the new mobile copy, subtitle, LLM-bypass routing, and the binary_sensor vs cover Ask Agent prompt branches.
+
+## [3.14.22] - 2026-06-19
+
+### Fixed
+
+- **Sentinel Discovery: normalization produced defective dynamic rules** — nine bugs in `explain_normalize_candidate` caused approved Discovery candidates to register rules with wrong entity types, missing domain prefixes, or semantically incorrect templates. Fixes:
+  - `_find_sensor_entity_ids` now accepts only `sensor.*`; `binary_sensor.*` entities (motion, contact) no longer bleed into power-sensor branches.
+  - `_find_battery_sensor_entity_ids` now accepts only `sensor.*`; `binary_sensor.*` battery entities (on/off state) are excluded so they cannot produce `low_battery_sensors` rules that silently generate no findings.
+  - `_find_entry_entity_ids` now accepts only `binary_sensor.*` and `cover.*`; plain `sensor.*` numeric sensors can no longer be treated as door/window contacts.
+  - The `low_battery_sensors` branch for lock candidates now requires a `sensor.*` battery entity; candidates that reference only `lock.*` entities return `unsupported_pattern` instead of emitting a rule with a lock ID in `sensor_entity_ids`.
+  - `_extract_threshold_numeric` returns `None` for values ≤ 0 (e.g. "above 0 watts"), preventing `sensor_threshold_condition` rules with a useless threshold of zero; such candidates now fall back to `baseline_deviation`.
+  - `_presence_signal` checks `"not derived.anyone_home"` in `evidence_paths` first (returns `"away"`); `"derived.anyone_home"` alone now returns `"any"` instead of incorrectly inferring `"home"`.
+  - Entry branches now handle `presence == "any"` (unknown occupancy) by defaulting to `open_entry_while_away` rather than falling through to `_normalization_failure`.
+  - The early broad `open_any_window_at_night_while_away` fallback that fired before battery/sensor/energy branches is removed; the guarded late fallback (requires night + away signals) remains.
+  - `multiple_entries_open_count` defaults to `require_away=True` when occupancy is unknown, replacing the previous `require_home=False, require_away=False` state that made the rule fire unconditionally.
+  - Dead `return None` after the final `return` in `_find_camera_id` is removed.
+
+- **`patch_dynamic_rule` service added** — new HA service `home_generative_agent.patch_dynamic_rule` merges a partial params dict into an existing dynamic rule without removing and re-approving it. Useful for repairing defective rules in the registry that were created before the normalization fixes.
+
+## [3.14.21] - 2026-06-15
+
+### Fixed
+
+- **Entity staleness alert falsely reported as resolved after Execute** — after tapping Execute on a person tracking staleness alert, the agent incorrectly replied that the alert had resolved ("the person is no longer in a stale state") even though the person never came home. The generic execute prompt did not define what "resolved" means for staleness findings, so the agent treated `state = not_home` from `GetLiveContext` as a definitive non-stale state. A specialized execute prompt for `entity_staleness` findings now tells the agent the alert resolves only if the person is home (`state = 'home'`); if still away, it must acknowledge the staleness and advise the user to check whether the person's phone is on and reachable. Follows up on the incomplete fix in [#417](https://github.com/goruck/home-generative-agent/pull/417).
+
+- **Person name missing from entity staleness initial notification** — the initial notification body for person tracking staleness was generic ("The person tracking data has been outdated...") with no person name, while the Execute follow-up named the person. `_eval_entity_staleness` now includes `friendly_name` in the evidence dict, and a deterministic `_entity_staleness_mobile_message` generates a named, consistent body: e.g. "Lindo St Angel's location tracking has been outdated for about 1 day. Check if their phone is on and reachable."
+
+- **`friendly_name` in entity_staleness evidence caused unstable anomaly_id** — adding `friendly_name` to the evidence hash would make the anomaly_id change if the display name is renamed or temporarily unavailable, breaking cooldown/suppression/audit continuity for long-running alerts. `_build_finding` now strips `friendly_name` before hashing, matching the existing pattern in `baseline.py` and `appliance_power_duration.py`.
+
+## [3.14.20] - 2026-06-11
+
+### Added
+
+- **Basic and Advanced setup modes** — Feature setup and Sentinel setup now offer a mode selector. **Basic** enables all features (Conversation, Camera Image Analysis, Conversation Summary) with recommended defaults in a single screen and auto-creates the database subentry with no database prompt. **Advanced** steps through each feature individually, lets you assign providers, models, and fallback chains, and includes an explicit database configuration step. Closes [#433](https://github.com/goruck/home-generative-agent/issues/433).
+
+### Fixed
+
+- **Sentinel background tasks continue running after subentry deletion** — deleting the Sentinel subentry now stops all background tasks (monitor loop, baseline updater, discovery engine, notifier) immediately without waiting for the next integration reload. `_apply_sentinel_options` also forces `CONF_SENTINEL_ENABLED=False` when no Sentinel subentry exists, preventing tasks from being restarted on the subsequent reload.
+
+- **`ValueError: Config entry update listeners should not be used with OptionsFlowWithReload`** — saving main configuration options raised this error because the integration registered an `update_listener` on the config entry, which `OptionsFlowWithReload` explicitly forbids. The listener is now registered via `async_dispatcher_connect` on `SIGNAL_CONFIG_ENTRY_CHANGED`, which fires the same signals without touching `entry.update_listeners`.
+
+- **Infinite reload loop after subentry change** — `SIGNAL_CONFIG_ENTRY_CHANGED` fires on every entry state transition, not just data changes, causing the dispatcher callback to schedule an unbounded sequence of reloads. A snapshot of Sentinel subentry data captured at setup time is now compared on each signal; reloads are only scheduled when the subentry data actually changes.
+
+- **Advanced setup form not pre-populated when reconfiguring Sentinel** — reopening Sentinel Advanced setup now pre-fills every field with the current saved values instead of showing empty defaults.
+
+- **Basic setup silently overwrites existing configuration** — running Basic setup when a Setup or Sentinel subentry already exists now displays a warning and requires confirmation before overwriting the saved configuration.
+
+- **Misleading Conversation toggle removed from feature enable form** — the Conversation feature toggle was shown in the Advanced feature enable step but had no effect (Conversation is always enabled). It is no longer displayed.
+
+## [3.14.19] - 2026-06-07
+
+### Fixed
+
+- **Sentinel Baseline: cyclical-load sustained gate default too short** — the default `sentinel_baseline_sustained_minutes` of 20 minutes matched the length of a normal fridge/freezer compressor off-cycle, causing a notification on every idle cycle. Raised to 45 minutes, which filters normal off-cycles (20–40 min) while still catching genuine malfunctions (door left open, failed compressor) that sustain for hours. The setting is now documented in `docs/sentinel.md` with tuning guidance.
+
+## [3.14.18] - 2026-06-07
+
+### Fixed
+
+- **Sentinel Discovery: candidate entity mismatch** — monitoring-gap candidates can no longer pass through when the title, summary, or pattern names a different known baseline entity than the entities listed in `evidence_paths`. The Discovery prompt now tells the LLM to describe only the cited monitoring-gap entity or entities, and a post-generation quality gate drops mismatched candidates with `dedupe_reason="entity_text_mismatch"`. Regression coverage includes the reported kitchen-vs-garage/playroom lock battery mismatch, generic single-entity summaries, and intentional multi-entity bundles. Closes [#437](https://github.com/goruck/home-generative-agent/issues/437).
+
+- **Discovery semantic coverage helper import** — moved the rule-vs-candidate semantic-key coverage helper into `sentinel/discovery_semantic.py` so runtime code and semantic tests import it from the same module. This fixes the Pyright error from importing `_rule_key_covers_candidate_key` from the integration entrypoint.
+
+## [3.14.17] - 2026-06-06
+
+### Fixed
+
+- **Sentinel Discovery: cyclical-load false positives** — `baseline_deviation` averages compressor-on (~150 W) and compressor-off (~5 W) samples into a single rolling mean (~40–60 W). Every normal off-cycle then fires as a 90%+ deviation. Cyclical loads (entities whose `friendly_name` or `entity_id` contains `fridge`, `refrigerator`, `freezer`, or `compressor`) are now routed to `time_of_day_anomaly` at normalization time. Its variance-aware threshold `max(2*stddev, drift%)` tolerates the oscillation without false alarms. Closes [#432](https://github.com/goruck/home-generative-agent/pull/432).
+
+- **Sentinel Discovery: cumulative energy sensors proposed as baseline rules** — `sensor.*_energy` entities are monotonically increasing counters. Normalizing them to `baseline_deviation` caused continuous firings as the cumulative value grew past its rolling average. Energy sensor candidates are now rejected at normalization time with `reason_code="cumulative_energy_sensor"`.
+
+- **Sentinel Discovery: rule duplication for baseline and other templates** — `rule_semantic_key` returned `None` for `baseline_deviation`, `time_of_day_anomaly`, `sensor_threshold_condition`, `entity_state_duration`, and `entity_staleness` rules, so approved rules of those types were never added to the deduplication exclusion set. Discovery re-proposed identical rules on every cycle, producing duplicate rule entries in the registry. Fixed by adding semantic key generation for all missing templates. Keys for `baseline_deviation` and `time_of_day_anomaly` embed a `|template=<name>|` marker used by the baseline coverage check.
+
+- **Sentinel Discovery: `entity_ids contains` evidence path format not parsed** — LLM-generated evidence paths sometimes use the form `entities[entity_ids contains sensor.foo].state`. `candidate_semantic_key` was not extracting the entity ID from this syntax, producing keys without the entity ID and preventing per-entity deduplication. A dedicated regex branch now handles this format alongside the existing `entity_id=` form.
+
+- **Sentinel Discovery: history record keys leaked into LLM hint set** — `_existing_semantic_context` was including past discovery-cycle record keys in the `hint_keys` set sent to the LLM as "already covered" topics. Past record keys are `candidate_semantic_key`-derived (no `|template=…|` marker) and could silently block proposals for entities that merely appeared in a historical finding. Fixed by splitting into `hint_keys` (active rules + pending/rejected proposals only) and `filter_keys` (hint_keys + history, used for post-hoc dedup only).
+
+- **Sentinel Discovery: approved proposals blocked re-proposal after rule is disabled** — `_existing_semantic_context` checked `status == "accepted"` (wrong string; the store uses `"approved"`), so approved proposals were never excluded from `hint_keys`. Their candidate key remained in the hint set indefinitely, suppressing re-proposal even if the user later disabled the resulting rule. Fixed by checking `"approved"` and skipping approved proposals from `hint_keys` (coverage is already tracked by the live rule via `rule_semantic_key`).
+
+- **Sentinel Discovery: broad unavailability rule keys counted as baseline coverage** — the monitoring gap analysis checked whether a baseline-ready entity ID appeared in _any_ hint key, including `predicate=unavailable` keys from rules like `unavailable_sensors_while_home`. These rules list many entity IDs as a side-effect, causing baseline-ready entities to be incorrectly marked "monitored." Multi-entity bundle candidate keys from rejected or pending proposals had the same effect. Fixed by switching to `_BASELINE_TEMPLATE_MARKERS`: only keys containing `|template=baseline_deviation|` or `|template=time_of_day_anomaly|` — emitted exclusively by `rule_semantic_key()` for real statistical monitoring rules — count as baseline coverage.
+
+- **Sentinel notifications: baseline deviation subtitle and body were generic** — baseline deviation and time-of-day anomaly findings used the raw `finding.type` slug as the mobile notification subtitle (e.g. "Fridge power baseline deviation home") and fell through to the LLM explanation path for the body, which sometimes described the baseline value as "current state." Both are now deterministic: the subtitle reads "Fridge: power lower than expected" (direction from `deviation_direction` evidence field) and the body includes actual measured values: "Fridge: 4.6 W vs usual 85.0 W (95% below normal). Check appliance."
+
+## [3.14.16] - 2026-06-01
+
+### Fixed
+
+- **Sentinel daily digest never fires** — `_apply_sentinel_options()` in `core/subentry_resolver.py` propagates sentinel subentry settings into the runtime options dict by iterating over an explicit `sentinel_defaults` allowlist. Six keys were missing from that list, so user-configured values were silently replaced by their built-in defaults at every integration load. The most user-visible impact was `CONF_SENTINEL_DAILY_DIGEST_ENABLED`, whose default is `False`; the digest timer was therefore never registered regardless of what was set in the config flow. Also fixed silent misconfiguration of `CONF_SENTINEL_BASELINE_SUSTAINED_MINUTES`, `CONF_SENTINEL_BASELINE_WEEKLY_PATTERNS`, `CONF_SENTINEL_BASELINE_DOW_MIN_SAMPLES`, and `CONF_SENTINEL_CAMERA_ENTRY_LINKS`. Closes [#431](https://github.com/goruck/home-generative-agent/pull/431).
+
+## [3.14.15] - 2026-05-31
+
+### Fixed
+
+- **Gemini provider: 400 error on every chat interaction** — Gemini's Protobuf schema validation requires an explicit `items` field on all array-type tool parameters. `GetLiveContextTool.domain` (always injected on tool-retrieval turns) uses `vol.Any(cv.string, [cv.string])`, which `voluptuous_openapi` emits as an `anyOf` schema. `langchain_google_genai` resolved the `anyOf` to `type_:ARRAY` but checked `items` on the outer dict where it was absent, producing a declaration Gemini rejected. Added `_ensure_array_items()` to `_format_and_dedupe_tools()` which hoists `items` from `anyOf` array variants and recursively patches any bare `{"type": "array"}` node. Closes [#428](https://github.com/goruck/home-generative-agent/issues/428).
+
+## [3.14.14] - 2026-05-31
+
+### Added
+
+- **Sentinel built-in rule: `pet_detected_at_night_no_occupancy`** — fires when a pet (cat, dog, rabbit, hamster, bird, or parrot) is detected on any monitored camera at night while no residents are home. Requires at least one active motion or VMD signal. Severity: low, confidence: 0.85, informational only (no suggested action). Closes [#422](https://github.com/goruck/home-generative-agent/issues/422).
+
+### Changed
+
+- **`langchain-core` manifest pin loosened** — changed from `==1.3.2` to `>=1.3.2,<2.0.0` to prevent `uv` from silently skipping installation on hosts where a newer compatible version is already present.
+
+## [3.14.13] - 2026-05-23
+
+Thanks to [Alex Ultra](https://github.com/alex-mextner) for contributing the original STT hallucination filter and model-provider fallback work in [#421](https://github.com/goruck/home-generative-agent/pull/421).
+
+### Added
+
+- **Deploy script** — `scripts/deploy` syncs the integration to a running Home Assistant instance via rsync over SSH. Only changed files are transferred (checksum-based), `__pycache__` and `.pyc` files are excluded, and the script calls `ha core restart` after a successful sync. See [Contributing](docs/contributing.md) for setup instructions.
+- **Feature-level model provider fallbacks** — feature setup now supports an ordered fallback-provider list for chat, VLM, summarization, and embeddings. If the primary provider is unavailable at setup or fails with a retryable runtime error, HGA can use the next configured provider for that category.
+- **Fallback provider notifications** — when a fallback becomes active, HGA sends one deduplicated notification per category/provider for the current runtime. Mobile notifications use the configured `notify_service`; otherwise HGA creates a persistent notification. Cloud fallback notifications include a provider-cost warning.
+- **STT hallucination filters** — Options now include ignored substring and exact-phrase filters for speech-to-text prompts. Matching input is dropped before it reaches the LLM, reducing false activations from common silence/noise transcriptions.
+
+### Changed
+
+- **Fallback logging is clearer and less noisy** — startup, runtime fallback, unavailable-provider, sticky embedding-provider, and local resource-gate logs now distinguish configured deployment from the effective provider in use. Repeated unconfigured fallback messages are reduced to debug-level diagnostics where appropriate.
+- **Fallback models use their own configured defaults** — chat, VLM, and summarization fallbacks now preserve provider-specific model settings and category defaults from `const.py`, including Ollama tuning options when a provider does not override them.
+- **Fallback chat retry happens at the model-call boundary** — fallback chat chains no longer expose provider-level `astream`, avoiding mixed responses where a failed provider starts streaming partial text and a fallback provider finishes with different content.
+
+### Fixed
+
+- **Embedding fallback no longer leaves stale vector indexes active** — when the active embedding provider changes, HGA marks the tool index stale, rebuilds it on the next indexing pass, and discards retrieval results if the index becomes stale during search.
+- **Embedding dimensions are normalized for fallback providers** — Gemini embedding fallbacks are requested with HGA's configured vector dimension, preventing PostgreSQL vector errors such as `different vector dimensions 1024 and 3072`.
+- **VLM and summarization fallback wrappers preserve config overrides** — fallback wrappers now support `with_config()` and merge model config instead of replacing category-specific model settings, fixing video analyzer and summarization paths that use per-call config.
+- **Length-limited empty model responses trigger fallback** — empty responses caused by provider length limits are treated as retryable, so chat and summarization can fall back instead of returning blank content.
+- **Connectivity failures from HTTP transports are retryable** — local provider connection errors such as Ollama/httpx transport failures now activate configured fallbacks.
+- **Tool retrieval fallback diagnostics are safer** — known vector-store mismatch errors degrade to keyword-filtered tool selection or recency-based memory retrieval instead of surfacing repeated tracebacks during provider switches.
+
+## [3.14.12] - 2026-05-19
+
+### Fixed
+
+- **Ambiguous entity name no longer loops the agent** — when multiple entities
+  share a friendly name (e.g. `binary_sensor.haustur` and `binary_sensor.haustur_2`
+  after a device is re-added), `get_entity_history` now silently picks the
+  canonical entity (no numeric `_N` suffix). If ambiguity cannot be resolved
+  this way, the tool returns `{"error": "..."}` so the LLM can report the
+  problem to the user instead of looping on an empty `{}` response (issue #414).
+
+## [3.14.11] - 2026-05-19
+
+### Changed
+
+- **GetLiveContext is now always injected into the tool candidate list** — the
+  previous approach used a regex to detect conditional clauses ("if", "when",
+  etc.) and only injected GetLiveContext when a match was found. This was brittle
+  and missed constructs like "while", "whenever", "assuming", and compound
+  queries. GetLiveContext is now added unconditionally whenever it is absent from
+  the candidate set; step 3b's deduplication prevents double-injection for
+  read-only open-state queries.
+
+- **Camera activity removed from the system prompt** — the agent was fetching
+  recent camera activity on every turn and injecting it into the system message
+  as a `<recent_camera_activity>` block. This caused the model to answer presence
+  queries from stale camera snapshots instead of calling `GetLiveContext` with
+  `domain=person` for authoritative state. The model now fetches camera data via
+  tool call only when it needs it.
+
+- **Sentinel action prompts include detection timestamp and alert-time evidence**
+  — both execute and handoff prompts now include the exact time the anomaly was
+  detected and a compact evidence summary, so the agent can explicitly acknowledge
+  whether the alert condition is still active or has already resolved. This
+  prevents the model from silently substituting current state for the original
+  alert context.
+
+- **`AnomalyFinding` now records its detection timestamp** — a `detected_at`
+  field (`datetime`, defaulting to `utcnow()`) is added to the dataclass and
+  serialized in `as_dict()`. Downstream consumers (audit trail, action prompts)
+  can now reference the precise detection time.
+
+### Fixed
+
+- **Removed global LangChain in-memory LLM cache** — `set_llm_cache(InMemoryCache())`
+  was called unconditionally at conversation entity setup. This has been removed;
+  caching is now left to LangChain's default behaviour (no global cache).
+
+## [3.14.10] - 2026-05-17
+
+### Fixed
+
+- **Open-state queries now work for users whose sensors use `device_class: window`
+  or `device_class: door`** — the parser that identifies open entry sensors from
+  a live-context response only accepted `device_class: opening`. Real Home
+  Assistant window and door contact sensors (registered by most Zigbee and Z-Wave
+  coordinators) use `device_class: window` and `device_class: door` respectively.
+  The same gap existed in the HA-state fallback path used when no prior live
+  context is available. Both paths now accept all four open-state device classes
+  (`door`, `garage_door`, `opening`, `window`). Four regression tests are added
+  that use the correct device classes (the prior test fixtures all used
+  `device_class: opening`, which matched the developer's own sensors but masked
+  the failure for anyone else).
+
+## [3.14.9] - 2026-05-17
+
+### Fixed
+
+- **Read-only open-state queries are more reliable across local tool-calling
+  models** — HGA now force-binds and promotes `GetLiveContext` for read-only
+  queries such as "list all open windows" and "list the open doors in my house",
+  even when semantic tool retrieval misses it or ranks less relevant tools
+  higher. The first `GetLiveContext` call for these queries is normalized to a
+  broad `binary_sensor` live-context request so local models that emit brittle
+  filters like `name: "Window"` or list-valued domains still get the needed
+  state. Broad live-context results are then filtered back to the requested
+  entity type, preventing door queries from volunteering open windows. Focused
+  regression tests cover retrieval, argument normalization, retry handling, and
+  scoped result filtering.
+
+## [3.14.8] - 2026-05-16
+
+### Fixed
+
+- **`NullChat` fallback no longer crashes with `TypeError` when a provider is
+  unavailable at startup** — `NullChat.ainvoke` and `NullChat.astream` now
+  accept `config` as an explicit second positional parameter, matching the
+  standard LangChain `BaseChatModel` calling convention
+  (`ainvoke(input, config=None, **kwargs)`). Previously, the fallback model
+  used when a provider health check failed at HA startup (e.g., Ollama not yet
+  responsive) would raise `TypeError: NullChat.ainvoke() takes 2 positional
+  arguments but 3 were given` instead of returning the intended graceful
+  `"LLM unavailable."` response. Two regression tests added. Closes
+  [#410](https://github.com/goruck/home-generative-agent/issues/410).
+
+## [3.14.7] - 2026-05-15
+
+### Fixed
+
+- **Read-only state queries like "list all open windows" no longer trigger
+  actuation tools** — The word "open" in phrases like "which windows are open"
+  or "show me all open doors" was matching the actuation-safety keyword list,
+  causing the agent to inject control tools (`HassTurnOn`, `HassTurnOff`, etc.)
+  into its context for what is really a read-only query. A four-regex heuristic
+  now distinguishes read-only use of "open" (as a state descriptor combined with
+  `list`, `show`, `which`, `what`, `are`, `is`, `status`, or `state`) from
+  command use of "open" (as an actuation verb). The `GetLiveContext` tool is
+  also promoted to the front of the candidate list for these queries so the
+  agent picks up the correct read tool first. Closes
+  [#394](https://github.com/goruck/home-generative-agent/issues/394).
+
+- **Tool-loop guard prevents `GraphRecursionError` on stuck tool cycles** — When
+  a weaker model or an ambiguous query caused the agent to request tool calls
+  indefinitely, LangGraph eventually threw a `GraphRecursionError` visible as an
+  error in the HA conversation UI. A new `tool_loop_guard` graph node caps
+  tool-use at 3 rounds per conversation turn and returns a friendly message
+  instead of crashing: "I wasn't able to complete this request after several
+  tool-use attempts. Please try rephrasing your query or breaking it into smaller
+  steps." The LangGraph `recursion_limit` is also raised from 10 to 20 so the
+  application-level guard fires well before the LangGraph backstop.
+
+## [3.14.6] - 2026-05-13
+
+### Fixed
+
+- **Sentinel no longer fires a false "disarm the alarm" notification when armed_home or
+  armed_night is active with occupants present** — `armed_home` and `armed_night` are
+  HA alarm modes designed for use while people are home. A three-layer guard now
+  prevents this combination from ever becoming an anomaly: the deterministic evaluator
+  suppresses it at runtime, the normalization layer rejects any future LLM-proposed
+  rule with this pattern, and the LLM explanation prompt is conditioned to never
+  describe the state as a problem when occupants are present. The constant defining
+  these occupancy-safe modes (`SENTINEL_OCCUPANCY_ARMED_STATES`) is now centralized
+  in `const.py` and shared across both sentinel modules. Five new regression tests
+  (plus three coverage tests) guard all paths.
+
+## [3.14.4] - 2026-05-12
+
+### Changed
+
+- **OpenAI and Anthropic providers now stream tokens natively** — Both providers are
+  constructed with `streaming=True`, so visible words appear in the chat window as
+  they are generated rather than arriving all at once at the end. OpenAI additionally
+  sets `stream_usage=True` so token-count telemetry is preserved in streamed responses
+  (without this flag the usage metadata would be empty). The existing non-streaming
+  fallback path remains active for Ollama, Gemini, and any provider that does not emit
+  token chunks. The `schema_first_yaml=True` dashboard-generation path is unaffected —
+  it invokes the model directly via `ainvoke` and was already independent of the
+  streaming flag.
+
+## [3.14.3] - 2026-05-11
+
+### Fixed
+
+- **Appliance duration alerts now name the actual appliance** — Notifications for
+  `appliance_power_duration` findings previously fell back to the generic phrase
+  "An appliance" because the LLM explanation lacked a display name. The rule now
+  includes `friendly_name` in finding evidence, and a new deterministic message
+  builder formats the mobile copy directly — e.g. `Washer drew about 296 W for
+  633 min, above the 60 min threshold. Check it.` — bypassing the LLM path
+  entirely for this finding type. Power-sensor suffixes (`Power`, `Energy`, etc.)
+  are stripped case-insensitively so user-set names like `EV Charger Power` render
+  as `EV Charger`. When no friendly name is present the entity ID is used as
+  fallback. The same formatter is reused for persistent notifications. Closes
+  [#391](https://github.com/goruck/home-generative-agent/issues/391).
+
+## [3.14.2] - 2026-05-11
+
+### Fixed
+
+- **Streaming silent for Anthropic and OpenAI** — Both providers default to
+  `streaming=False` in LangChain, so no `on_chat_model_stream` events fire and
+  the chat window stayed blank until the full response arrived. A new
+  `on_chat_model_end` fallback in `_stream_langgraph_to_ha` yields the complete
+  text for text-only responses when no streaming chunks were delivered in a turn.
+  Anthropic streaming chunks (type `text_delta`) are now also recognised by
+  `_normalize_ai_content`, so Anthropic works correctly in both streaming and
+  non-streaming modes.
+- **OpenAI 400 "object schema missing properties" on `confirm_sensitive_action`**
+  — Tool schema extraction was calling `args_schema.schema()`, which fails on
+  `InjectedStore` annotations and produced a bare `{"type": "object"}` without the
+  `properties` field that OpenAI requires. Schema extraction now uses
+  `tool_call_schema.model_json_schema()` (which correctly excludes injected
+  arguments) as the primary path, with a `properties: {}` safety net added to
+  `_format_and_dedupe_tools` for any schema that declares `type: object` but omits
+  `properties`.
+- **`get_entity_history` not retrieved for history questions** — The tool's RAG
+  embedding description was too terse to match natural-language queries like "how
+  many times was the front door opened". The description was rewritten to enumerate
+  concrete use-cases (open/close counts, on-durations, motion trigger times, run
+  frequency) so cosine similarity retrieval picks it up reliably.
+- **Blocking `ssl.load_verify_locations` in the HA event loop** — `langchain_anthropic`
+  lazily constructs an async `httpx` client (and triggers SSL context loading) on
+  every call to `_get_default_async_httpx_client`. The function is now patched at
+  import time with `lru_cache` so the client is created once; the first call is
+  pre-warmed in a thread-pool executor after provider initialisation so SSL I/O
+  never blocks the HA event loop.
+
+## [3.14.1] - 2026-05-10
+
+### Fixed
+
+- **Anthropic API rejects tools with missing `input_schema.type`** — Tools whose
+  parameters schema had no top-level `type` field (e.g. tools with no parameters,
+  returning `{}`) caused a `400 invalid_request_error` from the Anthropic API on
+  every chat query. `_format_and_dedupe_tools` now injects `"type": "object"` when
+  the field is absent, and replaces non-dict parameter values (null, array) with
+  `{"type": "object"}` to prevent a downstream `AttributeError`.
+
+## [3.14.0] - 2026-05-10
+
+### Added
+
+- **Video analyzer caption deduplication** — The video analyzer now suppresses
+  repeated low-value camera notifications within a configurable window
+  (`VIDEO_ANALYZER_CAPTION_DEDUPE_WINDOW_SEC`, default 30 minutes). A new
+  `CaptionNoveltyDecision` result type carries the suppression reason and match
+  details, enabling structured debug logging and future metadata storage.
+
+### Fixed
+
+- **Caption novelty used weakest vector match** — `_is_anomaly` treated any
+  single below-threshold result as novel, even when the best matching caption was
+  highly similar. Replaced with a best-score check so only the closest stored
+  caption governs the suppress/notify decision. Renamed to `_is_caption_novel`
+  to match the new semantics.
+- **Generic "animal" subject not recognized** — Captions describing "a dark
+  animal stands on the path" were incorrectly suppressed against days-old matches
+  because `animal` was absent from the subject-term list. Added `animal` to
+  `_SUBJECT_RE` so generic animal descriptions trigger the stale-match re-notify
+  path alongside `cat`, `dog`, `deer`, and other named species.
+- **Dead regex stems in action detector** — Partial stems `arriv`, `leav`,
+  `driv`, and `mov` in `_ACTION_RE` could never match at a word boundary.
+  Replaced with the correct infinitive forms: `arrive`, `leave`, `drive`, `move`.
+
+## [3.13.1] - 2026-05-05
+
+### Fixed
+
+- **Home Assistant blocking I/O during model setup** — Ollama chat and embeddings
+  clients now use Home Assistant's SSL context helper, and tool binding is moved
+  into the executor path. This avoids blocking `httpx` client setup work on the
+  event loop during integration setup and model calls.
+- **Video analyzer face API client ownership** — The video analyzer now uses Home
+  Assistant's shared async `httpx` client for face API calls and passes the face
+  timeout per request, avoiding direct async client construction and shutdown in
+  the integration.
+- **Sentinel log noise** — Repeated Sentinel operational failures are now rate
+  limited with recovery messages, and routine cycle/debug logs were removed from
+  the hot path. Discovery, triage, suppression, execution, and trigger handling
+  should be quieter while still surfacing first failures and repeated issues.
+- **Sentinel LLM calls off the event loop** — Sentinel model calls now prefer the
+  synchronous `invoke` path in a worker thread when available, preserving
+  admission/defer semantics while reducing event-loop pressure.
+- **Video analyzer priority typecheck coverage** — Tests were tightened around
+  `NullChat`, Ollama server logging, and nested mock accessors so priority-path
+  coverage remains compatible with Pyright.
+
+## [3.13.0] - 2026-05-03
+
+### Added
+
+- **Anthropic Claude provider** — You can now select Anthropic Claude models
+  (claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5, and their successors)
+  as the chat, vision (VLM), and summarization provider. Configure by adding an
+  Anthropic model-provider subentry and entering your API key. Prompt caching is
+  enabled automatically via `cache_control: ephemeral`, reducing latency and cost
+  on repeated conversation turns.
+- **Anthropic API key validation** — The config flow validates the API key against
+  `https://api.anthropic.com/v1/models` before saving, with distinct errors for
+  authentication failures and connectivity issues.
+- **`extract_final` list-content support** — `extract_final()` now accepts
+  Anthropic's multi-block content format (`list[{"type":"text","text":"..."}]`) in
+  addition to plain strings. This fixes triage, discovery, and explain responses
+  when Anthropic returns structured content blocks.
+
+### Fixed
+
+- **Sentinel triage with Anthropic provider** — `_parse_response` used `str(content)`
+  which produced a Python dict repr when Anthropic returned multi-block content,
+  causing every alert to bypass triage (fail-open to notify). Fixed to use
+  `extract_final(content)`.
+- **LLM explain with Anthropic provider** — `extract_final(str(content))` → 
+  `extract_final(content)` so list-format Anthropic responses are rendered
+  correctly in push notifications instead of showing raw dict repr.
+- **Discovery engine with Anthropic provider** — `json.loads(content)` raised
+  `TypeError` (not caught by the bare `json.JSONDecodeError` handler) when
+  Anthropic returned a list. Fixed to use `extract_final(content)` before parsing
+  and added `TypeError` to the handler.
+- **Config flow `else` branch hardened** — The Anthropic API-key schema builder
+  used a bare `else:` that would silently present the Anthropic form for any
+  future unknown provider. Changed to explicit `elif provider_type == "anthropic":`
+  with a fallback empty schema.
+- **Config flow: API key stored on validation failure** — `settings["api_key"]`
+  was assigned even when `validate_anthropic_key` raised an exception. Moved
+  inside the success path.
+
+## [3.12.6] - 2026-05-03
+
+### Fixed
+
+- **Sentinel LLM timeouts on Qwen3-family models** — Qwen3.5:35b defaults to
+  thinking mode (generating `<think>…</think>` chains) when `ChatOllama.reasoning`
+  is `None`. `reasoning_field()` now passes `{"reasoning": False}` instead of `{}`
+  when reasoning is disabled, explicitly suppressing the default. This was the root
+  cause of repeated 20–60 s timeouts on Sentinel explain and discovery calls.
+- **Discovery prompt token bloat** — `_existing_semantic_context()` could return up
+  to 400 semantic keys (200 proposals + 200 discovery records), adding ~16 K chars
+  of exclusion context on top of the 20 K snapshot budget. Keys sent to the LLM are
+  now capped at 60 (`_MAX_SEMANTIC_KEYS_IN_PROMPT`). The post-hoc
+  `_filter_novel_candidates()` filter catches any duplicates that slip through.
+- **Sentinel explain timeout too tight** — `_EXPLAIN_LLM_TIMEOUT_S` raised 20 → 30 s
+  to give the model headroom over the observed ~20 s inference time.
+- **Discovery timeout too tight** — `_DISCOVERY_LLM_TIMEOUT_S` raised 45 → 60 s.
+- **Opaque timeout log** — `async_explain` now logs
+  `"LLM explanation timed out after 30s; skipping."` instead of the empty-string
+  warning produced when `TimeoutError` was bundled with other exceptions.
+- **Discovery prompt observability** — a new `DEBUG` log line reports prompt char
+  counts (`snapshot=N, keys=M/total`) each discovery cycle.
+
+## [3.12.5] - 2026-04-29
+
+### Fixed
+
+- **Sentinel discovery snapshot stays within 20 k-char (~5 k token) budget** —
+  `reduce_snapshot_for_discovery()` previously produced snapshots up to ~32 k
+  tokens, routinely exceeding the 45 s discovery LLM timeout. Four changes tighten
+  the output:
+  - `_MAX_CAMERA_ACTIVITY` reduced 50 → 20; `_MAX_SUMMARY_CHARS` 150 → 80.
+  - Derived context compressed: `timezone` dropped (redundant with `is_night`),
+    `now` and motion timestamps truncated to minute precision,
+    `baseline_ready_entities` intersected with the filtered entity set and capped
+    at 30 IDs.
+  - Character-budget gate (`_TOKEN_BUDGET_CHARS = 20_000`) with four progressive
+    trim passes: (1) strip `last_changed` from entity groups, (2) truncate camera
+    summaries to 40 chars, (3) drop all camera summaries, (4) cap
+    `recognized_people` per camera at 5 entries — the fourth pass prevents
+    facial-recognition deployments from exceeding the budget after summaries are
+    dropped.
+  - Nine new tests cover timezone removal, `baseline_ready_entities` filtering
+    and cap, camera-count cap, budget compliance, and each of the four trim passes.
+
+## [3.12.4] - 2026-04-28
+
+### Fixed
+
+- **`SENTINEL_ADMISSION_TIMEOUT_S` public constant** — admission timeout was a
+  magic `2.0` literal scattered across triage, discovery, and explain call sites.
+  Extracted to a named constant in `core/utils.py` and imported at each site.
+
+- **`asyncio.create_task()` replaces deprecated `asyncio.ensure_future()`** —
+  `run_sentinel_llm_call` now wraps the call factory in a proper `Task`, which is
+  cancellable and tracked in `_sentinel_llm_tasks`.
+
+- **HA reload cancels in-flight Sentinel LLM tasks** — the previous reload path
+  replaced `_sentinel_llm_tasks` with a fresh `set()` while old tasks continued
+  running. The teardown in `__init__.py` now cancels each task before replacing
+  the set.
+
+- **Warning log when Sentinel LLM cancel times out** — `contextlib.suppress`
+  silently swallowed any `TimeoutError` from the cancel wait. Replaced with an
+  explicit `except TimeoutError` that emits a `WARNING` log.
+
+- **Tests** — deferred-path coverage for `SentinelTriageService`,
+  `LLMExplainer`, and `run_sentinel_llm_call` (timeout path); three tests for
+  `build_model_deployments` (ollama→edge, openai→cloud, empty providers).
+
+## [3.12.3] - 2026-04-26
+
+### Fixed
+
+- **Deployment-aware admission control replaces lock-based GPU gate** — the
+  previous `chat_priority_context` / `_bg_vlm_lock` / `_bg_llm_lock` approach
+  made chat wait for background work to finish. The new design inverts this:
+  `local_chat_session(deployment)` marks the full chat turn active by clearing a
+  shared `_chat_idle` event; Sentinel triage and discovery call
+  `sentinel_admission(deployment, timeout_s=2.0)` before each LLM invocation and
+  defer if chat is active. Video analysis no longer participates in any
+  admission gate — its existing tuning constants (`_VISION_TIMEOUT_SEC`,
+  `_SUMMARY_TIMEOUT_SEC`, per-camera queues) remain the intended concurrency
+  surface. Embedding generation is ungated and runs concurrently with chat.
+
+- **Provider deployment metadata flows through runtime** — `ModelProviderConfig`
+  gains a `deployment: str` field ("edge"/"cloud"). `build_model_deployments()`
+  builds a `{category: deployment}` map from provider subentries at setup time;
+  the map lives on `HGAData.model_deployments`. Cloud providers bypass all local
+  admission gates automatically, with no code changes required per provider.
+
+- **Sentinel starvation surfaced in the health sensor** — `sentinel_admission`
+  tracks consecutive deferrals and wall-clock gap since last success. When the
+  gap exceeds 300 s a WARNING is logged and the `SentinelHealthSensor` transitions
+  to `"degraded"`, exposing the condition to HA automations and dashboards.
+
+- **Chat LLM timeout raised from 90 s to 180 s** — the higher limit covers
+  prefill + generation for typical conversation history lengths without the
+  gate-wait overhead of the old approach.
+
+- **Sentinel discovery capped at 45 s per LLM call** — discovery prompts can
+  be large enough to consume 180 s+ of GPU time. A hard `asyncio.wait_for`
+  timeout skips the cycle cleanly rather than monopolising the GPU.
+
+- **Tool timeout sends a non-retryable error to the LLM** — `_run_langchain_tool`
+  now returns a `TOOL_CALL_TRANSIENT_ERROR_TEMPLATE` message on `TimeoutError`
+  instead of the generic retry-prompting error template. This stops the model
+  from re-calling a tool that timed out due to a temporary resource constraint.
+
+- **Qwen3 extended-thinking fallback** — when Ollama strips `<think>` tokens
+  and returns empty content after a tool call, `_call_model` injects `"Done."`
+  so the conversation does not go silent.
+
+- **Tests** — 26 tests for the new admission-control primitives, plus coverage
+  for the triage/discovery deferral paths, the transient tool-error helper, and
+  the Qwen3 fallback.
+
+## [3.12.2] - 2026-04-24
+
+### Fixed
+
+- **Chat streaming no longer hangs under heavy VLM load** — `_invoke_model` now
+  wraps `model.ainvoke()` in `asyncio.wait_for(_LLM_INVOKE_TIMEOUT_S=90s)`. When
+  the Ollama GPU is saturated by concurrent camera analysis, the chat LLM was
+  queuing indefinitely inside `astream_events`, stalling the streaming pipeline
+  and showing "no response" in the HA chat UI. The timeout converts an infinite
+  hang into a bounded `HomeAssistantError`. Closes #378.
+
+- **Blank chat bubble after timeout replaced with user-visible error message** —
+  The timeout `HomeAssistantError` now propagates cleanly through
+  `_stream_langgraph_to_ha` (bypassing the misleading "generator error" log path)
+  to the recovery handler, which emits "I'm sorry, I was unable to respond in time.
+  Please try again." instead of an empty bubble.
+
+- **Empty-content fallback in `_async_handle_message` now shows an error message**
+  — the `content=""` guard (hit when streaming fails with no recoverable graph
+  state) now emits "I'm sorry, I was unable to respond. Please try again." so the
+  chat UI always shows something actionable.
+
+## [3.12.1] - 2026-04-24
+
+### Fixed
+
+- **LM Studio / local embedding server compatibility** — `OpenAIEmbeddings` now sets
+  `check_embedding_ctx_length=False`, preventing `tiktoken` from converting text into
+  integer token arrays before sending. Local servers (LM Studio, Ollama-compatible
+  endpoints) expect plain strings and returned `400 - 'input' field must be a string
+  or an array of strings`. Closes #375.
+
+- **Removed `dimensions=` from local embedding calls** — the `dimensions` parameter
+  is an OpenAI-specific truncation feature not supported by local models. Sending it
+  caused `422 Unprocessable Entity` errors with models like `nomic-embed-text`.
+
+- **Configurable embedding vector dimensions** — the openai_compatible model provider
+  settings now expose an `Embedding dimensions` field (default 768, matching
+  `nomic-embed-text`). Previously the dimension was hardcoded to 1024 for all
+  providers, which caused pgvector index mismatches with 768-dim models. The value
+  flows through provider settings into `PostgresIndexConfig(dims=N)`.
+
+### Upgrade notes
+
+If you are using an `openai_compatible` provider for embeddings and have already run
+the integration (pgvector tables exist), you will need to drop and recreate the vector
+store tables if you change the `embedding_dims` value:
+
+```sql
+DROP TABLE IF EXISTS store_vectors;
+DROP TABLE IF EXISTS vector_migrations;
+```
+
+The tables are recreated automatically on the next startup.
+
+## [3.12.0] - 2026-04-21
+
+### Added
+
+- **Native LLM streaming** — HGA now streams assistant tokens to the HA frontend
+  in real time via `astream_events` + HA ChatLog delta API. Responses appear
+  word-by-word instead of waiting for the full LLM response. Closes #370.
+  Requires HA 2026.4.0 or later.
+
+- **Parallel tool execution** — multiple tool calls within a single model turn
+  now run concurrently via `asyncio.gather`, reducing multi-tool turn latency
+  (e.g. `get_current_time` + `get_and_analyze_camera_image` in parallel).
+
+- **LangChain tool timeout** — each tool call is bounded by a 30-second timeout
+  via `asyncio.wait_for`. Stuck tool calls now produce a descriptive error
+  instead of hanging the conversation indefinitely.
+
+### Changed
+
+- **Protected-action PIN flow hardened** — wrong-PIN entries no longer mark the
+  pending action as resolved. Routing errors on `confirm_sensitive_action` are
+  also treated as unresolved, preventing a bypass when the confirm tool is
+  unavailable. Type annotations for PIN helper functions updated to
+  `Sequence[AnyMessage]` for broader compatibility.
+
+- **Streaming robustness** — LangGraph stream delta synchronization hardened:
+  tool call IDs are correlated across `on_chat_model_end` and `on_chain_end`
+  events; orphaned tool calls are flushed as synthetic rejections on generator
+  exit; partial content is committed and recoverable on stream failure;
+  CONTENT_ADDED is re-fired for the final AssistantContent so the HA frontend
+  streaming UI shows the complete response. Empty chat logs on mid-stream error
+  now produce a safe fallback instead of crashing the turn.
+
+### Fixed
+
+- HA intent-tool results containing `response_type` dict structures no longer
+  produce an empty chat bubble in multi-tool turns.
+
+- JSON tool results are correctly parsed; streaming failures fall back to graph
+  state recovery to avoid empty responses.
+
+## [3.11.1] - 2026-04-16
+
+### Added
+
+- **HA 2026.4.0 chatlog transparency (Show Details)** — HGA now populates the
+  HA conversation chatlog after each agent turn, enabling HA's "Show Details"
+  panel to display the full tool call / result chain. Each intermediate tool
+  call (with arguments) and its result are visible as typed chatlog entries.
+  Requires HA 2026.4.0 or later. Closes #369.
+
+## [3.11.0] - 2026-04-14
+
+### Added
+
+- **Cyclical load sustained deviation gate** — refrigerators, freezers, and
+  compressors now require sustained anomalous power draw before Sentinel fires
+  a notification. Normal compressor cycling (e.g. ~944 W on/off every 30
+  minutes) no longer triggers repeated "High energy consumption away" alerts.
+  The gate duration is configurable in Sentinel settings (default 20 minutes,
+  range 0–120 in 5-minute steps; set to 0 to disable).
+
+- **Baseline minimum samples UI** — the "Baseline minimum samples before
+  deviation alerts fire" setting is now exposed in the Sentinel configuration
+  flow (range 1–500, default 20). Previously this required editing config
+  entries directly.
+
+- **Health sensor `cyclical_entities_gated` attribute** — the Sentinel health
+  sensor now reports how many cyclical entities are currently held by the
+  sustained deviation gate, useful for dashboards and debugging.
+
+## [3.10.0] - 2026-04-13
+
+### Added
+
+- **RAG-based tool indexing and retrieval** — tools are embedded into pgvector at startup
+  and retrieved per-turn by cosine similarity. Only the tools most relevant to the user's
+  message are loaded into the agent's prompt, reducing prompt size and improving
+  tool selection accuracy. On subsequent restarts, unchanged tools skip re-embedding
+  via SHA-256 content hashing.
+
+- **Tool Index Status diagnostic sensor** (`sensor.tool_index_status`) — exposes the
+  current state of the tool index: `indexing`, `ready`, `failed`, or `unknown`. Use
+  it in dashboards or automations to monitor embedding provider health.
+
+- **Multi-intent query decomposition** — compound requests like "turn on the lights and
+  check the back yard camera" are split into sub-queries and searched independently.
+  Scores are aggregated by maximum per tool, so each intent gets the best-matched tools.
+
+- **Actuation safety net** — when a message contains action keywords (turn on, lock, etc.),
+  physical control tools are force-bound even if they fall below the relevance threshold.
+  Capped at three-quarters of the retrieval limit so safety tools cannot crowd out
+  RAG-retrieved results.
+
+- **`tool_retrieval_limit` and `tool_relevance_threshold` options** — configurable in the
+  Options flow. Retrieval limit (default `5`) sets the maximum tools per turn; relevance
+  threshold (default `0.15`) sets the cosine similarity cutoff.
+
+### Fixed
+
+- **`tool_index_failed` guard** — a persistent embedding provider failure previously
+  re-spawned a background index task on every conversation turn. The integration now
+  sets `tool_index_failed` and skips further attempts until the next restart.
+
+- **Reasoning mode crash on Qwen3/Ollama** — reasoning mode is now disabled before
+  `bind_tools` to prevent a crash when using Qwen3 or other providers that do not
+  support reasoning during tool binding.
+
+- **`safe_convert` for unhashable selectors** — `voluptuous_openapi.convert` could crash
+  on `SelectSelector` and other unhashable HA selector types. A `safe_convert` wrapper
+  now handles these gracefully, extracting enum options where possible and defaulting
+  to string type otherwise.
+
+## [3.9.0] - 2026-04-06
+
+### Added
+
+- **Day-of-week (DOW) baselines** — Sentinel's time-of-day anomaly detector now
+  supports per-(DOW, hour) baselines in addition to the existing global hourly
+  averages. Enable via `sentinel_baseline_weekly_patterns` in the Sentinel subentry.
+  Uses Welford's online algorithm for exact running mean + variance per slot without
+  storing all past values. Detection uses a weighted blend that transitions smoothly
+  from global to DOW baselines as data accumulates (`w = min(count / dow_min_samples,
+  1.0)`), so there is no hard cliff when switching. Entity-specific stddev thresholds
+  prevent washer/dryer power sensors from triggering on the same absolute deviation
+  that would flag a door sensor. DOW buckets use local time so weekend/weekday
+  schedules align with the user's actual timezone.
+
+- **DOW min-samples config** — New `sentinel_baseline_dow_min_samples` option
+  (default 4 weeks) controls how many observations per DOW-hour slot are required
+  before the blend weight reaches 1.0. Configurable via a NumberSelector in the
+  Sentinel subentry UI. Intentionally lower than the global `sentinel_baseline_min_samples`
+  (20) because DOW slots update at most once per week per entity.
+
+- **`learned_suppressions_active` health sensor attribute** — Exposes the count of
+  distinct `{rule_type}:{entity_id}` pairs that have accumulated learned cooldown
+  multipliers via snooze/dismiss feedback. Makes the feedback-learning loop
+  observable in the health dashboard.
+
+- **DB performance index** — `CREATE INDEX IF NOT EXISTS idx_sentinel_baselines_entity_metric`
+  added to `async_initialize()` for fast per-entity/metric lookups. Idempotent;
+  safe on existing installations.
+
+## [3.8.0] - 2026-04-05
+
+### Added
+
+- **Cross-area camera entry links** — Sentinel's camera-entry-unsecured rule can now
+  detect activity on cameras that physically overlook entry points in a different Home
+  Assistant area (e.g. a driveway camera watching the front door). Configure the mapping
+  via `sentinel_camera_entry_links` in the Sentinel subentry: a JSON object of camera
+  entity IDs to lists of entry/lock entity IDs. Same-area unsecured entries are still
+  detected automatically; cross-area links are purely additive. When both same-area and
+  linked entries are unsecured, all are reported in a single finding (deduplicated).
+  The anomaly suppression ID hashes only same-area entities, so changing link config
+  does not invalidate existing suppression state.
+
+## [3.7.2] - 2026-04-05
+
+### Changed
+
+- **Multi-select LLM API support** — The "Control Home Assistant" option in the options
+  flow is now a multi-select, allowing multiple LLM APIs to be active simultaneously (e.g.
+  combining the built-in Assist API with one or more MCP server integrations). Existing
+  single-API configurations migrate automatically; the behaviour is identical when only one
+  API is selected.
+
+### Fixed
+
+- **Crash when no APIs configured** — `_async_handle_message` no longer raises `KeyError`
+  when `CONF_LLM_HASS_API` is absent from options (i.e. the user deselected all APIs).
+  The agent now runs cleanly with only its built-in LangChain tools in that state.
+
+- **Migration respects "no control" intent** — The v5→v6 config-entry migration converts
+  the legacy `"none"` sentinel and absent key to an empty list rather than silently
+  enabling the Assist API, preserving the operator's prior choice.
+
+## [3.7.1] - 2026-04-04
+
+### Added
+
+- **Daily digest config flow UI** — The Sentinel subentry options flow now exposes a
+  `Boolean` toggle to enable/disable the daily digest and a `TimeSelector` to set the
+  delivery time, so operators can configure the digest without editing raw options.
+
+- **Proposals approved (24 h) health attribute** — `SentinelHealthSensor` gains a
+  `discovery_proposals_approved_24h` attribute counting how many discovery proposals
+  were approved by the operator in the past 24 hours, giving visibility into how active
+  the rule-learning feedback loop is.
+
+- **Feedback-trained cooldown wired for snooze and dismiss** — `record_cooldown_feedback`
+  is now called from both the snooze action (notifier) and the dismiss action (actions),
+  completing the feedback loop so per-entity cooldown multipliers actually accumulate.
+
+### Fixed
+
+- **Daily digest time parse with `"HH:MM:SS"` format** — `sentinel/notifier.py` used
+  `split(":", 1)` which parsed `"08:00:00"` as `("08", "00:00")`, silently discarding
+  the configured time and always scheduling the digest at 08:00. Fixed to
+  `split(":")` so any user-configured time takes effect.
+
+- **Missing `stored_version = 5` in suppression state migration** — The v4→v5 migration
+  block did not update the `stored_version` sentinel variable, meaning a future v6
+  migration block would have re-applied v5 logic. Fixed.
+
+- **Cooldown multiplier key scheme (`entity_id` → `rule_type:entity_id`)** — Multipliers
+  are now keyed by `"{rule_type}:{entity_id}"` so different rules for the same entity
+  accumulate independent multipliers. Includes a v5 schema migration that discards the
+  old bare-key entries (safe: the feedback signal was never wired in production).
+
+## [3.7.0] - 2026-04-03
+
+### Added
+
+- **Discovery quality metrics in health sensor** — `SentinelHealthSensor` now exposes
+  `discovery_candidates_generated`, `discovery_candidates_novel`,
+  `discovery_candidates_deduplicated`, `discovery_proposals_promoted`, and
+  `discovery_unsupported_ttl_expired` attributes, giving operators visibility into
+  every LLM discovery cycle without opening logs.
+
+- **Trigger-source breakdown (24 h)** — Health sensor gains a
+  `trigger_source_breakdown` attribute with rolling 24-hour counts broken down by
+  `poll`, `event`, and `on_demand` trigger sources so you can see at a glance what
+  is driving Sentinel activity.
+
+- **Daily digest notification** — Sentinel can now send a scheduled push notification
+  summarising findings from the past 24 hours. Controlled by the new
+  `CONF_SENTINEL_DAILY_DIGEST_HOUR` option (default 07:00 local time). Duplicate
+  digest triggers within a session are safely de-duplicated.
+
+- **Centralised action codes** — All Sentinel mobile-action button identifiers
+  (`ACTION_CODES`) are now declared once in `const.py` and imported by both the
+  notifier and execution service, eliminating the risk of copy-paste divergence.
+
+- **Learned per-entity cooldown multipliers** — Suppression now stores a
+  per-entity feedback table (schema v4) that can hold learned multipliers. The data
+  model and upgrade path are in place; the feedback signal will be wired to a user
+  action in a follow-up sprint.
+
+- **Camera-area spatial ejection in correlator** — `_eject_camera_area_violations`
+  post-grouping pass prevents off-area findings from being bundled into a
+  `CompoundFinding` by transitive union-find bridging. A finding in *Garage* can no
+  longer appear in a compound alert anchored to the *Front* camera.
+
+### Fixed
+
+- **Empty `evidence_paths` bypass in discovery engine** — Candidates with an empty
+  `evidence_paths` list (`[]`) were silently passing the derived-only filter because
+  the old `if candidate.get("evidence_paths") and all(...)` guard short-circuits on
+  falsy empty lists. Guard is now `is not None and len(...) > 0`.
+
+- **Dead code in correlator area filter** — `camera_areas` set subtraction included
+  `None` (`- {None, ""}`) but `_area_of()` always returns `str`, making the `None`
+  exclusion a no-op. Simplified to `- {""}`.
+
+- **Orphaned daily-digest tasks** — `_async_send_daily_digest` now checks whether a
+  prior digest task is still running before scheduling a new one, preventing orphaned
+  coroutines when the time-change callback fires more than once before the digest
+  completes.
+
+### Changed
+
+- Correlator `_COMPLEMENTARY_PAIRS_REQUIRE_AREA_MATCH` guard extended so that
+  spatially-bound pairs (e.g. `unlocked_lock_at_night` + `camera_entry_unsecured`)
+  only correlate when they share the same non-empty area, reducing spurious compound
+  alerts across different physical zones.

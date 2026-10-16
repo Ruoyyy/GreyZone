@@ -1,0 +1,1277 @@
+"""Sentinel configuration subentry flow."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import voluptuous as vol
+from homeassistant.config_entries import (
+    SOURCE_RECONFIGURE,
+    SOURCE_USER,
+    ConfigSubentry,
+    ConfigSubentryFlow,
+    SubentryFlowResult,
+)
+from homeassistant.core import valid_entity_id
+from homeassistant.helpers.selector import (
+    BooleanSelector,
+    EntitySelector,
+    EntitySelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+    TimeSelector,
+)
+
+from ..const import (  # noqa: TID252
+    CONF_CRITICAL_ACTION_PIN,
+    CONF_EXPLAIN_ENABLED,
+    CONF_NOTIFY_SERVICE,
+    CONF_SENTINEL_APPLIANCE_DURATION_MIN,
+    CONF_SENTINEL_APPLIANCE_POWER_THRESHOLD_W,
+    CONF_SENTINEL_AUTH_IP_RETENTION_DAYS,
+    CONF_SENTINEL_BASELINE_DOW_MIN_SAMPLES,
+    CONF_SENTINEL_BASELINE_ENABLED,
+    CONF_SENTINEL_BASELINE_FRESHNESS_THRESHOLD_SECONDS,
+    CONF_SENTINEL_BASELINE_MIN_SAMPLES,
+    CONF_SENTINEL_BASELINE_SUSTAINED_MINUTES,
+    CONF_SENTINEL_BASELINE_UPDATE_INTERVAL_MINUTES,
+    CONF_SENTINEL_BASELINE_WEEKLY_PATTERNS,
+    CONF_SENTINEL_CAMERA_ENTRY_LINKS,
+    CONF_SENTINEL_COOLDOWN_MINUTES,
+    CONF_SENTINEL_DAILY_DIGEST_ENABLED,
+    CONF_SENTINEL_DAILY_DIGEST_TIME,
+    CONF_SENTINEL_DISCOVERY_ENABLED,
+    CONF_SENTINEL_DISCOVERY_INTERVAL_SECONDS,
+    CONF_SENTINEL_DISCOVERY_MAX_RECORDS,
+    CONF_SENTINEL_ENABLED,
+    CONF_SENTINEL_ENTITY_COOLDOWN_MINUTES,
+    CONF_SENTINEL_HA_TOKEN_STALE_DAYS,
+    CONF_SENTINEL_INTERVAL_SECONDS,
+    CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH,
+    CONF_SENTINEL_LEVEL_INCREASE_PIN_SALT,
+    CONF_SENTINEL_NETWORK_AUDIT_SHARE_DETAILS,
+    CONF_SENTINEL_NETWORK_ENABLED,
+    CONF_SENTINEL_NETWORK_GUEST_IDLE_DAYS,
+    CONF_SENTINEL_NETWORK_OFFLINE_DEVICE_MIN,
+    CONF_SENTINEL_NETWORK_UNKNOWN_DEVICE_GRACE_MIN,
+    CONF_SENTINEL_PENDING_PROMPT_TTL_MINUTES,
+    CONF_SENTINEL_QUIET_HOURS_END,
+    CONF_SENTINEL_QUIET_HOURS_SEVERITIES,
+    CONF_SENTINEL_QUIET_HOURS_START,
+    CONF_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE,
+    CONF_SENTINEL_RESPONSE_LANGUAGE,
+    CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS,
+    CONF_SENTINEL_TRIAGE_ENABLED,
+    CONF_SENTINEL_TRIAGE_TIMEOUT_SECONDS,
+    CRITICAL_PIN_MAX_LEN,
+    CRITICAL_PIN_MIN_LEN,
+    RECOMMENDED_EXPLAIN_ENABLED,
+    RECOMMENDED_SENTINEL_APPLIANCE_DURATION_MIN,
+    RECOMMENDED_SENTINEL_APPLIANCE_POWER_THRESHOLD_W,
+    RECOMMENDED_SENTINEL_AUTH_IP_RETENTION_DAYS,
+    RECOMMENDED_SENTINEL_BASELINE_DOW_MIN_SAMPLES,
+    RECOMMENDED_SENTINEL_BASELINE_ENABLED,
+    RECOMMENDED_SENTINEL_BASELINE_FRESHNESS_THRESHOLD_SECONDS,
+    RECOMMENDED_SENTINEL_BASELINE_MIN_SAMPLES,
+    RECOMMENDED_SENTINEL_BASELINE_SUSTAINED_MINUTES,
+    RECOMMENDED_SENTINEL_BASELINE_UPDATE_INTERVAL_MINUTES,
+    RECOMMENDED_SENTINEL_BASELINE_WEEKLY_PATTERNS,
+    RECOMMENDED_SENTINEL_CAMERA_ENTRY_LINKS,
+    RECOMMENDED_SENTINEL_COOLDOWN_MINUTES,
+    RECOMMENDED_SENTINEL_DAILY_DIGEST_ENABLED,
+    RECOMMENDED_SENTINEL_DAILY_DIGEST_TIME,
+    RECOMMENDED_SENTINEL_DISCOVERY_ENABLED,
+    RECOMMENDED_SENTINEL_DISCOVERY_INTERVAL_SECONDS,
+    RECOMMENDED_SENTINEL_DISCOVERY_MAX_RECORDS,
+    RECOMMENDED_SENTINEL_ENABLED,
+    RECOMMENDED_SENTINEL_ENTITY_COOLDOWN_MINUTES,
+    RECOMMENDED_SENTINEL_HA_TOKEN_STALE_DAYS,
+    RECOMMENDED_SENTINEL_INTERVAL_SECONDS,
+    RECOMMENDED_SENTINEL_NETWORK_AUDIT_SHARE_DETAILS,
+    RECOMMENDED_SENTINEL_NETWORK_ENABLED,
+    RECOMMENDED_SENTINEL_NETWORK_GUEST_IDLE_DAYS,
+    RECOMMENDED_SENTINEL_NETWORK_OFFLINE_DEVICE_MIN,
+    RECOMMENDED_SENTINEL_NETWORK_UNKNOWN_DEVICE_GRACE_MIN,
+    RECOMMENDED_SENTINEL_PENDING_PROMPT_TTL_MINUTES,
+    RECOMMENDED_SENTINEL_QUIET_HOURS_SEVERITIES,
+    RECOMMENDED_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE,
+    RECOMMENDED_SENTINEL_RESPONSE_LANGUAGE,
+    RECOMMENDED_SENTINEL_RULE_ENTITY_EXCLUSIONS,
+    RECOMMENDED_SENTINEL_TRIAGE_ENABLED,
+    RECOMMENDED_SENTINEL_TRIAGE_TIMEOUT_SECONDS,
+    SENTINEL_SEVERITIES,
+    SUBENTRY_TYPE_SENTINEL,
+)
+from ..core.utils import (  # noqa: TID252
+    hash_pin,
+    list_mobile_notify_services,
+    valid_exclusion_entry,
+)
+from .localization import async_common_translation
+
+
+def _camera_entry_links_json(payload: dict[str, Any]) -> str:
+    """Serialize sentinel_camera_entry_links from payload to a JSON string."""
+    value = payload.get(
+        CONF_SENTINEL_CAMERA_ENTRY_LINKS, RECOMMENDED_SENTINEL_CAMERA_ENTRY_LINKS
+    )
+    if not isinstance(value, dict):
+        value = {}
+    return json.dumps(value)
+
+
+def _parse_json_entity_map(
+    data: dict[str, Any],
+    key: str,
+    errors: dict[str, str],
+    error_key: str,
+    *,
+    validate_exclusion_entries: bool = False,
+) -> None:
+    """
+    Parse a JSON ``dict[str, list[str]]`` text field into ``data[key]`` in place.
+
+    Records ``error_key`` in ``errors`` (leaving the raw string in ``data``)
+    when the value is not valid JSON of that shape.  Empty input stores ``{}``.
+    With ``validate_exclusion_entries`` every list item must pass
+    ``valid_exclusion_entry`` (a dot, at least one literal character, length
+    cap) — mirroring the engine parser so the form rejects entries the engine
+    would silently drop, in particular match-everything globs like ``"*"`` or
+    ``"*.*"`` (the ``"*"`` wildcard belongs in the map *key*, not the values).
+    """
+    raw = str(data.get(key, "") or "").strip()
+    if not raw or raw == "{}":
+        data[key] = {}
+        return
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        errors.setdefault("base", error_key)
+        return
+    if not isinstance(parsed, dict) or not all(
+        isinstance(k, str)
+        and isinstance(v, list)
+        and all(
+            isinstance(i, str)
+            and (not validate_exclusion_entries or valid_exclusion_entry(i))
+            for i in v
+        )
+        for k, v in parsed.items()
+    ):
+        errors.setdefault("base", error_key)
+        return
+    data[key] = parsed
+
+
+# UI-only field: not itself a persisted config key. An entity picker for the
+# common case (exclude an entity from *every* Sentinel rule, e.g. an ESPHome
+# touch-panel's template lock that mirrors a real lock elsewhere) so most
+# people never need to touch the advanced JSON field below. Merged into
+# CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS[_ALL_RULES_KEY] on submit.
+_FIELD_EXCLUDE_ALL_ENTITIES = "sentinel_rule_entity_exclusions_all"
+
+# The all-rules key of the stored exclusions map.  The storage shape is
+# unchanged by the picker split -- one map, "*" for "every rule" -- so
+# hand-edited storage and the docs' JSON examples stay valid.
+_ALL_RULES_KEY = "*"
+
+
+def _exclusions_map(payload: dict[str, Any]) -> dict[str, list[str]]:
+    """Return the stored exclusions map, normalized to ``dict[str, list[str]]``."""
+    value = payload.get(
+        CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS,
+        RECOMMENDED_SENTINEL_RULE_ENTITY_EXCLUSIONS,
+    )
+    if not isinstance(value, dict):
+        return {}
+    return {
+        k: [e for e in v if isinstance(e, str)]
+        for k, v in value.items()
+        if isinstance(k, str) and isinstance(v, list)
+    }
+
+
+def _rule_entity_exclusions_all_list(payload: dict[str, Any]) -> list[str]:
+    """
+    Return the all-rules entries an ``EntitySelector`` can actually represent.
+
+    Split on entry *shape*, not on the map key.  ``valid_exclusion_entry``
+    permits glob patterns (``camera.map_*``) and docs/sentinel.md recommends
+    them under ``"*"``, but HA's ``EntitySelector`` validates through
+    ``cv.entity_id_or_uuid`` and rejects anything that is not a literal
+    entity ID -- and voluptuous validates a field's ``default`` even when the
+    field is absent from the submission.  Feeding a glob to the picker would
+    therefore make the whole settings form unsubmittable, with no way to
+    reach the offending value from the UI.  Globs stay in the advanced JSON
+    field (see ``_rule_entity_exclusions_advanced_json``), which round-trips
+    them losslessly.
+    """
+    return [
+        e
+        for e in _exclusions_map(payload).get(_ALL_RULES_KEY, [])
+        if valid_entity_id(e)
+    ]
+
+
+def _rule_entity_exclusions_all_globs(payload: dict[str, Any]) -> list[str]:
+    """Return the all-rules entries the picker cannot represent (glob patterns)."""
+    return [
+        e
+        for e in _exclusions_map(payload).get(_ALL_RULES_KEY, [])
+        if not valid_entity_id(e)
+    ]
+
+
+def _rule_entity_exclusions_advanced_json(payload: dict[str, Any]) -> str:
+    """
+    Serialize the half of the exclusions map the picker cannot hold.
+
+    That is every per-rule key, plus any all-rules entries that are glob
+    patterns rather than literal entity IDs.  Literal all-rules entity IDs
+    live in the ``_FIELD_EXCLUDE_ALL_ENTITIES`` picker instead, so they are
+    omitted here and never appear in both fields at once.
+    """
+    rest: dict[str, list[str]] = {
+        k: v for k, v in _exclusions_map(payload).items() if k != _ALL_RULES_KEY
+    }
+    globs = _rule_entity_exclusions_all_globs(payload)
+    if globs:
+        rest[_ALL_RULES_KEY] = globs
+    return json.dumps(rest)
+
+
+def _merge_rule_entity_exclusions(
+    data: dict[str, Any],
+    errors: dict[str, str],
+) -> list[str]:
+    """
+    Merge the picker and advanced-JSON exclusion fields into one dict.
+
+    Merges the entity-picker (all-rules) and advanced-JSON (per-rule, plus
+    all-rules globs) exclusion fields in ``data`` into a single
+    ``CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS`` dict, mirroring the shape the
+    engine expects.  The union under ``_ALL_RULES_KEY`` is what makes the
+    split lossless: whichever half an entry came from, it lands back in the
+    same map.
+
+    Must run *instead of* a plain ``_parse_json_entity_map`` call on
+    ``CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS`` -- this function parses that
+    field itself (as the "advanced" half) and then folds in the picker's
+    entities.
+
+    Returns the raw picker value it popped, so the caller can restore the
+    field on the validation-error re-show without depending on statement
+    order around the pop.
+    """
+    raw = data.pop(_FIELD_EXCLUDE_ALL_ENTITIES, None)
+    picked = raw if isinstance(raw, list) else []
+    all_entities = sorted({e for e in picked if isinstance(e, str) and e})
+
+    # The picker is a UI convenience over the same stored map, so it must
+    # enforce the same entry rules as the JSON field.  Without this an entry
+    # the engine will silently drop at load (a bare entity-registry UUID has
+    # no dot) is persisted with no feedback, and the user's exclusion just
+    # never takes effect.
+    if any(not valid_exclusion_entry(e) for e in all_entities):
+        errors.setdefault("base", "invalid_rule_entity_exclusions")
+
+    _parse_json_entity_map(
+        data,
+        CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS,
+        errors,
+        "invalid_rule_entity_exclusions",
+        validate_exclusion_entries=True,
+    )
+    if errors:
+        return picked
+
+    merged = dict(data.get(CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS) or {})
+    combined = sorted({*merged.get(_ALL_RULES_KEY, []), *all_entities})
+    if combined:
+        merged[_ALL_RULES_KEY] = combined
+    else:
+        # Never persist a dangling empty "*" -- clearing the picker must
+        # actually remove the all-rules exclusion, not leave {"*": []}.
+        merged.pop(_ALL_RULES_KEY, None)
+    data[CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS] = merged
+    return picked
+
+
+_QUIET_HOUR_MAX = 23
+
+_QUIET_HOUR_OPTIONS = [
+    SelectOptionDict(label="Disabled", value=""),
+    *(
+        SelectOptionDict(label=f"{hour:02d}:00", value=str(hour))
+        for hour in range(_QUIET_HOUR_MAX + 1)
+    ),
+]
+
+_QUIET_SEVERITY_OPTIONS = [
+    SelectOptionDict(label=severity.capitalize(), value=severity)
+    for severity in SENTINEL_SEVERITIES
+]
+
+
+def _quiet_hour_selector() -> SelectSelector:
+    """Return a fresh hour-of-day dropdown selector for quiet hours."""
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=_QUIET_HOUR_OPTIONS,
+            mode=SelectSelectorMode.DROPDOWN,
+            sort=False,
+            custom_value=False,
+        )
+    )
+
+
+def _parse_quiet_hour(raw: str) -> int | None:
+    """Parse a quiet-hours select value into a local hour, or None if invalid."""
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if not 0 <= value <= _QUIET_HOUR_MAX:
+        return None
+    return value
+
+
+def _quiet_hour_str(payload: dict[str, Any], key: str) -> str:
+    """Return the quiet-hours value from payload as a select value ("" = disabled)."""
+    value = payload.get(key)
+    if value is None or value == "":
+        return ""
+    parsed = _parse_quiet_hour(str(value).strip())
+    return "" if parsed is None else str(parsed)
+
+
+def _raw_quiet_hour(data: dict[str, Any], key: str) -> str:
+    """Return the submitted quiet-hours value as a stripped string ("" = unset)."""
+    value = data.get(key)
+    if value is None:
+        return ""
+    # str() (not truthiness) so hour 0 is treated as set, not as "Disabled".
+    return str(value).strip()
+
+
+def _current_subentry(flow: ConfigSubentryFlow) -> ConfigSubentry | None:
+    """Return the Sentinel subentry currently being edited, if any."""
+    entry = flow._get_entry()  # noqa: SLF001
+    subentry_id = getattr(flow, "_subentry_id", None)
+    if not subentry_id:
+        subentry_id = flow.context.get("subentry_id")
+    if subentry_id:
+        # For reconfigure flows this will find the subentry being edited.
+        # For user flows HA pre-generates a UUID that doesn't exist yet, so
+        # the get() returns None and we fall through to the type scan below.
+        found = entry.subentries.get(subentry_id)
+        if found is not None:
+            return found
+    matches = [
+        subentry
+        for subentry in entry.subentries.values()
+        if subentry.subentry_type == SUBENTRY_TYPE_SENTINEL
+    ]
+    if matches:
+        return matches[0]
+    return None
+
+
+def _carry_basic_setup_survivors(
+    data: dict[str, Any], current: ConfigSubentry | None
+) -> None:
+    """
+    Copy the settings Basic setup must not reset out of *current* into *data*.
+
+    Basic setup rebuilds the payload from ``_default_payload()`` and exposes four
+    fields, so every unexposed setting silently returns to its recommended
+    default. That is the point for tunables, and wrong for two classes of value:
+
+    * hand-curated maps no default can reconstruct -- the entity exclusions a
+      user picked to silence phantom alerts, and the camera-to-entry links. The
+      symptom of losing them is phantom alerts returning with nothing in the UI
+      to explain why.
+    * the critical-action PIN gate. The recommended default for
+      ``sentinel_require_pin_for_level_increase`` is ``False`` and the Basic
+      form's PIN box is always blank, so a plain re-run used to reset the flag
+      and drop the stored hash and salt, and ``sentinel_set_autonomy_level``
+      then succeeded with no PIN at all. The gate is on whenever a PIN hash is
+      stored (``level_increase_pin_required``, #762), so a stored hash is
+      carried with the flag turned on; a flag with no stored PIN is not
+      carried, since there is nothing to check a PIN against. A PIN typed into
+      the Basic form still overwrites what is carried here, because the caller
+      applies it after this runs.
+
+    Both maps are rebuilt rather than assigned: the values are mutable lists that
+    would otherwise stay aliased to the previous subentry's stored data.
+    """
+    if current is None:
+        return
+
+    stored = dict(current.data)
+
+    # _exclusions_map normalizes and copies: non-dict input, non-list values and
+    # non-str members are dropped rather than persisted. Hand-edited storage is
+    # explicitly supported here, so a malformed map must not raise inside the flow.
+    exclusions = _exclusions_map(stored)
+    if exclusions:
+        data[CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS] = exclusions
+
+    links = stored.get(CONF_SENTINEL_CAMERA_ENTRY_LINKS)
+    if isinstance(links, dict):
+        carried_links = {
+            key: list(value)
+            for key, value in links.items()
+            if isinstance(key, str) and isinstance(value, list)
+        }
+        if carried_links:
+            data[CONF_SENTINEL_CAMERA_ENTRY_LINKS] = carried_links
+
+    # Before #762 a saved PIN could be stored with the flag off (always from
+    # Basic setup, and from Advanced when the box was left unchecked). The user
+    # typed a PIN, so a stored hash means the gate is on.
+    if stored.get(CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH):
+        data[CONF_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE] = True
+        for key in (
+            CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH,
+            CONF_SENTINEL_LEVEL_INCREASE_PIN_SALT,
+        ):
+            if stored.get(key):
+                data[key] = stored[key]
+
+
+def _default_payload() -> dict[str, Any]:
+    """Return default Sentinel configuration payload."""
+    return {
+        CONF_SENTINEL_ENABLED: RECOMMENDED_SENTINEL_ENABLED,
+        CONF_SENTINEL_INTERVAL_SECONDS: RECOMMENDED_SENTINEL_INTERVAL_SECONDS,
+        CONF_SENTINEL_COOLDOWN_MINUTES: RECOMMENDED_SENTINEL_COOLDOWN_MINUTES,
+        CONF_SENTINEL_ENTITY_COOLDOWN_MINUTES: (
+            RECOMMENDED_SENTINEL_ENTITY_COOLDOWN_MINUTES
+        ),
+        CONF_SENTINEL_PENDING_PROMPT_TTL_MINUTES: (
+            RECOMMENDED_SENTINEL_PENDING_PROMPT_TTL_MINUTES
+        ),
+        CONF_SENTINEL_DISCOVERY_ENABLED: RECOMMENDED_SENTINEL_DISCOVERY_ENABLED,
+        CONF_SENTINEL_DISCOVERY_INTERVAL_SECONDS: (
+            RECOMMENDED_SENTINEL_DISCOVERY_INTERVAL_SECONDS
+        ),
+        CONF_SENTINEL_DISCOVERY_MAX_RECORDS: RECOMMENDED_SENTINEL_DISCOVERY_MAX_RECORDS,
+        CONF_SENTINEL_TRIAGE_ENABLED: RECOMMENDED_SENTINEL_TRIAGE_ENABLED,
+        CONF_SENTINEL_TRIAGE_TIMEOUT_SECONDS: (
+            RECOMMENDED_SENTINEL_TRIAGE_TIMEOUT_SECONDS
+        ),
+        CONF_SENTINEL_BASELINE_ENABLED: RECOMMENDED_SENTINEL_BASELINE_ENABLED,
+        CONF_SENTINEL_BASELINE_UPDATE_INTERVAL_MINUTES: (
+            RECOMMENDED_SENTINEL_BASELINE_UPDATE_INTERVAL_MINUTES
+        ),
+        CONF_SENTINEL_BASELINE_FRESHNESS_THRESHOLD_SECONDS: (
+            RECOMMENDED_SENTINEL_BASELINE_FRESHNESS_THRESHOLD_SECONDS
+        ),
+        CONF_SENTINEL_BASELINE_MIN_SAMPLES: RECOMMENDED_SENTINEL_BASELINE_MIN_SAMPLES,
+        CONF_SENTINEL_BASELINE_SUSTAINED_MINUTES: (
+            RECOMMENDED_SENTINEL_BASELINE_SUSTAINED_MINUTES
+        ),
+        CONF_SENTINEL_APPLIANCE_POWER_THRESHOLD_W: (
+            RECOMMENDED_SENTINEL_APPLIANCE_POWER_THRESHOLD_W
+        ),
+        CONF_SENTINEL_APPLIANCE_DURATION_MIN: (
+            RECOMMENDED_SENTINEL_APPLIANCE_DURATION_MIN
+        ),
+        CONF_SENTINEL_NETWORK_ENABLED: RECOMMENDED_SENTINEL_NETWORK_ENABLED,
+        CONF_SENTINEL_NETWORK_OFFLINE_DEVICE_MIN: (
+            RECOMMENDED_SENTINEL_NETWORK_OFFLINE_DEVICE_MIN
+        ),
+        CONF_SENTINEL_NETWORK_UNKNOWN_DEVICE_GRACE_MIN: (
+            RECOMMENDED_SENTINEL_NETWORK_UNKNOWN_DEVICE_GRACE_MIN
+        ),
+        CONF_SENTINEL_NETWORK_GUEST_IDLE_DAYS: (
+            RECOMMENDED_SENTINEL_NETWORK_GUEST_IDLE_DAYS
+        ),
+        CONF_SENTINEL_NETWORK_AUDIT_SHARE_DETAILS: (
+            RECOMMENDED_SENTINEL_NETWORK_AUDIT_SHARE_DETAILS
+        ),
+        CONF_SENTINEL_HA_TOKEN_STALE_DAYS: RECOMMENDED_SENTINEL_HA_TOKEN_STALE_DAYS,
+        CONF_SENTINEL_AUTH_IP_RETENTION_DAYS: (
+            RECOMMENDED_SENTINEL_AUTH_IP_RETENTION_DAYS
+        ),
+        CONF_EXPLAIN_ENABLED: RECOMMENDED_EXPLAIN_ENABLED,
+        # See const.py: language override for the explainer's finding text.
+        CONF_SENTINEL_RESPONSE_LANGUAGE: RECOMMENDED_SENTINEL_RESPONSE_LANGUAGE,
+        CONF_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE: (
+            RECOMMENDED_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE
+        ),
+        CONF_SENTINEL_DAILY_DIGEST_ENABLED: RECOMMENDED_SENTINEL_DAILY_DIGEST_ENABLED,
+        CONF_SENTINEL_DAILY_DIGEST_TIME: RECOMMENDED_SENTINEL_DAILY_DIGEST_TIME,
+        # Quiet-hours start/end default to absent (feature disabled).
+        CONF_SENTINEL_QUIET_HOURS_SEVERITIES: list(
+            RECOMMENDED_SENTINEL_QUIET_HOURS_SEVERITIES
+        ),
+        CONF_SENTINEL_CAMERA_ENTRY_LINKS: RECOMMENDED_SENTINEL_CAMERA_ENTRY_LINKS,
+        # Copy, don't alias: this payload is persisted verbatim by the basic
+        # setup path, and the nested lists would otherwise be shared with the
+        # module-level default across every config entry.
+        CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS: {
+            k: list(v) for k, v in RECOMMENDED_SENTINEL_RULE_ENTITY_EXCLUSIONS.items()
+        },
+    }
+
+
+class SentinelSubentryFlow(ConfigSubentryFlow):
+    """Config flow handler for Sentinel subentries."""
+
+    def _schedule_reload(self) -> None:
+        entry = self._get_entry()
+        self.hass.async_create_task(
+            self.hass.config_entries.async_reload(entry.entry_id)
+        )
+
+    def _schema(self, payload: dict[str, Any]) -> vol.Schema:
+        """Build Sentinel form schema from payload."""
+        schema: dict[Any, Any] = {
+            vol.Required(
+                CONF_SENTINEL_ENABLED,
+                default=bool(
+                    payload.get(CONF_SENTINEL_ENABLED, RECOMMENDED_SENTINEL_ENABLED)
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_INTERVAL_SECONDS,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_INTERVAL_SECONDS,
+                        RECOMMENDED_SENTINEL_INTERVAL_SECONDS,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=60, max=3600, step=30)),
+            vol.Required(
+                CONF_SENTINEL_COOLDOWN_MINUTES,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_COOLDOWN_MINUTES,
+                        RECOMMENDED_SENTINEL_COOLDOWN_MINUTES,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=5, max=240, step=5)),
+            vol.Required(
+                CONF_SENTINEL_ENTITY_COOLDOWN_MINUTES,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_ENTITY_COOLDOWN_MINUTES,
+                        RECOMMENDED_SENTINEL_ENTITY_COOLDOWN_MINUTES,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=5, max=240, step=5)),
+            vol.Required(
+                CONF_SENTINEL_PENDING_PROMPT_TTL_MINUTES,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_PENDING_PROMPT_TTL_MINUTES,
+                        RECOMMENDED_SENTINEL_PENDING_PROMPT_TTL_MINUTES,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=5, max=1440, step=5)),
+            vol.Required(
+                CONF_SENTINEL_DISCOVERY_ENABLED,
+                default=bool(
+                    payload.get(
+                        CONF_SENTINEL_DISCOVERY_ENABLED,
+                        RECOMMENDED_SENTINEL_DISCOVERY_ENABLED,
+                    )
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_DISCOVERY_INTERVAL_SECONDS,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_DISCOVERY_INTERVAL_SECONDS,
+                        RECOMMENDED_SENTINEL_DISCOVERY_INTERVAL_SECONDS,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=300, max=86400, step=300)),
+            vol.Required(
+                CONF_SENTINEL_DISCOVERY_MAX_RECORDS,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_DISCOVERY_MAX_RECORDS,
+                        RECOMMENDED_SENTINEL_DISCOVERY_MAX_RECORDS,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=10, max=1000, step=10)),
+            vol.Required(
+                CONF_SENTINEL_TRIAGE_ENABLED,
+                default=bool(
+                    payload.get(
+                        CONF_SENTINEL_TRIAGE_ENABLED,
+                        RECOMMENDED_SENTINEL_TRIAGE_ENABLED,
+                    )
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_TRIAGE_TIMEOUT_SECONDS,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_TRIAGE_TIMEOUT_SECONDS,
+                        RECOMMENDED_SENTINEL_TRIAGE_TIMEOUT_SECONDS,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=1, max=120, step=1)),
+            vol.Required(
+                CONF_SENTINEL_BASELINE_ENABLED,
+                default=bool(
+                    payload.get(
+                        CONF_SENTINEL_BASELINE_ENABLED,
+                        RECOMMENDED_SENTINEL_BASELINE_ENABLED,
+                    )
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_BASELINE_UPDATE_INTERVAL_MINUTES,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_BASELINE_UPDATE_INTERVAL_MINUTES,
+                        RECOMMENDED_SENTINEL_BASELINE_UPDATE_INTERVAL_MINUTES,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=1, max=1440, step=1)),
+            vol.Required(
+                CONF_SENTINEL_BASELINE_FRESHNESS_THRESHOLD_SECONDS,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_BASELINE_FRESHNESS_THRESHOLD_SECONDS,
+                        RECOMMENDED_SENTINEL_BASELINE_FRESHNESS_THRESHOLD_SECONDS,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=60, max=86400, step=60)),
+            vol.Required(
+                CONF_SENTINEL_BASELINE_WEEKLY_PATTERNS,
+                default=bool(
+                    payload.get(
+                        CONF_SENTINEL_BASELINE_WEEKLY_PATTERNS,
+                        RECOMMENDED_SENTINEL_BASELINE_WEEKLY_PATTERNS,
+                    )
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_BASELINE_DOW_MIN_SAMPLES,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_BASELINE_DOW_MIN_SAMPLES,
+                        RECOMMENDED_SENTINEL_BASELINE_DOW_MIN_SAMPLES,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=1, max=52, step=1)),
+            vol.Required(
+                CONF_SENTINEL_BASELINE_MIN_SAMPLES,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_BASELINE_MIN_SAMPLES,
+                        RECOMMENDED_SENTINEL_BASELINE_MIN_SAMPLES,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=1, max=500, step=1)),
+            vol.Required(
+                CONF_SENTINEL_BASELINE_SUSTAINED_MINUTES,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_BASELINE_SUSTAINED_MINUTES,
+                        RECOMMENDED_SENTINEL_BASELINE_SUSTAINED_MINUTES,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=0, max=120, step=5)),
+            vol.Required(
+                CONF_SENTINEL_APPLIANCE_POWER_THRESHOLD_W,
+                default=float(
+                    payload.get(
+                        CONF_SENTINEL_APPLIANCE_POWER_THRESHOLD_W,
+                        RECOMMENDED_SENTINEL_APPLIANCE_POWER_THRESHOLD_W,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=10, max=10000, step=10)),
+            vol.Required(
+                CONF_SENTINEL_APPLIANCE_DURATION_MIN,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_APPLIANCE_DURATION_MIN,
+                        RECOMMENDED_SENTINEL_APPLIANCE_DURATION_MIN,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=5, max=1440, step=5)),
+            vol.Required(
+                CONF_SENTINEL_NETWORK_ENABLED,
+                default=bool(
+                    payload.get(
+                        CONF_SENTINEL_NETWORK_ENABLED,
+                        RECOMMENDED_SENTINEL_NETWORK_ENABLED,
+                    )
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_NETWORK_OFFLINE_DEVICE_MIN,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_NETWORK_OFFLINE_DEVICE_MIN,
+                        RECOMMENDED_SENTINEL_NETWORK_OFFLINE_DEVICE_MIN,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=1, max=1440, step=1)),
+            vol.Required(
+                CONF_SENTINEL_NETWORK_UNKNOWN_DEVICE_GRACE_MIN,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_NETWORK_UNKNOWN_DEVICE_GRACE_MIN,
+                        RECOMMENDED_SENTINEL_NETWORK_UNKNOWN_DEVICE_GRACE_MIN,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=0, max=1440, step=1)),
+            vol.Required(
+                CONF_SENTINEL_NETWORK_GUEST_IDLE_DAYS,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_NETWORK_GUEST_IDLE_DAYS,
+                        RECOMMENDED_SENTINEL_NETWORK_GUEST_IDLE_DAYS,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=1, max=365, step=1)),
+            vol.Required(
+                CONF_SENTINEL_NETWORK_AUDIT_SHARE_DETAILS,
+                default=bool(
+                    payload.get(
+                        CONF_SENTINEL_NETWORK_AUDIT_SHARE_DETAILS,
+                        RECOMMENDED_SENTINEL_NETWORK_AUDIT_SHARE_DETAILS,
+                    )
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_HA_TOKEN_STALE_DAYS,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_HA_TOKEN_STALE_DAYS,
+                        RECOMMENDED_SENTINEL_HA_TOKEN_STALE_DAYS,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=1, max=3650, step=1)),
+            vol.Required(
+                CONF_SENTINEL_AUTH_IP_RETENTION_DAYS,
+                default=int(
+                    payload.get(
+                        CONF_SENTINEL_AUTH_IP_RETENTION_DAYS,
+                        RECOMMENDED_SENTINEL_AUTH_IP_RETENTION_DAYS,
+                    )
+                ),
+            ): NumberSelector(NumberSelectorConfig(min=1, max=3650, step=1)),
+            vol.Required(
+                CONF_EXPLAIN_ENABLED,
+                default=bool(
+                    payload.get(CONF_EXPLAIN_ENABLED, RECOMMENDED_EXPLAIN_ENABLED)
+                ),
+            ): BooleanSelector(),
+            vol.Optional(
+                CONF_SENTINEL_RESPONSE_LANGUAGE,
+                description={
+                    "suggested_value": payload.get(
+                        CONF_SENTINEL_RESPONSE_LANGUAGE,
+                        RECOMMENDED_SENTINEL_RESPONSE_LANGUAGE,
+                    )
+                },
+                default=RECOMMENDED_SENTINEL_RESPONSE_LANGUAGE,
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Required(
+                CONF_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE,
+                default=bool(
+                    payload.get(
+                        CONF_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE,
+                        RECOMMENDED_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE,
+                    )
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_DAILY_DIGEST_ENABLED,
+                default=bool(
+                    payload.get(
+                        CONF_SENTINEL_DAILY_DIGEST_ENABLED,
+                        RECOMMENDED_SENTINEL_DAILY_DIGEST_ENABLED,
+                    )
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_DAILY_DIGEST_TIME,
+                default=str(
+                    payload.get(
+                        CONF_SENTINEL_DAILY_DIGEST_TIME,
+                        RECOMMENDED_SENTINEL_DAILY_DIGEST_TIME,
+                    )
+                ),
+            ): TimeSelector(),
+            vol.Optional(
+                CONF_SENTINEL_QUIET_HOURS_START,
+                default=_quiet_hour_str(payload, CONF_SENTINEL_QUIET_HOURS_START),
+            ): _quiet_hour_selector(),
+            vol.Optional(
+                CONF_SENTINEL_QUIET_HOURS_END,
+                default=_quiet_hour_str(payload, CONF_SENTINEL_QUIET_HOURS_END),
+            ): _quiet_hour_selector(),
+            vol.Required(
+                CONF_SENTINEL_QUIET_HOURS_SEVERITIES,
+                default=list(
+                    payload.get(
+                        CONF_SENTINEL_QUIET_HOURS_SEVERITIES,
+                        RECOMMENDED_SENTINEL_QUIET_HOURS_SEVERITIES,
+                    )
+                ),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=_QUIET_SEVERITY_OPTIONS,
+                    multiple=True,
+                    mode=SelectSelectorMode.DROPDOWN,
+                    sort=False,
+                    custom_value=False,
+                )
+            ),
+            vol.Optional(
+                CONF_SENTINEL_CAMERA_ENTRY_LINKS,
+                description={
+                    "suggested_value": _camera_entry_links_json(payload),
+                },
+                default=_camera_entry_links_json(payload),
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                _FIELD_EXCLUDE_ALL_ENTITIES,
+                description={
+                    "suggested_value": _rule_entity_exclusions_all_list(payload),
+                },
+                default=_rule_entity_exclusions_all_list(payload),
+            ): EntitySelector(EntitySelectorConfig(multiple=True)),
+            vol.Optional(
+                CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS,
+                description={
+                    "suggested_value": _rule_entity_exclusions_advanced_json(payload),
+                },
+                default=_rule_entity_exclusions_advanced_json(payload),
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_CRITICAL_ACTION_PIN,
+                description={
+                    "suggested_value": "",
+                },
+                default="",
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+        }
+
+        mobile_opts = list_mobile_notify_services(self.hass)
+        notify_value = str(payload.get(CONF_NOTIFY_SERVICE, "") or "")
+        if mobile_opts:
+            default_notify = notify_value if notify_value in mobile_opts else ""
+            schema[
+                vol.Optional(
+                    CONF_NOTIFY_SERVICE,
+                    description={"suggested_value": notify_value},
+                    default=default_notify,
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(label=s.replace("notify.", ""), value=s)
+                        for s in ["", *mobile_opts]
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                    sort=False,
+                    custom_value=False,
+                )
+            )
+        else:
+            schema[
+                vol.Optional(
+                    CONF_NOTIFY_SERVICE,
+                    description={"suggested_value": notify_value},
+                    default=notify_value,
+                )
+            ] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+
+        return vol.Schema(schema)
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Entry point for new Sentinel setup — show mode selector."""
+        return await self.async_step_setup_mode(user_input)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Reconfigure — bypass mode selector, go directly to full settings."""
+        return await self.async_step_settings(user_input)
+
+    async def async_step_setup_mode(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Show Basic/Advanced mode selector for new Sentinel setup."""
+        if user_input is None:
+            entry = self._get_entry()
+            has_existing = any(
+                s.subentry_type == SUBENTRY_TYPE_SENTINEL
+                for s in entry.subentries.values()
+            )
+            overwrite_warning = ""
+            if has_existing:
+                # Separator lives here: hassfest forbids leading whitespace
+                # in translation values.
+                overwrite_warning = "\n\n" + await async_common_translation(
+                    self.hass,
+                    "sentinel_overwrite_warning",
+                    "⚠️ Sentinel is already configured. "
+                    "Choosing **Basic setup** will overwrite your current "
+                    "settings with recommended defaults. Your entity "
+                    "exclusions and camera-to-entry links are kept.",
+                )
+            return self.async_show_form(
+                step_id="setup_mode",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("setup_mode", default="basic"): SelectSelector(
+                            SelectSelectorConfig(
+                                options=["basic", "advanced"],
+                                translation_key="setup_mode",
+                                mode=SelectSelectorMode.LIST,
+                                sort=False,
+                                custom_value=False,
+                            )
+                        )
+                    }
+                ),
+                description_placeholders={"overwrite_warning": overwrite_warning},
+            )
+        if user_input.get("setup_mode", "basic") == "basic":
+            return await self.async_step_basic_settings(None)
+        return await self.async_step_settings(None)
+
+    async def async_step_basic_settings(  # noqa: PLR0912
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Expose only the four essential Sentinel fields; fill rest from defaults."""
+        current = _current_subentry(self)
+        payload = _default_payload()
+        if current is not None:
+            payload.update(dict(current.data))
+
+        mobile_opts = list_mobile_notify_services(self.hass)
+        # Show the configured notify service rather than a blank box: the submit
+        # path drops CONF_NOTIFY_SERVICE when the field comes back empty, so a
+        # blank pre-fill silently turned off mobile push for anyone who ran Basic
+        # setup without touching the dropdown. Blanking it deliberately still
+        # clears it.
+        notify_value = str(payload.get(CONF_NOTIFY_SERVICE, "") or "").strip()
+
+        schema: dict[Any, Any] = {
+            vol.Required(
+                CONF_SENTINEL_ENABLED,
+                default=bool(
+                    payload.get(CONF_SENTINEL_ENABLED, RECOMMENDED_SENTINEL_ENABLED)
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_DAILY_DIGEST_ENABLED,
+                default=bool(
+                    payload.get(
+                        CONF_SENTINEL_DAILY_DIGEST_ENABLED,
+                        RECOMMENDED_SENTINEL_DAILY_DIGEST_ENABLED,
+                    )
+                ),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_SENTINEL_DAILY_DIGEST_TIME,
+                default=str(
+                    payload.get(
+                        CONF_SENTINEL_DAILY_DIGEST_TIME,
+                        RECOMMENDED_SENTINEL_DAILY_DIGEST_TIME,
+                    )
+                ),
+            ): TimeSelector(),
+            vol.Optional(
+                CONF_CRITICAL_ACTION_PIN,
+                description={"suggested_value": ""},
+                default="",
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
+        }
+
+        if mobile_opts:
+            default_notify = notify_value if notify_value in mobile_opts else ""
+            schema[
+                vol.Optional(
+                    CONF_NOTIFY_SERVICE,
+                    description={"suggested_value": notify_value},
+                    default=default_notify,
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(label=s.replace("notify.", ""), value=s)
+                        for s in ["", *mobile_opts]
+                    ],
+                    mode=SelectSelectorMode.DROPDOWN,
+                    sort=False,
+                    custom_value=False,
+                )
+            )
+        else:
+            schema[
+                vol.Optional(
+                    CONF_NOTIFY_SERVICE,
+                    description={"suggested_value": notify_value},
+                    default=notify_value,
+                )
+            ] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+
+        # Basic setup always shows recommended defaults in the form, regardless of
+        # any existing configuration (the overwrite warning makes this intent explicit).
+        defaults = _default_payload()
+        suggested: dict[str, Any] = {
+            k: v for k, v in defaults.items() if k != CONF_CRITICAL_ACTION_PIN
+        }
+
+        if user_input is None:
+            return self.async_show_form(
+                step_id="basic_settings",
+                data_schema=self.add_suggested_values_to_schema(
+                    vol.Schema(schema), suggested
+                ),
+            )
+
+        data = _default_payload()
+        _carry_basic_setup_survivors(data, current)
+
+        errors: dict[str, str] = {}
+
+        notify_service = str(user_input.get(CONF_NOTIFY_SERVICE, "") or "").strip()
+        if notify_service:
+            data[CONF_NOTIFY_SERVICE] = notify_service
+        else:
+            data.pop(CONF_NOTIFY_SERVICE, None)
+
+        raw_pin = str(user_input.get(CONF_CRITICAL_ACTION_PIN, "") or "").strip()
+        data.pop(CONF_CRITICAL_ACTION_PIN, None)
+        if raw_pin:
+            if (
+                not raw_pin.isdigit()
+                or not CRITICAL_PIN_MIN_LEN <= len(raw_pin) <= CRITICAL_PIN_MAX_LEN
+            ):
+                errors["base"] = "invalid_pin"
+            else:
+                hashed, salt = hash_pin(raw_pin)
+                data[CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH] = hashed
+                data[CONF_SENTINEL_LEVEL_INCREASE_PIN_SALT] = salt
+                # The Basic form has no require-PIN checkbox; typing a PIN is
+                # the request to enforce it (#762).
+                data[CONF_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE] = True
+
+        data[CONF_SENTINEL_ENABLED] = bool(
+            user_input.get(CONF_SENTINEL_ENABLED, RECOMMENDED_SENTINEL_ENABLED)
+        )
+        data[CONF_SENTINEL_DAILY_DIGEST_ENABLED] = bool(
+            user_input.get(
+                CONF_SENTINEL_DAILY_DIGEST_ENABLED,
+                RECOMMENDED_SENTINEL_DAILY_DIGEST_ENABLED,
+            )
+        )
+        data[CONF_SENTINEL_DAILY_DIGEST_TIME] = str(
+            user_input.get(
+                CONF_SENTINEL_DAILY_DIGEST_TIME,
+                RECOMMENDED_SENTINEL_DAILY_DIGEST_TIME,
+            )
+        )
+
+        if errors:
+            return self.async_show_form(
+                step_id="basic_settings",
+                data_schema=self.add_suggested_values_to_schema(
+                    vol.Schema(schema), suggested
+                ),
+                errors=errors,
+            )
+
+        if current is None:
+            if self.source not in (SOURCE_USER, SOURCE_RECONFIGURE):
+                return self.async_abort(reason="no_existing_subentry")
+            if self.source == SOURCE_RECONFIGURE:
+                self._source = SOURCE_USER
+                self.context["source"] = SOURCE_USER
+            self._schedule_reload()
+            return self.async_create_entry(title="Sentinel", data=data)
+
+        self._schedule_reload()
+        return self.async_update_and_abort(
+            self._get_entry(),
+            current,
+            data=data,
+            title="Sentinel",
+        )
+
+    async def async_step_settings(  # noqa: PLR0912, PLR0915
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Create or edit Sentinel configuration."""
+        current = _current_subentry(self)
+        payload = _default_payload()
+        if current is not None:
+            payload.update(dict(current.data))
+        # A PIN saved before #762 can be stored with the flag off; the engine
+        # enforces it, so show the checkbox as on and saving this form unchanged
+        # keeps it enforced.
+        if payload.get(CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH):
+            payload[CONF_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE] = True
+
+        if user_input is None:
+            suggested: dict[str, Any] = {
+                k: v for k, v in payload.items() if k != CONF_CRITICAL_ACTION_PIN
+            }
+            suggested[CONF_SENTINEL_CAMERA_ENTRY_LINKS] = _camera_entry_links_json(
+                payload
+            )
+            suggested[_FIELD_EXCLUDE_ALL_ENTITIES] = _rule_entity_exclusions_all_list(
+                payload
+            )
+            suggested[CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS] = (
+                _rule_entity_exclusions_advanced_json(payload)
+            )
+            for key in (CONF_SENTINEL_QUIET_HOURS_START, CONF_SENTINEL_QUIET_HOURS_END):
+                suggested[key] = _quiet_hour_str(payload, key)
+            return self.async_show_form(
+                step_id="settings",
+                data_schema=self.add_suggested_values_to_schema(
+                    self._schema(payload), suggested
+                ),
+            )
+
+        data = dict(user_input)
+        errors: dict[str, str] = {}
+        notify_service = str(data.get(CONF_NOTIFY_SERVICE, "") or "").strip()
+        if notify_service:
+            data[CONF_NOTIFY_SERVICE] = notify_service
+        else:
+            data.pop(CONF_NOTIFY_SERVICE, None)
+
+        raw_pin = str(data.get(CONF_CRITICAL_ACTION_PIN, "") or "").strip()
+        data.pop(CONF_CRITICAL_ACTION_PIN, None)
+        if raw_pin:
+            if (
+                not raw_pin.isdigit()
+                or not CRITICAL_PIN_MIN_LEN <= len(raw_pin) <= CRITICAL_PIN_MAX_LEN
+            ):
+                errors["base"] = "invalid_pin"
+            else:
+                hashed, salt = hash_pin(raw_pin)
+                data[CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH] = hashed
+                data[CONF_SENTINEL_LEVEL_INCREASE_PIN_SALT] = salt
+                # A saved PIN is always enforced; the engine treats a stored
+                # hash as the gate being on, so keep the checkbox in step (#762).
+                data[CONF_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE] = True
+        elif not data.get(CONF_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE, False):
+            data.pop(CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH, None)
+            data.pop(CONF_SENTINEL_LEVEL_INCREASE_PIN_SALT, None)
+        elif current is not None:
+            existing_data = dict(current.data)
+            if existing_data.get(CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH):
+                data[CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH] = existing_data[
+                    CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH
+                ]
+            if existing_data.get(CONF_SENTINEL_LEVEL_INCREASE_PIN_SALT):
+                data[CONF_SENTINEL_LEVEL_INCREASE_PIN_SALT] = existing_data[
+                    CONF_SENTINEL_LEVEL_INCREASE_PIN_SALT
+                ]
+        # The gate on with no PIN stored would refuse every level increase. A
+        # redisplay after another field's error also blanks the PIN box while
+        # keeping the box checked, so ask for the PIN again rather than save.
+        if data.get(CONF_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE) and not (
+            data.get(CONF_SENTINEL_LEVEL_INCREASE_PIN_HASH)
+            and data.get(CONF_SENTINEL_LEVEL_INCREASE_PIN_SALT)
+        ):
+            errors.setdefault("base", "pin_required")
+
+        raw_quiet_start = _raw_quiet_hour(data, CONF_SENTINEL_QUIET_HOURS_START)
+        raw_quiet_end = _raw_quiet_hour(data, CONF_SENTINEL_QUIET_HOURS_END)
+        if (raw_quiet_start == "") != (raw_quiet_end == ""):
+            errors.setdefault("base", "quiet_hours_incomplete")
+        elif raw_quiet_start and raw_quiet_end:
+            quiet_start = _parse_quiet_hour(raw_quiet_start)
+            quiet_end = _parse_quiet_hour(raw_quiet_end)
+            if quiet_start is None or quiet_end is None:
+                errors.setdefault("base", "invalid_quiet_hours")
+            else:
+                data[CONF_SENTINEL_QUIET_HOURS_START] = quiet_start
+                data[CONF_SENTINEL_QUIET_HOURS_END] = quiet_end
+        else:
+            data.pop(CONF_SENTINEL_QUIET_HOURS_START, None)
+            data.pop(CONF_SENTINEL_QUIET_HOURS_END, None)
+
+        quiet_severities = data.get(CONF_SENTINEL_QUIET_HOURS_SEVERITIES)
+        data[CONF_SENTINEL_QUIET_HOURS_SEVERITIES] = (
+            [str(s) for s in quiet_severities if str(s) in SENTINEL_SEVERITIES]
+            if isinstance(quiet_severities, list)
+            else list(RECOMMENDED_SENTINEL_QUIET_HOURS_SEVERITIES)
+        )
+
+        _parse_json_entity_map(
+            data,
+            CONF_SENTINEL_CAMERA_ENTRY_LINKS,
+            errors,
+            "invalid_camera_entry_links",
+        )
+        raw_exclude_all = _merge_rule_entity_exclusions(data, errors)
+
+        if errors:
+            # Strip any raw (non-dict) value for camera_entry_links so the schema
+            # helper receives a dict and json.dumps() produces valid JSON for the
+            # form pre-fill rather than a Python repr string.
+            error_payload = {**payload, **data}
+            if not isinstance(
+                error_payload.get(CONF_SENTINEL_CAMERA_ENTRY_LINKS), dict
+            ):
+                error_payload.pop(CONF_SENTINEL_CAMERA_ENTRY_LINKS, None)
+            if not isinstance(
+                error_payload.get(CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS), dict
+            ):
+                error_payload.pop(CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS, None)
+            error_suggested: dict[str, Any] = {
+                k: v for k, v in error_payload.items() if k != CONF_CRITICAL_ACTION_PIN
+            }
+            error_suggested[CONF_SENTINEL_CAMERA_ENTRY_LINKS] = (
+                _camera_entry_links_json(error_payload)
+            )
+            error_suggested[_FIELD_EXCLUDE_ALL_ENTITIES] = raw_exclude_all
+            error_suggested[CONF_SENTINEL_RULE_ENTITY_EXCLUSIONS] = (
+                _rule_entity_exclusions_advanced_json(error_payload)
+            )
+            for key in (CONF_SENTINEL_QUIET_HOURS_START, CONF_SENTINEL_QUIET_HOURS_END):
+                error_suggested[key] = _quiet_hour_str(error_payload, key)
+            return self.async_show_form(
+                step_id="settings",
+                data_schema=self.add_suggested_values_to_schema(
+                    self._schema(error_payload), error_suggested
+                ),
+                errors=errors,
+            )
+
+        if current is None:
+            if self.source not in (SOURCE_USER, SOURCE_RECONFIGURE):
+                return self.async_abort(reason="no_existing_subentry")
+            if self.source == SOURCE_RECONFIGURE:
+                self._source = SOURCE_USER
+                self.context["source"] = SOURCE_USER
+            self._schedule_reload()
+            return self.async_create_entry(title="Sentinel", data=data)
+
+        self._schedule_reload()
+        return self.async_update_and_abort(
+            self._get_entry(),
+            current,
+            data=data,
+            title="Sentinel",
+        )

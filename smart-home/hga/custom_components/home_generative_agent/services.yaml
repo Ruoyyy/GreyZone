@@ -1,0 +1,368 @@
+enroll_person:
+  name: Enroll Person
+  description: Enroll a new person into the face database from an image file.
+  fields:
+    name:
+      name: Person name
+      description: Display name for the person to enroll
+      required: true
+      example: "Eva"
+      selector:
+        text:
+    file_path:
+      name: File path
+      description: Path to image file inside Home Assistant /media
+      required: true
+      example: "/media/faces/eva_face.jpg"
+      selector:
+        text:
+confirm_enroll:
+  name: Confirm Enroll
+  description: Confirm and assign a name to a previously detected unknown face.
+  fields:
+    uid:
+      name: UID
+      description: Identifier for the unknown face
+      required: true
+      example: "unk_deadbeef"
+      selector:
+        text:
+    name:
+      name: Person name
+      description: Name to assign to the person
+      required: true
+      example: "Eva"
+      selector:
+        text:
+
+save_and_analyze_snapshot:
+  name: Save & analyze snapshot
+  description: Capture a snapshot, run AI analysis, and publish the latest event for the selected cameras.
+  target:
+    entity:
+      domain: camera
+  fields:
+    protect_minutes:
+      name: Protect minutes
+      description: Protect the published latest file from pruning for this many minutes (if your analyzer respects this).
+      default: 30
+      selector:
+        number:
+          min: 0
+          max: 180
+          step: 1
+          unit_of_measurement: min
+          mode: box
+
+get_audit_records:
+  name: Get audit records
+  description: Return the latest sentinel audit records (read-only).
+  fields:
+    limit:
+      name: Limit
+      description: Maximum number of records to return.
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 200
+          step: 1
+          mode: box
+
+get_discovery_records:
+  name: Get discovery records
+  description: Return the latest sentinel discovery records (read-only).
+  fields:
+    limit:
+      name: Limit
+      description: Maximum number of records to return.
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 200
+          step: 1
+          mode: box
+
+trigger_sentinel_discovery:
+  name: Trigger sentinel discovery
+  description: Run one Sentinel discovery cycle immediately using the current snapshot.
+
+promote_discovery_candidate:
+  name: Promote discovery candidate
+  description: Promote a discovery candidate into a proposal draft.
+  fields:
+    candidate_id:
+      name: Candidate ID
+      description: Candidate ID from discovery output.
+      required: true
+      example: "c1"
+      selector:
+        text:
+    notes:
+      name: Notes
+      description: Optional notes to attach to the draft.
+      required: false
+      selector:
+        text:
+
+get_proposal_drafts:
+  name: Get proposal drafts
+  description: Return the latest proposal drafts (read-only).
+  fields:
+    limit:
+      name: Limit
+      description: Maximum number of records to return.
+      default: 50
+      selector:
+        number:
+          min: 1
+          max: 200
+          step: 1
+          mode: box
+
+preview_rule_proposal:
+  name: Preview rule proposal
+  description: Evaluate a proposal draft against the current snapshot without registering the rule.
+  fields:
+    candidate_id:
+      name: Candidate ID
+      description: Candidate ID from a stored proposal draft.
+      required: true
+      example: "c1"
+      selector:
+        text:
+
+approve_rule_proposal:
+  name: Approve rule proposal
+  description: Approve a proposal draft by candidate ID and register a deterministic rule if supported.
+  fields:
+    candidate_id:
+      name: Candidate ID
+      description: Candidate ID from discovery output.
+      required: true
+      example: "c1"
+      selector:
+        text:
+    notes:
+      name: Notes
+      description: Optional approval notes.
+      required: false
+      selector:
+        text:
+
+reject_rule_proposal:
+  name: Reject rule proposal
+  description: Reject a proposal draft by candidate ID.
+  fields:
+    candidate_id:
+      name: Candidate ID
+      description: Candidate ID from discovery output.
+      required: true
+      example: "c1"
+      selector:
+        text:
+    notes:
+      name: Notes
+      description: Optional rejection notes.
+      required: false
+      selector:
+        text:
+
+get_dynamic_rules:
+  name: Get dynamic rules
+  description: Return dynamic rule registry records including enabled/disabled state.
+  fields:
+    limit:
+      name: Limit
+      description: Maximum number of records to return.
+      default: 200
+      selector:
+        number:
+          min: 1
+          max: 500
+          step: 1
+          mode: box
+
+deactivate_dynamic_rule:
+  name: Deactivate dynamic rule
+  description: Disable a dynamic deterministic rule without removing it.
+  fields:
+    rule_id:
+      name: Rule ID
+      description: Rule ID to deactivate.
+      required: true
+      example: "open_entry_at_night_while_away_window"
+      selector:
+        text:
+
+reactivate_dynamic_rule:
+  name: Reactivate dynamic rule
+  description: Re-enable a previously deactivated dynamic deterministic rule.
+  fields:
+    rule_id:
+      name: Rule ID
+      description: Rule ID to reactivate.
+      required: true
+      example: "open_entry_at_night_while_away_window"
+      selector:
+        text:
+
+patch_dynamic_rule:
+  name: Patch dynamic rule params
+  description: >
+    Merge a partial params dict into an existing dynamic rule.
+    Only the supplied keys are updated; omitted keys are left unchanged.
+    Use this to correct Discovery hallucinations (wrong entity, bad threshold, etc.)
+    without removing and re-approving the rule.
+  fields:
+    rule_id:
+      name: Rule ID
+      description: ID of the rule to patch.
+      required: true
+      example: "washing_machine_phantom_load_away"
+      selector:
+        text:
+    params:
+      name: Params patch
+      description: Key/value pairs to merge into the rule's params field.
+      required: true
+      example: '{"threshold": 5}'
+      selector:
+        object:
+
+sentinel_set_autonomy_level:
+  name: Set sentinel autonomy level
+  description: >
+    Set the runtime autonomy level for the sentinel engine (admin-only, TTL-bounded).
+    Level 0 = fully passive; 1 = notify only; 2 = suggest; 3 = act autonomously.
+    The override reverts to the config default when the TTL expires.
+  fields:
+    level:
+      name: Autonomy level
+      description: "New autonomy level: 0 (passive), 1 (notify), 2 (suggest), 3 (act)."
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 0
+          max: 3
+          step: 1
+          mode: box
+    pin:
+      name: PIN
+      description: PIN required to raise the level when a level-increase PIN is set in Sentinel setup.
+      required: false
+      selector:
+        text:
+
+sentinel_get_baselines:
+  name: Get sentinel baselines
+  description: >
+    Return raw baseline statistics for all tracked entities regardless of sample
+    count. Includes entities still in the build-up phase. Returns entity_id →
+    metric → {value, sample_count, updated_at, freshness} mapping.
+  fields: {}
+
+sentinel_reset_baseline:
+  name: Reset sentinel baseline
+  description: >
+    Delete baseline data for one entity or all entities. Use after a device
+    replacement, firmware update, or any event that makes historical baseline
+    data invalid. A confirmation notification is fired after deletion.
+  fields:
+    entity_id:
+      name: Entity ID
+      description: >
+        Entity to reset (e.g. sensor.hvac_power). Omit to reset all entities.
+      required: false
+      example: "sensor.hvac_power"
+      selector:
+        entity:
+          domain:
+            - sensor
+            - number
+            - input_number
+
+sentinel_reset_auth_inventory:
+  name: Reset sentinel auth inventory
+  description: >
+    Clear the persistent inventory of Home Assistant users and access tokens
+    that the network security audit compares against. The next Sentinel run
+    records the current users and tokens as known without alerting, exactly
+    like the first run after installation. The inventory never contains token
+    values or raw IP addresses.
+  fields: {}
+
+sentinel_get_network_inventory:
+  name: Get sentinel device inventory
+  description: >
+    Return the Zigbee, Z-Wave, Bluetooth, and Matter devices and the router
+    clients Sentinel knows for this home, with when each was first seen and
+    whether it is trusted. The inventory holds device registry ids,
+    pseudonymized client keys, and names only, never radio, MAC, or IP
+    addresses.
+  fields: {}
+
+sentinel_trust_network_device:
+  name: Trust sentinel inventory device
+  description: >
+    Mark known devices as recognized. Admin only. Devices appear in the
+    inventory on the Sentinel run after they are paired or first seen by
+    the router. A router client with no Home Assistant device is named by
+    its inventory key (from Get sentinel device inventory).
+  fields:
+    device_id:
+      name: Device
+      description: The Home Assistant devices to mark as trusted.
+      required: false
+      selector:
+        device:
+          multiple: true
+    device_key:
+      name: Inventory key
+      description: >
+        Inventory keys to mark as trusted, such as router:3fa2c1b0, for
+        clients that have no Home Assistant device.
+      required: false
+      selector:
+        text:
+          multiple: true
+
+sentinel_untrust_network_device:
+  name: Untrust sentinel inventory device
+  description: >
+    Mark known devices as not recognized. Admin only.
+  fields:
+    device_id:
+      name: Device
+      description: The Home Assistant devices to mark as untrusted.
+      required: false
+      selector:
+        device:
+          multiple: true
+    device_key:
+      name: Inventory key
+      description: Inventory keys to mark as untrusted, such as router:3fa2c1b0.
+      required: false
+      selector:
+        text:
+          multiple: true
+
+sentinel_reset_network_inventory:
+  name: Reset sentinel device inventory
+  description: >
+    Clear the inventory of paired radio devices and router clients. Admin
+    only. The next Sentinel run records every device it sees as known
+    without alerting, exactly like the first run after installation.
+  fields: {}
+
+run_network_audit:
+  name: Run network security audit
+  description: >
+    Run the network and Home Assistant security checks now and return the
+    findings by severity, the checks that ran, and the checks that could not
+    run with the reason. Read-only: nothing is notified, stored, or changed,
+    and finding cooldowns are untouched. Requires Sentinel with the network
+    and Home Assistant security audit enabled.
+  fields: {}

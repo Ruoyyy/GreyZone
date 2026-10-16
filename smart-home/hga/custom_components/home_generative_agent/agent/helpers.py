@@ -1,0 +1,958 @@
+"""Helper utilities for Home Generative Agent tool conversion and normalization."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib
+import json
+import logging
+import re
+import weakref
+from dataclasses import replace
+from datetime import datetime, timedelta
+from functools import partial
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
+
+import homeassistant.util.dt as dt_util
+import voluptuous as vol
+from homeassistant.const import CONF_LLM_HASS_API
+from homeassistant.helpers import llm
+from homeassistant.util import ulid
+from pydantic import PydanticInvalidForJsonSchema
+
+from custom_components.home_generative_agent.const import (
+    ACTUATION_LANGCHAIN_TOOLS,
+    ACTUATION_TOOL_PREFIXES,
+    CONF_CRITICAL_ACTION_PIN_ENABLED,
+    CONF_CRITICAL_ACTION_PIN_HASH,
+    CONF_CRITICAL_ACTION_PIN_SALT,
+    CONF_CRITICAL_ACTIONS,
+    CONF_TOOL_EXCLUSIONS,
+    CONF_TOOL_INCLUSIONS,
+    RECOMMENDED_CRITICAL_ACTIONS,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+
+    from homeassistant.core import HomeAssistant
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _resolve_converter() -> tuple[Any, Any]:
+    """
+    Return the (converter, deferral sentinel) pair matching the running core.
+
+    Home Assistant 2026.9 swapped voluptuous for probatio and
+    voluptuous-openapi for probatio's ``to_openapi``, aliasing probatio under
+    the ``voluptuous`` name (``install_as_voluptuous()`` in
+    ``homeassistant/__init__.py``) for everything that still imports
+    voluptuous — ``vol`` here included. The converter has to match the
+    library the schemas actually come from, since neither one renders the
+    other's ``Schema``. Core's ``llm`` helper imports exactly the pair the
+    running core was built against (``convert`` + ``UNSUPPORTED`` from
+    voluptuous-openapi on <= 2026.8; ``to_openapi`` + ``UNSUPPORTED`` from
+    probatio on 2026.9; a bare ``import probatio`` from 2026.10), so prefer
+    those — they cannot diverge from core by construction, where sniffing
+    ``vol.Schema.__module__`` breaks the day probatio stamps a
+    voluptuous-compatible ``__module__`` on its shim. The sniff survives only
+    as a fallback for a core that exposes neither. Neither library is
+    declared in our manifest on purpose: core installs exactly the one it
+    uses.
+    """
+    core_convert = getattr(llm, "to_openapi", None) or getattr(llm, "convert", None)
+    core_unsupported = getattr(llm, "UNSUPPORTED", None)
+    if core_convert is not None and core_unsupported is not None:
+        return core_convert, core_unsupported
+    core_probatio = getattr(llm, "probatio", None)
+    if isinstance(core_probatio, ModuleType):
+        return core_probatio.to_openapi, core_probatio.UNSUPPORTED
+    if vol.Schema.__module__.startswith("probatio"):
+        module = importlib.import_module("probatio")
+        return module.to_openapi, module.UNSUPPORTED
+    module = importlib.import_module("voluptuous_openapi")
+    return module.convert, module.UNSUPPORTED
+
+
+convert, UNSUPPORTED = _resolve_converter()
+
+
+def _collect_unsupported_sentinels() -> tuple[Any, ...]:
+    """
+    Return every deferral sentinel a serializer might hand back.
+
+    ``UNSUPPORTED`` above is core's own, but ``APIInstance.custom_serializer``
+    is a public field a third-party ``llm.API`` can set with a serializer
+    built against the sibling library — pip does not uninstall
+    voluptuous-openapi when a core upgrade brings probatio — and sentinels
+    compare by identity, so a foreign one would read "I cannot render this"
+    as a rendered schema. Accept the sentinel of every importable converter
+    library; what we hand back stays ours, so the converter in use always
+    recognises it.
+    """
+    sentinels: list[Any] = [UNSUPPORTED]
+    for module_name in ("voluptuous_openapi", "probatio"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        sentinel = getattr(module, "UNSUPPORTED", None)
+        if sentinel is not None and all(sentinel is not seen for seen in sentinels):
+            sentinels.append(sentinel)
+    return tuple(sentinels)
+
+
+_UNSUPPORTED_SENTINELS: tuple[Any, ...] = _collect_unsupported_sentinels()
+
+
+def _is_unsupported(value: Any) -> bool:
+    """Return True if a serializer deferred rather than returning a schema."""
+    return any(value is sentinel for sentinel in _UNSUPPORTED_SENTINELS)
+
+
+class ToolCallData(NamedTuple):
+    """The JSON data of an HA tool call and whether the tool reported an error."""
+
+    data: Any
+    error: bool
+
+
+def tool_call_data(result: Any) -> ToolCallData:
+    """
+    Return the JSON data of an ``APIInstance.async_call_tool`` result.
+
+    Home Assistant 2026.10 wraps the data in ``llm.ToolResult(data, error)``;
+    earlier versions return the data itself. ``llm.ToolResult`` does not exist
+    before 2026.10, so look it up rather than import it.
+    """
+    tool_result_cls = getattr(llm, "ToolResult", None)
+    if tool_result_cls is not None and isinstance(result, tool_result_cls):
+        return ToolCallData(result.data, bool(getattr(result, "error", False)))
+    return ToolCallData(result, error=False)
+
+
+def chat_log_tool_result(data: Any, *, error: bool = False) -> dict[str, Any]:
+    """
+    Return the tool result keyword for HA's chat log on this HA version.
+
+    Home Assistant 2026.10 replaced ``ToolResultContent.tool_result`` with
+    ``result: llm.ToolResult``: the old keyword is a TypeError on the content
+    class and a deprecated delta key. Earlier versions have no
+    ``llm.ToolResult`` and take ``tool_result``.
+    """
+    tool_result_cls = getattr(llm, "ToolResult", None)
+    if tool_result_cls is None:
+        return {"tool_result": data}
+    return {"result": tool_result_cls(data=data, error=error)}
+
+
+def active_llm_api_ids(options: Mapping[str, Any]) -> list[str]:
+    """
+    Return the LLM API ids to expose, defaulting to Assist when unset.
+
+    Single definition on purpose.  The options flow *deletes* the key when no
+    API is selected (``_cleanup_none_llm_api`` in ``config_flow.py``), so an
+    absent key is a normal state meaning "the recommended default", not "no
+    APIs at all".  Every reader must apply that same default, because they are
+    not independent: ``conversation.py`` derives
+    ``ConversationEntityFeature.CONTROL`` from this, and Home Assistant reads
+    that feature flag to decide whether its built-in intent handler may take
+    control commands *before* the agent ever sees them
+    (``assist_pipeline/pipeline.py`` installs a local-intent allowlist only for
+    agents that advertise CONTROL).  A reader that treats the absent key as
+    "no APIs" therefore drops the flag and silently routes lock/unlock around
+    the critical-action PIN while the rest of the integration still runs the
+    Assist API.
+    """
+    if CONF_LLM_HASS_API not in options:
+        return [llm.LLM_API_ASSIST]
+    return normalize_llm_api_value(options[CONF_LLM_HASS_API])
+
+
+def normalize_llm_api_value(raw: Any) -> list[str]:
+    """
+    Normalize a stored ``CONF_LLM_HASS_API`` value to a list of id strings.
+
+    Storage has carried several shapes over the integration's life: a list of
+    ids, a pre-v6 bare string, and — via programmatic options updates that
+    bypass the form schema — ``None``, ``""``, or lists holding non-string
+    elements.  Iterating or set-testing those degenerate shapes crashes both
+    the options-form build and ``active_llm_api_ids`` at runtime (issue #568's
+    failure class), so every reader funnels through this one normalizer:
+    strings wrap to a single-element list, everything non-list collapses to
+    ``[]``, and non-string or empty elements are dropped.
+    """
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    if not isinstance(raw, list):
+        return []
+    return [api_id for api_id in raw if isinstance(api_id, str) and api_id]
+
+
+def normalize_tool_exclusions(raw: Any) -> dict[str, list[str]]:
+    """
+    Normalize a stored ``CONF_TOOL_EXCLUSIONS`` value to ``{api_id: [name]}``.
+
+    Mirrors ``normalize_llm_api_value``'s contract: every reader funnels through
+    one normalizer so a degenerate shape written by a programmatic options
+    update (``None``, a bare string, non-string elements) can never crash the
+    options-form build or the per-turn tool filter.  API ids mapping to no
+    surviving names are dropped, because "present with an empty list" and
+    "absent" mean the same thing — expose every tool of that API — and keeping
+    both spellings would invite readers to disagree about which is which.
+    """
+    return normalize_api_tool_map(raw)
+
+
+def normalize_tool_inclusions(raw: Any) -> dict[str, list[str]]:
+    """
+    Normalize a stored ``CONF_TOOL_INCLUSIONS`` value to ``{api_id: [name]}``.
+
+    Same contract and same shape as ``normalize_tool_exclusions`` — the two
+    options are mirror images (subtractive vs. additive), and here too an api
+    id mapping to no surviving names means the same thing as an absent one:
+    nothing extra is force-bound for that API.
+    """
+    return normalize_api_tool_map(raw)
+
+
+def normalize_api_tool_map(raw: Any) -> dict[str, list[str]]:
+    """Normalize an ``{api_id: [tool_name]}`` option value; see the wrappers."""
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, list[str]] = {}
+    for api_id, raw_names in raw.items():
+        if not isinstance(api_id, str) or not api_id:
+            continue
+        names = [raw_names] if isinstance(raw_names, str) else raw_names
+        if not isinstance(names, list):
+            continue
+        cleaned = sorted({n for n in names if isinstance(n, str) and n})
+        if cleaned:
+            normalized[api_id] = cleaned
+    return normalized
+
+
+def api_id_is_form_representable(api_id: str) -> bool:
+    """
+    Return whether an API id can round-trip through the options form.
+
+    The picker flattens exclusions to ``api_id::tool_name`` values and regroups
+    them by splitting on the FIRST separator, so an id containing the separator
+    does not survive: ``{"a::b": ["t"]}`` comes back as ``{"a": ["b::t"]}``, an
+    exclusion matching nothing.
+
+    This is deliberately **not** enforced inside ``normalize_tool_exclusions``.
+    That normalizer is shared by the options form and the per-turn runtime
+    filter, and the two want opposite things: the form must refuse to *offer*
+    an exclusion it cannot store faithfully, while the runtime must keep
+    *honouring* one that is already stored. Refusing in the shared path means a
+    stored exclusion for such an id stops being enforced — the tools silently
+    go live again — and is then erased from storage by the next unrelated save.
+    Fail-open on a security control, so: refuse at the form boundary only.
+    """
+    return TOOL_KEY_SEP not in api_id
+
+
+def tool_exclusions(options: Mapping[str, Any]) -> dict[str, set[str]]:
+    """
+    Return the configured per-API excluded tool names as lookup sets.
+
+    Sets, not the sorted lists ``normalize_tool_exclusions`` returns, because
+    this is the per-turn runtime path: ``filter_excluded_tools`` membership-
+    tests every tool of every loaded API against them.  Storage and the options
+    form want the list form instead — it is what round-trips through JSON and
+    what gives the picker a stable order — so the two shapes are deliberate,
+    not redundant.  Take this one when you are filtering, that one when you are
+    reading or writing the stored value.
+    """
+    raw = options.get(CONF_TOOL_EXCLUSIONS)
+    return {
+        api_id: set(names) for api_id, names in normalize_tool_exclusions(raw).items()
+    }
+
+
+def tool_inclusions(options: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """
+    Return the configured always-included tools as sorted (api_id, name) pairs.
+
+    Pairs, not the ``{api_id: [name]}`` map storage holds, because the runtime
+    consumer (the always-included step in ``_retrieve_tools``) iterates them to
+    fetch each tool individually — and sorted so the append order, and with it
+    the bound tool order, is stable across turns rather than dict-insertion
+    dependent.
+    """
+    raw = options.get(CONF_TOOL_INCLUSIONS)
+    return sorted(
+        (api_id, name)
+        for api_id, names in normalize_tool_inclusions(raw).items()
+        for name in names
+    )
+
+
+def is_tool_excluded(tool_name: str, excluded_names: Collection[str]) -> bool:
+    """
+    Return True when a live tool matches the user's stored exclusion list.
+
+    Exact match first. A stored name that carries no ``__`` is a *legacy* entry
+    -- saved before HA 2026.9 moved the built-in tools to ``<domain>__<Name>``
+    -- and is additionally matched against the live tool's base name, so an
+    exclusion of ``HassTurnOff`` keeps excluding the tool now published as
+    ``intent__HassTurnOff``. Without this the deny-list silently stopped
+    matching on upgrade: the tool the user switched off came back, while the
+    picker still showed it as excluded.
+
+    Deliberately asymmetric. A stored name that ALREADY carries a namespace is
+    matched exactly and never stripped, because stripping it would quietly
+    widen one specific exclusion (``intent__HassTurnOff``) to every same-suffix
+    tool. Widening only bare legacy entries can over-match in the other
+    direction -- one bare ``HassTurnOn`` would cover several namespaced tools
+    if HA ever published more than one -- and for a deny-list that is the
+    correct way to be wrong. (On HA 2026.9 it cannot happen: only
+    ``components/intent/llm.py`` registers HassTurnOn/HassTurnOff, there is no
+    ``lock/llm.py``, and ``light/llm.py`` exposes only HassLightSet.)
+    """
+    if tool_name in excluded_names:
+        return True
+    base = base_tool_name(tool_name)
+    if base == tool_name:
+        # Nothing was stripped, so the exact test above was the whole question.
+        return False
+    return any(
+        base == name for name in excluded_names if TOOL_NAMESPACE_SEP not in name
+    )
+
+
+def filter_excluded_tools(
+    api_id: str,
+    api: llm.APIInstance,
+    excluded: Mapping[str, set[str]],
+) -> tuple[llm.APIInstance, list[str]]:
+    """
+    Return an APIInstance exposing only the tools the user has not excluded.
+
+    Returns the (possibly unchanged) instance and the names actually dropped.
+
+    A *copy* is returned rather than an in-place edit of ``api.tools``: Home
+    Assistant's MCP integration hands every ``APIInstance`` the very same
+    coordinator-owned list object (``tools=self.coordinator.data``), so mutating
+    it would strip the excluded tools from every other consumer of that server
+    in the whole instance — and keep them stripped until the coordinator's next
+    30-minute refresh.
+
+    Filtering here, on the instance the conversation entity loads, is the single
+    enforcement point: tool binding, the RAG fallback set, the live-tool filter
+    and ``APIInstance.async_call_tool`` all read ``.tools``, so an excluded tool
+    is not merely hidden from the model — a hallucinated call to it is rejected
+    deterministically with ``Tool "x" not found``.
+    """
+    names = excluded.get(api_id)
+    if not names:
+        return api, []
+    # `.tools` is None for an MCP API whose coordinator has not completed its
+    # first refresh (HA builds the instance with `tools=self.coordinator.data`),
+    # and a third-party API may pass None freely. The options form already
+    # guards this with `instance.tools or []`; unguarded here it raises
+    # TypeError on the per-turn path, outside the caller's
+    # `except HomeAssistantError`, and kills every conversation turn until the
+    # coordinator recovers.
+    tools = list(api.tools or [])
+    # `tool.name` is remote data and is not guaranteed to be a string, let alone
+    # a hashable one. An unguarded `tool.name not in names` raises TypeError on
+    # a list/dict name, and this runs on the per-turn path *outside* the
+    # `except HomeAssistantError` in `_async_init_llm_apis` -- so an unguarded
+    # comprehension turns one malformed descriptor into every conversation turn
+    # failing, for as long as that server advertises it. A non-str name can
+    # never equal an excluded name, so treating it as "keep" is also correct,
+    # not merely safe. Guarding here rather than wrapping the call in the caller
+    # is deliberate: a try/except around a security control fails *open*.
+    live_names = [
+        tool.name for tool in tools if isinstance(getattr(tool, "name", None), str)
+    ]
+    kept = [
+        tool
+        for tool in tools
+        if not (
+            isinstance(getattr(tool, "name", None), str)
+            and is_tool_excluded(tool.name, names)
+        )
+    ]
+    if len(kept) == len(tools):
+        return api, []
+    # Report the LIVE names that were dropped, not the stored spellings: after
+    # HA's rename the two differ, and the live name is what the operator sees
+    # everywhere else in the log.
+    dropped = sorted(n for n in live_names if is_tool_excluded(n, names))
+    # replace() rather than the constructor so a field added to APIInstance by a
+    # future Home Assistant release is carried over instead of silently reset.
+    return replace(api, tools=kept), dropped
+
+
+def safe_convert(
+    schema: Any, custom_serializer: Callable[[Any], Any] | None = None
+) -> Any:
+    """Safely convert a voluptuous schema to OpenAPI, handling unhashable Selectors."""
+
+    def robust_serializer(obj: Any) -> Any:
+        """Robustly handle HA types that might be unhashable or need mapping."""
+        # 0. Skip basic types that the schema converter handles natively.
+        # vol.Schema, dict, and list are unhashable but handled by the library.
+        if isinstance(obj, (vol.Schema, dict, list)):
+            return UNSUPPORTED
+
+        # 1. First, call the original custom serializer if it exists
+        if custom_serializer:
+            try:
+                res = custom_serializer(obj)
+                # If external serializer returns non-None/UNSUPPORTED, use it.
+                # Some HA serializers might return None for unhandled types.
+                if res is not None and not _is_unsupported(res):
+                    return res
+            except Exception:  # noqa: BLE001, S110
+                # Fallback to the robust serializer if custom_serializer fails.
+                pass
+
+        # 2. Check for Home Assistant Selectors by looking for 'config'
+        # These are often unhashable and require specific extraction.
+        config = getattr(obj, "config", obj if isinstance(obj, dict) else {})
+        if isinstance(config, dict) and "options" in config:
+            # Extract options into an Enum for SelectSelector
+            raw_options = config.get("options")
+            if isinstance(raw_options, list):
+                options = [
+                    opt.get("value", opt) if isinstance(opt, dict) else opt
+                    for opt in raw_options
+                ]
+                return {"type": "string", "enum": options}
+
+        # 3. Handle other selectors that have a config but aren't SelectSelector
+        if hasattr(obj, "config") or (isinstance(obj, dict) and "selector" in obj):
+            return {"type": "string"}
+
+        # 4. General unhashable safety net to prevent a converter crash
+        try:
+            hash(obj)
+        except TypeError:
+            return {"type": "string"}
+
+        return UNSUPPORTED
+
+    return convert(schema, custom_serializer=robust_serializer)
+
+
+class ConfigurableData(TypedDict, total=False):
+    """Typed view of the configurable payload passed through tools."""
+
+    options: Mapping[str, Any]
+    pending_actions: dict[str, dict[str, Any]]
+    hass: HomeAssistant
+    user_id: str
+    ha_llm_api: Any
+
+
+# How long a pending PIN confirmation stays valid. Mirrors the expiry check in
+# `_load_pending_action`, which is lazy and only ever inspects the one action
+# being confirmed.
+PENDING_ACTION_TTL = timedelta(minutes=10)
+
+# Hard cap on concurrently pending confirmations, so an unconfirmed challenge
+# loop cannot grow the store without bound.
+MAX_PENDING_ACTIONS = 16
+
+
+class CriticalActionPolicy(NamedTuple):
+    """Resolved critical-action PIN policy for a config entry."""
+
+    enabled: bool
+    pin_hash: str
+    pin_salt: str
+    critical_actions: list[dict[str, str]]
+
+    @property
+    def enforceable(self) -> bool:
+        """Return True when the PIN is enabled *and* actually configured."""
+        return self.enabled and bool(self.pin_hash and self.pin_salt)
+
+
+def resolve_critical_action_policy(options: Mapping[str, Any]) -> CriticalActionPolicy:
+    """Resolve the critical-action PIN policy from integration options."""
+    pin_hash = options.get(CONF_CRITICAL_ACTION_PIN_HASH) or ""
+    pin_salt = options.get(CONF_CRITICAL_ACTION_PIN_SALT) or ""
+    return CriticalActionPolicy(
+        # Always respect a configured PIN, even if the toggle somehow reads False.
+        enabled=bool(
+            options.get(CONF_CRITICAL_ACTION_PIN_ENABLED, False)
+            or (pin_hash and pin_salt)
+        ),
+        pin_hash=pin_hash,
+        pin_salt=pin_salt,
+        # Copy: the default is a module-level list handed to every config
+        # entry, so an in-place edit anywhere would corrupt it process-wide.
+        critical_actions=list(
+            options.get(CONF_CRITICAL_ACTIONS) or RECOMMENDED_CRITICAL_ACTIONS
+        ),
+    )
+
+
+def register_pending_action(
+    pending_actions: dict[str, dict[str, Any]],
+    action: dict[str, Any],
+) -> str:
+    """
+    Store a pending PIN-confirmation action and return its action ID.
+
+    Sweeps expired entries and caps the store on every registration. Without
+    this the dict only ever shrinks when a specific action ID is confirmed, so
+    every challenge the model abandons is retained for the life of the config
+    entry — and once more than one entry accumulates, the single-pending-action
+    convenience path in ``_resolve_action_id`` stops resolving.
+    """
+    now = dt_util.utcnow()
+    for key, existing in list(pending_actions.items()):
+        created_at = existing.get("created_at")
+        if not isinstance(created_at, str):
+            # A record with no usable timestamp can never expire, so skipping
+            # it would make it immortal and let the cap evict live entries
+            # around it. `_load_pending_action` rejects it anyway.
+            pending_actions.pop(key, None)
+            continue
+        try:
+            created = datetime.fromisoformat(created_at)
+            expired = now - created > PENDING_ACTION_TTL
+        except (ValueError, TypeError):
+            # TypeError covers a timezone-naive stored timestamp, which cannot
+            # be compared against the aware `now`. One malformed record must
+            # not break every later registration.
+            pending_actions.pop(key, None)
+            continue
+        if expired:
+            pending_actions.pop(key, None)
+
+    while len(pending_actions) >= MAX_PENDING_ACTIONS:
+        pending_actions.pop(next(iter(pending_actions)), None)
+
+    action_id = ulid.ulid_now()
+    pending_actions[action_id] = {
+        **action,
+        "created_at": now.isoformat(),
+        "attempts": 0,
+    }
+    return action_id
+
+
+def matches_critical_rule(
+    *,
+    domain: str,
+    service: str,
+    entity_ids: Sequence[str],
+    critical_actions: Iterable[Mapping[str, str]],
+    unresolved_target: bool = False,
+) -> bool:
+    """
+    Return True when a domain/service call matches a critical-action rule.
+
+    Shared by the conversation-tool guard (``_is_critical_action``) and the
+    automation-content guard (``automation_pin``) so both enforce identical
+    rule semantics.
+
+    ``unresolved_target`` fails closed for ``entity_match`` rules: when a call
+    targets an area, device, label, or template, the entity IDs it will hit are
+    unknown at check time, so an otherwise-matching rule is treated as a match.
+    """
+    domain = domain.lower()
+    service = service.lower()
+    entities = [e.lower() for e in entity_ids]
+
+    for rule in critical_actions:
+        rule_domain = (rule.get("domain") or "").lower()
+        rule_service = (rule.get("service") or "").lower()
+        entity_match = (rule.get("entity_match") or "").lower()
+
+        if rule_domain and rule_domain != domain:
+            continue
+        if rule_service and rule_service != service:
+            continue
+        if (
+            entity_match
+            and not any(entity_match in e for e in entities)
+            and not unresolved_target
+        ):
+            continue
+        return True
+    return False
+
+
+def sanitize_tool_args(tool_args: dict[str, Any]) -> dict[str, Any]:
+    """Remove empty/None slot values for HA intent tools to avoid validation errors."""
+    cleaned: dict[str, Any] = {}
+    for key, val in tool_args.items():
+        if val is None:
+            continue
+        if isinstance(val, str) and not val.strip():
+            continue
+        if isinstance(val, list) and all((not v and v != 0) for v in val):
+            continue
+        cleaned[key] = val
+    if "domain" in cleaned and isinstance(cleaned["domain"], str):
+        cleaned["domain"] = [cleaned["domain"]]
+    return cleaned
+
+
+def maybe_fill_lock_entity(
+    tool_args: dict[str, Any], hass: HomeAssistant | None
+) -> dict[str, Any]:
+    """Best-effort map a friendly lock name to an entity_id without heavy fuzzing."""
+    domains = tool_args.get("domain") or []
+    domains = domains if isinstance(domains, list) else [domains]
+    if "lock" not in {str(d).lower() for d in domains}:
+        return tool_args
+    if not hass or tool_args.get("entity_id"):
+        return tool_args
+
+    name_hint = str(tool_args.get("name") or "").strip()
+    if not name_hint:
+        return tool_args
+
+    def _slugify(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
+    target_slug = _slugify(name_hint)
+    target_compact = target_slug.replace("_", "")
+    target_with_lock = f"{target_compact}lock"
+    best_match: tuple[int, int, str, str] | None = None
+
+    for entity_id in hass.states.async_entity_ids("lock"):
+        state_obj = hass.states.get(entity_id)
+        friendly = (
+            state_obj.attributes.get("friendly_name") if state_obj else ""
+        ) or entity_id
+        cand_slug = _slugify(friendly)
+        cand_compact = cand_slug.replace("_", "")
+        if cand_slug == target_slug:
+            tool_args["entity_id"] = entity_id
+            tool_args["name"] = friendly
+            return tool_args
+        if cand_compact in (target_compact, target_with_lock):
+            tool_args["entity_id"] = entity_id
+            tool_args["name"] = friendly
+            return tool_args
+
+        rank = (
+            1 if target_compact in cand_compact or cand_compact in target_compact else 2
+        )
+        diff = abs(len(cand_compact) - len(target_compact))
+        if best_match is None or (rank, diff) < best_match[:2]:
+            best_match = (rank, diff, entity_id, friendly)
+
+    if not tool_args.get("entity_id") and best_match:
+        _, _, entity_id, friendly = best_match
+        tool_args["entity_id"] = entity_id
+        tool_args["name"] = friendly
+
+    return tool_args
+
+
+# Separator Home Assistant puts between a tool's namespace and its own name.
+# HA 2026.9 moved the built-in intent tools into per-integration `llm.py`
+# modules that name them `f"{DOMAIN}__{intent_type}"` (`intent__HassTurnOff`,
+# `light__HassLightSet`, `homeassistant__GetLiveContext`), and `MergedAPI`
+# wraps tools from multiple APIs in a `NamespacedTool` that prepends a second
+# prefix. Every comparison against a known tool name must therefore run on the
+# base name: a bare-name check silently stops matching after an HA upgrade,
+# which is how the critical-action PIN gate and the actuation classifier both
+# went dead without a single error in the log.
+TOOL_NAMESPACE_SEP = "__"
+
+
+def base_tool_name(name: str) -> str:
+    """Return a tool name with any Home Assistant namespace prefixes stripped."""
+    if not name:
+        return name
+    return name.rsplit(TOOL_NAMESPACE_SEP, 1)[-1]
+
+
+def is_on_off_intent(tool_name: str) -> bool:
+    """Return True for the HA turn-on/turn-off intent tools, namespaced or not."""
+    return base_tool_name(tool_name) in {"HassTurnOn", "HassTurnOff"}
+
+
+def normalize_intent_for_alarm(
+    tool_name: str, tool_args: dict[str, Any]
+) -> dict[str, Any]:
+    """Heuristic to route alarm control panel intents to the proper service."""
+    if not is_on_off_intent(tool_name):
+        return tool_args
+
+    domains = tool_args.get("domain") or []
+    domains = domains if isinstance(domains, list) else [domains]
+    name_hint = str(tool_args.get("name", "")).lower()
+    if not domains and any(k in name_hint for k in ("alarm", "security")):
+        tool_args = {**tool_args, "domain": ["alarm_control_panel"]}
+        domains = tool_args["domain"]
+
+    if not any(str(d).lower() == "alarm_control_panel" for d in domains):
+        return tool_args
+
+    is_arm = base_tool_name(tool_name) == "HassTurnOn"
+    desired_service = "alarm_arm_home" if is_arm else "alarm_disarm"
+    tool_args = {
+        **tool_args,
+        "domain": ["alarm_control_panel"],
+        "service": desired_service,
+    }
+    if "entity_id" not in tool_args and (name := tool_args.get("name")):
+        slug = str(name).strip().lower().replace(" ", "_")
+        tool_args["entity_id"] = f"alarm_control_panel.{slug}"
+    return tool_args
+
+
+def normalize_intent_for_lock(
+    tool_name: str, tool_args: dict[str, Any]
+) -> dict[str, Any]:
+    """Normalize lock intents: set domain and service for lock/unlock."""
+    if not is_on_off_intent(tool_name):
+        return tool_args
+
+    name = str(tool_args.get("name", "")).lower()
+    domains = tool_args.get("domain") or []
+    domains = domains if isinstance(domains, list) else [domains]
+    is_lock = any(str(d).lower() == "lock" for d in domains) or "lock" in name
+    if not is_lock:
+        return tool_args
+
+    normalized = {**tool_args, "domain": ["lock"]}
+    if base_tool_name(tool_name) == "HassTurnOff":
+        normalized.setdefault("service", "unlock")
+    else:
+        normalized.setdefault("service", "lock")
+    return normalized
+
+
+# Separator between the API id and the tool name in a composite tool key.
+# Shared by `tool_index_key` and `split_tool_index_key` so the join and the
+# split can never drift — the options flow round-trips these keys through a
+# flat picker value, and a one-sided change would void every stored exclusion.
+TOOL_KEY_SEP = "::"
+
+# Cap for any single rendered tool string. Long enough for real MCP tool names,
+# short enough that one hostile name cannot flood a log line or a form label.
+TOOL_TEXT_MAX_LEN = 120
+
+
+def sanitize_tool_text(text: str, limit: int = TOOL_TEXT_MAX_LEN) -> str:
+    """
+    Make a remote-controlled tool string safe to render, and bound its length.
+
+    Tool names and API titles arrive from remote MCP servers, so they are
+    attacker-controlled text that this integration renders in two places: log
+    lines and the options-form exclusion picker.  ``str.isprintable()`` is
+    False for exactly the classes that make rendered text lie — C0/C1 controls,
+    newlines, zero-width characters, and the bidi overrides (U+202E and
+    friends) that reverse the text after them — so replacing every
+    non-printable with ``?`` closes log-line forgery and the reordering
+    attacks.  ASCII space stays printable, so ordinary names are untouched.
+
+    What this deliberately does **not** do is stop a name whose characters are
+    all perfectly printable from *reading* like something else.
+    ``list_files (not currently available)`` passes through here unchanged, so
+    this function alone cannot keep remote text from imitating a trust marker
+    it is concatenated with; the picker's own ``_label_text`` in
+    ``config_flow.py`` is what does that.  Treat this as making remote text
+    safe to *render*, not safe to *concatenate with trusted text*.
+
+    Single definition on purpose: a second copy would drift from this one, and
+    a renderer that forgot to sanitize is exactly the hole this closes.
+
+    The cap is applied *before* the per-character pass, not after. The
+    transform is one character in, one character out, so the two orders return
+    byte-identical strings — but capping afterwards would run the Python-level
+    generator across the whole input first, which is unbounded in the length of
+    text a remote server chose. A multi-megabyte tool name costs ~132ms of
+    event-loop block that way against ~0.05ms this way, which is the difference
+    between a cap that bounds rendering and a cap that only bounds the result.
+    """
+    # Fast path: one C-level scan, and it is what virtually every real tool
+    # name hits, so the common case never enters the generator at all.
+    if len(text) <= limit and text.isprintable():
+        return text
+    return "".join(ch if ch.isprintable() else "?" for ch in text[:limit])
+
+
+def tool_index_key(api_id: str, name: str) -> str:
+    """
+    Composite tool-index store key.
+
+    Single definition on purpose: the per-turn top-up compares live keys
+    against cached hashes, so any drift between the key spelling used for
+    discovery writes and the one used for the live-set comparison would make
+    a key permanently "missing" and re-fire the top-up every turn.
+    """
+    return f"{api_id}{TOOL_KEY_SEP}{name}"
+
+
+def split_tool_index_key(key: str) -> tuple[str, str] | None:
+    """
+    Split a composite tool key back into ``(api_id, tool_name)``.
+
+    Returns ``None`` for anything that is not a well-formed key.  Splits on the
+    *first* separator: registered API ids never contain ``::`` (Home Assistant
+    builds them from a domain or a config-entry id), while a remote MCP server
+    is free to name a tool anything at all.
+    """
+    api_id, sep, name = key.partition(TOOL_KEY_SEP)
+    if not sep or not api_id or not name:
+        return None
+    return api_id, name
+
+
+_SCHEMA_ERRORS = (
+    AttributeError,
+    TypeError,
+    ValueError,
+    PydanticInvalidForJsonSchema,
+)
+
+_EMPTY_SCHEMA = "{}"
+
+# Memo of the extracted schema string, keyed by tool identity.  ``BaseTool`` is
+# a Pydantic model, so it is neither hashable nor usable as a WeakKeyDictionary
+# key -- hence id() plus a weakref that proves the id still names the object it
+# was recorded for.  Without that proof a freed tool's recycled id would serve
+# a stale schema to whatever object landed on the address next.
+_schema_memo: dict[int, tuple[weakref.ReferenceType[Any], str]] = {}
+
+
+def _drop_schema_memo(key: int, dead: weakref.ReferenceType[Any]) -> None:
+    """Evict a memo entry once its tool is collected."""
+    # The local tools are singletons, so in practice nothing is ever evicted.
+    # This exists so the memo cannot become a leak if per-turn tool objects
+    # (an MCP set rebuilt each turn) are ever routed through here: the weakref
+    # would die while its dict entry lived on forever.  Guarded on identity so
+    # a late callback cannot delete the entry of a live tool that has already
+    # claimed the recycled id.
+    if _schema_memo.get(key, (None, ""))[0] is dead:
+        del _schema_memo[key]
+
+
+def _dump_json_schema(schema_obj: Any) -> str:
+    """Serialize a dict or Pydantic model to a JSON-schema string."""
+    if isinstance(schema_obj, dict):
+        try:
+            return json.dumps(schema_obj, sort_keys=True)
+        except (TypeError, ValueError):
+            return _EMPTY_SCHEMA
+    try:
+        model_json_schema = getattr(schema_obj, "model_json_schema", None)
+        if callable(model_json_schema):
+            dumped = model_json_schema()
+            if isinstance(dumped, dict):
+                return json.dumps(dumped, sort_keys=True)
+        schema_func = getattr(schema_obj, "schema", None)
+        if callable(schema_func):
+            dumped = schema_func()
+            if isinstance(dumped, dict):
+                return json.dumps(dumped, sort_keys=True)
+    except _SCHEMA_ERRORS:
+        return _EMPTY_SCHEMA
+    return _EMPTY_SCHEMA
+
+
+def _extract_tool_parameters_json(lc_tool: Any) -> str:
+    """Extract the model-facing schema string for one tool (uncached)."""
+    # getattr() evaluates tool_call_schema, which is a *computed* property --
+    # it runs get_input_schema() + _create_subset_model() on every access -- so
+    # the access itself has to sit inside the guard, not just the serialization.
+    # Its default only swallows AttributeError; anything else the property
+    # raises would otherwise escape into _get_fallback_tools(), which has no
+    # guard of its own and would lose every tool in the turn over one bad
+    # schema instead of just that tool's parameters.
+    try:
+        tool_call_schema = getattr(lc_tool, "tool_call_schema", None)
+        if tool_call_schema is not None:
+            return _dump_json_schema(tool_call_schema)
+        args_schema = getattr(lc_tool, "args_schema", None)
+        if args_schema is not None:
+            return _dump_json_schema(args_schema)
+    except _SCHEMA_ERRORS:
+        return _EMPTY_SCHEMA
+    return _EMPTY_SCHEMA
+
+
+def langchain_tool_parameters_json(lc_tool: Any) -> str:
+    """
+    Return the model-facing JSON schema for a LangChain tool.
+
+    Prefers ``tool_call_schema``, which excludes ``InjectedToolArg`` /
+    ``InjectedStore`` fields (``config``, ``store``, ``BaseStore``) that must
+    not be shown to the model and cannot be serialized. ``args_schema`` is
+    used only when ``tool_call_schema`` is absent, so a failed injected-arg
+    schema never falls through to ``args_schema.schema()``.
+
+    Memoized per tool object because ``tool_call_schema`` is an *uncached*
+    property that rebuilds a Pydantic subset model on every read -- ~2.9x the
+    cost of the ``args_schema.schema()`` call it replaces (16.4ms against
+    5.7ms for the ten local tools).  ``_get_fallback_tools()`` runs once per
+    always-included tool on ``_get_tool_by_name()``'s miss path, so that delta
+    is multiplied by up to ``TOOL_INCLUSIONS_MAX_PER_TURN`` on the very path
+    that already exists because rebuilding local schemas per lookup is
+    wasteful.  The local tools are module-level singletons with static
+    schemas, so one extraction per object is all that is ever needed.
+
+    An empty ``{}`` is returned -- and logged -- when no schema can be
+    extracted.  The log line matters: ``{}`` is indistinguishable downstream
+    from a tool that genuinely takes no arguments (``_format_and_dedupe_tools``
+    normalizes it to ``{"type": "object", "properties": {}}``), which is
+    exactly how ``upsert_memory`` and ``confirm_sensitive_action`` were
+    silently advertised to the model as argument-free on the fallback path.
+    """
+    key = id(lc_tool)
+    cached = _schema_memo.get(key)
+    if cached is not None and cached[0]() is lc_tool:
+        return cached[1]
+
+    params = _extract_tool_parameters_json(lc_tool)
+    if params == _EMPTY_SCHEMA:
+        LOGGER.warning(
+            "No JSON schema could be extracted for tool %s; it will be offered "
+            "to the model with no parameters",
+            sanitize_tool_text(str(getattr(lc_tool, "name", "?")), limit=200),
+        )
+
+    # Not weak-referenceable: correctness does not depend on the memo, so a
+    # tool that cannot be tracked simply pays the extraction cost every time.
+    with contextlib.suppress(TypeError):
+        _schema_memo[key] = (
+            weakref.ref(lc_tool, partial(_drop_schema_memo, key)),
+            params,
+        )
+    return params
+
+
+def format_tool(
+    tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
+) -> dict[str, Any]:
+    """Format Home Assistant LLM tools to be compatible with OpenAI format."""
+    tool_spec = {
+        "name": tool.name,
+        "parameters": safe_convert(
+            tool.parameters, custom_serializer=custom_serializer
+        ),
+    }
+    if tool.description:
+        tool_spec["description"] = tool.description
+    return {"type": "function", "function": tool_spec}
+
+
+def is_actuation_tool(name: str) -> bool:
+    """Check if a tool name indicates an actuation tool."""
+    # The prefixes below name HA *intents* ("HassTurn...", "HassLight..."), so
+    # they must be matched against the base name -- HA's namespaced tool names
+    # ("light__HassLightSet") start with the domain, not the intent.
+    name_lower = base_tool_name(name).lower()
+    # Check exact matches first (greedy check for specific tools)
+    if name_lower in {t.lower() for t in ACTUATION_LANGCHAIN_TOOLS}:
+        return True
+    # Check prefix matches for provider tools
+    return any(name_lower.startswith(p.lower()) for p in ACTUATION_TOOL_PREFIXES)

@@ -1,0 +1,2461 @@
+"""Conversation support for Home Generative Agent using langgraph."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import functools
+import hashlib
+import importlib
+import json
+import logging
+import re
+import string
+from collections import deque
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+import homeassistant.util.dt as dt_util
+import voluptuous as vol
+from homeassistant.components import conversation
+from homeassistant.components.conversation import (
+    AssistantContentDeltaDict,
+    ToolResultContentDeltaDict,
+    trace,
+)
+from homeassistant.components.conversation.models import AbstractConversationAgent
+from homeassistant.const import MATCH_ALL
+from homeassistant.exceptions import HomeAssistantError, TemplateError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import intent, llm, template
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.util import ulid
+from langchain_core.globals import set_debug, set_verbose
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    AnyMessage,
+    HumanMessage,
+    ToolCall,
+    ToolMessage,
+)
+
+from .agent.automation_targets import normalize_notify_service
+from .agent.graph import workflow
+from .agent.helpers import (
+    active_llm_api_ids,
+    chat_log_tool_result,
+    filter_excluded_tools,
+    format_tool,
+    is_actuation_tool,
+    langchain_tool_parameters_json,
+    resolve_critical_action_policy,
+    safe_convert,
+    sanitize_tool_text,
+    tool_exclusions,
+    tool_index_key,
+)
+from .agent.rag_embedding_text import (
+    strip_for_embedding,
+    truncate_for_embedding_index,
+)
+from .agent.tools import (
+    add_automation,
+    alarm_control,
+    audit_home_security,
+    confirm_sensitive_action,
+    get_and_analyze_camera_image,
+    get_camera_last_events,
+    get_entity_history,
+    resolve_entity_ids,
+    upsert_memory,
+    write_yaml_file,
+)
+from .const import (
+    AUTOMATION_PUSH_SERVICE_PROMPT,
+    CONF_CRITICAL_ACTION_PIN_ENABLED,
+    CONF_NOTIFY_SERVICE,
+    CONF_PROMPT,
+    CONF_SCHEMA_FIRST_YAML,
+    CONF_SENTINEL_NETWORK_ENABLED,
+    CONF_STT_HALLUCINATION_EXACT_PATTERNS,
+    CONF_STT_HALLUCINATION_PATTERNS,
+    CONF_VOICE_TOOL_ACK,
+    CONF_VOICE_TOOL_ACK_TIMING,
+    CRITICAL_ACTION_PROMPT,
+    DEFAULT_STT_HALLUCINATION_EXACT_PATTERNS,
+    DEFAULT_STT_HALLUCINATION_PATTERNS,
+    DOMAIN,
+    LANGCHAIN_LOGGING_LEVEL,
+    NETWORK_AUDIT_TOOL_PROMPT,
+    RECOMMENDED_SENTINEL_NETWORK_ENABLED,
+    RECOMMENDED_VOICE_ACK_TIMING,
+    SCHEMA_FIRST_YAML_PROMPT,
+    SIGNAL_TOOL_INDEX_UPDATED,
+    SUBENTRY_TYPE_MODEL_PROVIDER,
+    TOOL_CALL_ERROR_SYSTEM_MESSAGE,
+    TOOL_SUBSET_PROMPT,
+    VOICE_ACK_TIMING_TOOL_CALL,
+    VOICE_ACK_TIMING_TURN_START,
+    VOICE_ACK_TIMINGS,
+)
+from .core.conversation_helpers import (
+    _convert_schema_json_to_yaml,
+    _fix_entity_ids_in_text,
+    _is_dashboard_request,
+    _maybe_fix_dashboard_entities,
+)
+from .core.pipeline_guard import async_check_pin_pipeline_conflict
+from .core.utils import (
+    extract_final,
+    gather_store_puts_in_chunks,
+    local_chat_session,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import (
+        AsyncGenerator,
+        AsyncIterable,
+        AsyncIterator,
+        Callable,
+        Iterable,
+        Mapping,
+    )
+
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.entity_platform import AddEntitiesCallback
+    from homeassistant.util.json import JsonObjectType
+    from langchain_core.runnables import RunnableConfig
+
+    from .agent.graph import State
+    from .core.runtime import HGAConfigEntry, HGAData
+
+_LOGGER = logging.getLogger(__name__)
+
+# Cap on the error detail appended to the user-visible fallback chat message.
+_STREAM_ERROR_REASON_MAX_CHARS = 280
+
+# Time budget for the inline tool-index delta write; it runs on the
+# conversational turn's critical path, so a hung embedding provider must
+# degrade to the retry-next-turn path instead of stalling the voice turn.
+_TOOL_INDEX_DELTA_TIMEOUT_S = 30.0
+
+# Page size for listing the tool index. `BaseStore.asearch` defaults to 10, so
+# the eviction sweep has to page explicitly or it would see a tenth of the
+# index and "evict" nothing.
+_TOOL_INDEX_PAGE_SIZE = 100
+
+
+def _recommit_final_assistant_content(chat_log: conversation.ChatLog) -> None:
+    """
+    Re-fire CONTENT_ADDED for the final AssistantContent.
+
+    The HA frontend's streaming UI only shows the final content in the main
+    chat area when CONTENT_ADDED fires. async_add_delta_content_stream flushes
+    via async_add_assistant_content, which does NOT fire CONTENT_ADDED for
+    AssistantContent; re-committing via
+    async_add_assistant_content_without_tools does fire it. Runs even on
+    cancellation so the UI is consistent if HA reads partial chat_log state
+    after a cancelled turn.
+    """
+    if (
+        chat_log.content
+        and isinstance(chat_log.content[-1], conversation.AssistantContent)
+        and not chat_log.content[-1].tool_calls
+        and chat_log.content[-1].content
+    ):
+        _final_content = cast("conversation.AssistantContent", chat_log.content.pop())
+        chat_log.async_add_assistant_content_without_tools(_final_content)
+
+
+def _streaming_failure_content(stream_error: Exception | None) -> str:
+    """
+    Build the user-visible chat message for a failed streaming turn.
+
+    Includes the real failure reason so it is debuggable from the chat log
+    instead of only from home-assistant.log (issue #502). Only
+    HomeAssistantError messages are surfaced verbatim — they are authored by
+    this integration (e.g. "Model invocation failed: ...") and safe to show.
+    Arbitrary exceptions may carry internals (DSNs, paths, request IDs), and
+    this text is rendered in chat, spoken by voice pipelines, and persisted
+    into the model's future context, so they surface only their class name.
+    """
+    if stream_error is None:
+        return "I'm sorry, I was unable to respond in time. Please try again."
+    if not isinstance(stream_error, HomeAssistantError):
+        return (
+            f"I'm sorry, I was unable to respond "
+            f"({type(stream_error).__name__}). Please try again."
+        )
+    reason = str(stream_error) or type(stream_error).__name__
+    if len(reason) > _STREAM_ERROR_REASON_MAX_CHARS:
+        reason = reason[:_STREAM_ERROR_REASON_MAX_CHARS] + "…"
+    return f"I'm sorry, I was unable to respond: {reason}"
+
+
+if LANGCHAIN_LOGGING_LEVEL == "verbose":
+    set_verbose(True)
+    set_debug(False)
+elif LANGCHAIN_LOGGING_LEVEL == "debug":
+    set_verbose(False)
+    set_debug(True)
+else:
+    set_verbose(False)
+    set_debug(False)
+
+
+# Appended to the user message of a turn Home Assistant's own agent answered
+# with a tool (a local intent), so the model reads it as done. Model-facing.
+HANDLED_ELSEWHERE_NOTE = (
+    "(Home Assistant already handled this request directly: {answer})"
+)
+HANDLED_ELSEWHERE_NOTE_NO_ANSWER = (
+    "(Home Assistant already handled this request directly.)"
+)
+
+
+def _convert_content(
+    content: conversation.UserContent | conversation.AssistantContent,
+    message_id: str,
+) -> HumanMessage | AIMessage:
+    """
+    Convert HA native chat messages to LangChain messages.
+
+    Only called with UserContent or tool-call-free AssistantContent (filtered
+    upstream — see _async_get_message_history). The id is derived from the
+    entry's position in chat_log so that ingesting the same entry twice
+    upserts the message in the thread instead of appending a second copy.
+    """
+    if isinstance(content, conversation.UserContent):
+        return HumanMessage(content=content.content or "", id=message_id)
+    return AIMessage(content=content.content or "", id=message_id)
+
+
+def _spoken_answer(turn: list[tuple[int, Any]]) -> str:
+    """Return the text a turn ended with, or "" when it ended without one."""
+    for _, entry in reversed(turn[1:]):
+        if (
+            isinstance(entry, conversation.AssistantContent)
+            and not entry.tool_calls
+            and entry.content
+        ):
+            return entry.content.strip()
+    return ""
+
+
+def _handled_elsewhere(question: str, answer: str) -> str:
+    """Mark a request another agent already answered with a tool (#588, #671)."""
+    if answer:
+        return f"{question} {HANDLED_ELSEWHERE_NOTE.format(answer=answer)}"
+    return f"{question} {HANDLED_ELSEWHERE_NOTE_NO_ANSWER}"
+
+
+def _normalize_ai_content(content: str | list) -> str | None:
+    """
+    Normalize AIMessage.content to str for HA AssistantContent.
+
+    AIMessage.content is str for most providers, or list[dict] (content blocks) for
+    providers that return structured output (e.g. Anthropic). Extracts text blocks
+    only; returns None if the result is empty.
+
+    Handles both 'text' (final AIMessage) and 'text_delta' (Anthropic streaming
+    chunks) block types so the function works for both streaming and non-streaming
+    invocation paths.
+    """
+    if isinstance(content, str):
+        return content or None
+    parts = [
+        block.get("text", "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") in ("text", "text_delta")
+    ]
+    return "\n".join(parts) or None
+
+
+def _normalize_tool_result(content: Any) -> JsonObjectType:
+    """
+    Normalize ToolMessage.content to JsonObjectType for HA ToolResultContent.
+
+    ToolMessage.content is str for plain string results (HA tools serialize their
+    response via json.dumps, so the content is a JSON-encoded string), or list[dict]
+    (content blocks) from some providers (e.g. Anthropic).
+
+    HA intent tools (e.g. HassTurnOn) return a JSON string whose decoded form
+    contains a ``response_type`` key (e.g. ``"action_done"``).  If the raw dict
+    is stored in ToolResultContent the HA frontend mistakes it for the final
+    conversation response and renders an empty speech bubble.  We detect that
+    shape and re-encode it so only the meaningful payload is kept.
+    """
+    if isinstance(content, str):
+        # HA tools produce json.dumps(response) as content, so try to deserialize
+        # back to a dict to avoid double-escaping in Show Details.
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return _sanitize_tool_result_dict(parsed)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return {"result": content}
+    if isinstance(content, list):
+        parts = [
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        ]
+        return {"result": "\n".join(parts)}
+    return {"result": str(content)}
+
+
+def _sanitize_tool_result_dict(d: dict[str, Any]) -> JsonObjectType:
+    """
+    Reformat HA intent-response dicts to avoid frontend misinterpretation.
+
+    HA intent tools (e.g. HassTurnOn) return a dict with ``response_type`` and
+    ``speech`` keys that mirror the top-level ConversationResult shape.  When
+    stored verbatim in ToolResultContent the HA frontend mistakes it for the
+    final conversation response and renders an empty speech bubble.  We flatten
+    the meaningful payload instead.
+    """
+    if "response_type" not in d:
+        return d
+
+    out: dict[str, Any] = {"result": d["response_type"]}
+
+    # Lift the plain-speech text when present (non-empty string).
+    speech = d.get("speech")
+    if isinstance(speech, dict):
+        plain = speech.get("plain")
+        if isinstance(plain, dict):
+            text = plain.get("speech")
+            if text:
+                out["result"] = text
+
+    # Preserve the data payload (success/failed entity lists, etc.).
+    data = d.get("data")
+    if isinstance(data, dict):
+        out.update(data)
+
+    return out
+
+
+def _populate_chat_log_from_response(
+    chat_log: conversation.ChatLog,
+    agent_id: str,
+    new_messages: list[AnyMessage],
+) -> None:
+    """
+    Backfill chat_log with LangGraph response messages for HA Show Details.
+
+    Walks new_messages (the messages produced this turn: everything after the
+    current request in the returned thread) and appends AssistantContent and
+    ToolResultContent entries so HA's "Show Details" panel renders the full tool
+    call / result chain.
+
+    All ToolInput entries use external=True because LangGraph, not HA, executed the
+    tools. async_add_assistant_content_without_tools() raises ValueError if any
+    ToolInput has external=False.
+
+    chat_log state is not persisted across HA restarts. The LangGraph PostgreSQL
+    checkpointer holds the full conversation history; chat_log is repopulated each
+    turn from the ainvoke() response slice.
+    """
+    for msg in new_messages:
+        if isinstance(msg, AIMessage):
+            if msg.tool_calls:
+                tool_inputs = [
+                    llm.ToolInput(
+                        tool_name=tc["name"],
+                        tool_args=tc["args"],
+                        id=tc["id"] or ulid.ulid_now(),
+                        external=True,
+                    )
+                    for tc in msg.tool_calls
+                ]
+                chat_log.async_add_assistant_content_without_tools(
+                    conversation.AssistantContent(
+                        agent_id=agent_id,
+                        content=_normalize_ai_content(msg.content),
+                        tool_calls=tool_inputs,
+                    )
+                )
+            else:
+                chat_log.async_add_assistant_content_without_tools(
+                    conversation.AssistantContent(
+                        agent_id=agent_id,
+                        content=_normalize_ai_content(msg.content),
+                    )
+                )
+        elif isinstance(msg, ToolMessage):
+            chat_log.async_add_assistant_content_without_tools(
+                conversation.ToolResultContent(
+                    agent_id=agent_id,
+                    tool_call_id=msg.tool_call_id,
+                    tool_name=msg.name or "",
+                    **chat_log_tool_result(
+                        _normalize_tool_result(msg.content),
+                        error=msg.status == "error",
+                    ),
+                )
+            )
+
+
+def _handle_on_chat_model_end(
+    data: dict[str, Any],
+    pending_tool_map: dict[str, ToolCall],
+    unidentified_call_ids: deque[str],
+) -> AssistantContentDeltaDict | None:
+    """
+    Process on_chat_model_end events to record tool calls.
+
+    Updates pending_tool_map with new tool calls and handles ULID generation
+    for calls without native IDs, tracking them in unidentified_call_ids for
+    later correlation.
+    """
+    msg = data.get("output")
+    if not isinstance(msg, AIMessage) or not msg.tool_calls:
+        return None
+
+    call_id_map = []
+    for tc in msg.tool_calls:
+        orig_id = tc.get("id")
+        call_id = orig_id or ulid.ulid_now()
+        if not orig_id:
+            unidentified_call_ids.append(call_id)
+        pending_tool_map[call_id] = tc
+        call_id_map.append(call_id)
+
+    return AssistantContentDeltaDict(
+        tool_calls=[
+            llm.ToolInput(
+                tool_name=str(tc["name"]),
+                tool_args=cast("dict[str, Any]", tc["args"]),
+                id=call_id_map[i],
+                external=True,
+            )
+            for i, tc in enumerate(msg.tool_calls)
+        ]
+    )
+
+
+def _handle_on_chain_end(
+    data: dict[str, Any],
+    pending_tool_map: dict[str, ToolCall],
+    unidentified_call_ids: deque[str],
+) -> list[ToolResultContentDeltaDict]:
+    """
+    Process on_chain_end events for the action node to yield tool results.
+
+    Correlates results back to pending tool calls (handling ID-less correlation
+    via unidentified_call_ids) and yields ToolResultContentDeltaDicts. Any
+    tools that did not return a result are yielded as synthetic rejections.
+    """
+    output = data.get("output")
+    # LangGraph emits two on_chain_end events for "action":
+    # (a) node function event: output = {"messages": [ToolMessage, ...]}
+    # (b) graph-level state event: output = full updated messages list
+    # We only want (a). Skip anything that is not a dict (e.g. the list in (b)).
+    if not isinstance(output, dict):
+        return []
+
+    messages = cast("list[Any]", output.get("messages", []))
+    tool_messages = [m for m in messages if isinstance(m, ToolMessage)]
+
+    deltas: list[ToolResultContentDeltaDict] = []
+
+    # 1. Yield successful results and remove from pending map.
+    for msg in tool_messages:
+        tool_call_id = msg.tool_call_id
+        # Fallback correlation for models without tool IDs.
+        if (
+            (not tool_call_id or tool_call_id == "None")
+            and unidentified_call_ids
+            and unidentified_call_ids[0] in pending_tool_map
+        ):
+            tool_call_id = unidentified_call_ids.popleft()
+
+        if tool_call_id in pending_tool_map:
+            pending_tool_map.pop(tool_call_id)
+            deltas.append(
+                cast(
+                    "ToolResultContentDeltaDict",
+                    {
+                        "role": "tool_result",
+                        "tool_call_id": str(tool_call_id),
+                        "tool_name": str(msg.name or ""),
+                        **chat_log_tool_result(
+                            _normalize_tool_result(msg.content),
+                            error=msg.status == "error",
+                        ),
+                    },
+                )
+            )
+
+    # 2. Yield synthetic rejections for any calls that didn't return a result.
+    deltas.extend(
+        _get_synthetic_rejections(
+            pending_tool_map, "Tool execution rejected by routing policy."
+        )
+    )
+    pending_tool_map.clear()
+    unidentified_call_ids.clear()
+    return deltas
+
+
+def _get_synthetic_rejections(
+    pending_tool_map: dict[str, ToolCall], error_msg: str
+) -> list[ToolResultContentDeltaDict]:
+    """
+    Generate synthetic tool result rejections for pending calls.
+
+    Used when a tool execution is rejected by policy or fails mid-stream,
+    ensuring Home Assistant receives a final state for all initiated calls.
+    """
+    return [
+        cast(
+            "ToolResultContentDeltaDict",
+            {
+                "role": "tool_result",
+                "tool_call_id": call_id,
+                "tool_name": tc.get("name") or "tool",
+                **chat_log_tool_result({"error": error_msg}, error=True),
+            },
+        )
+        for call_id, tc in pending_tool_map.items()
+    ]
+
+
+def _handle_on_chat_model_stream(
+    data: dict[str, Any],
+) -> AssistantContentDeltaDict | None:
+    """
+    Process on_chat_model_stream events to yield text tokens.
+
+    Yields text content even if the chunk also contains tool call chunks,
+    ensuring that mid-message tool calls do not swallow preceding text.
+    """
+    chunk = data.get("chunk")
+    if not isinstance(chunk, AIMessageChunk):
+        return None
+
+    if chunk_text := _normalize_ai_content(chunk.content):
+        return AssistantContentDeltaDict(content=chunk_text)
+    return None
+
+
+def _process_stream_event(
+    event: Mapping[str, Any],
+    pending_tool_map: dict[str, ToolCall],
+    unidentified_call_ids: deque[str],
+) -> Iterator[AssistantContentDeltaDict | ToolResultContentDeltaDict]:
+    """
+    Process a single LangGraph event and yield HA ChatLog deltas.
+
+    Dispatches LangGraph astream_events (start, stream, end) to the appropriate
+    handler based on the node and event type. Manages the orchestration of
+    token streaming and tool call/result lifecycle.
+    """
+    metadata = cast("dict[str, Any]", event.get("metadata", {}))
+    node = metadata.get("langgraph_node") or event.get("name")
+    event_type = event.get("event")
+    data = cast("dict[str, Any]", event.get("data", {}))
+
+    if node == "agent":
+        if event_type == "on_chat_model_start":
+            yield AssistantContentDeltaDict(role="assistant")
+        elif (
+            event_type == "on_chat_model_stream"
+            and (delta := _handle_on_chat_model_stream(data))
+        ) or (
+            event_type == "on_chat_model_end"
+            and (
+                delta := _handle_on_chat_model_end(
+                    data, pending_tool_map, unidentified_call_ids
+                )
+            )
+        ):
+            yield delta
+    elif node == "action" and event_type == "on_chain_end":
+        yield from _handle_on_chain_end(data, pending_tool_map, unidentified_call_ids)
+
+
+def _nonstreaming_text(event: Mapping[str, Any]) -> str | None:
+    """
+    Return text from on_chat_model_end for providers that don't stream.
+
+    Returns None when the message has tool calls or no usable text content.
+    """
+    data = cast("dict[str, Any]", event.get("data", {}))
+    end_msg = data.get("output")
+    if (
+        isinstance(end_msg, AIMessage)
+        and not end_msg.tool_calls
+        and (text := _normalize_ai_content(end_msg.content))
+    ):
+        return text
+    return None
+
+
+class VoiceAck(NamedTuple):
+    """The configured acknowledgement for this turn and when to speak it."""
+
+    text: str = ""
+    timing: str = RECOMMENDED_VOICE_ACK_TIMING
+
+
+def _voice_tool_acknowledgement(
+    options: Mapping[str, Any], user_input: conversation.ConversationInput
+) -> VoiceAck:
+    """
+    Return this turn's acknowledgement and its timing; empty text means none.
+
+    Only an Assist satellite turn counts: a device id alone is also sent with
+    typed pipeline runs (for area context), so it does not mean anyone is
+    listening. Commands matched by local intents never reach this agent.
+
+    A missing sentence mark is added, because a streaming TTS engine holds
+    text back until it sees a sentence end, and without one the phrase would
+    wait for the answer instead of filling the tool run.
+    """
+    if not user_input.satellite_id:
+        return VoiceAck()
+    text = str(options.get(CONF_VOICE_TOOL_ACK) or "").strip()
+    if text and not text.rstrip(_ACK_CLOSERS).endswith(_ACK_SENTENCE_ENDINGS):
+        text += "."
+    timing = options.get(CONF_VOICE_TOOL_ACK_TIMING)
+    if timing not in VOICE_ACK_TIMINGS:
+        timing = RECOMMENDED_VOICE_ACK_TIMING
+    return VoiceAck(text, str(timing))
+
+
+def _get_stt_hallucination_patterns(
+    options: dict[str, Any],
+) -> tuple[str, ...]:
+    """Parse STT substring-match patterns from options (list or legacy string)."""
+    raw = options.get(
+        CONF_STT_HALLUCINATION_PATTERNS, DEFAULT_STT_HALLUCINATION_PATTERNS
+    )
+    if isinstance(raw, list):
+        return tuple(p.strip().lower() for p in raw if isinstance(p, str) and p.strip())
+    if isinstance(raw, str):
+        if not raw:
+            return ()
+        # Normalise newlines to commas so users can type one pattern per line
+        raw = raw.replace("\n", ",")
+        return tuple(p.strip().lower() for p in raw.split(",") if p.strip())
+    return ()
+
+
+def _get_stt_hallucination_exact_patterns(
+    options: dict[str, Any],
+) -> tuple[str, ...]:
+    """Parse STT exact-match patterns from options (list or legacy string)."""
+    raw = options.get(
+        CONF_STT_HALLUCINATION_EXACT_PATTERNS,
+        DEFAULT_STT_HALLUCINATION_EXACT_PATTERNS,
+    )
+    if isinstance(raw, list):
+        return tuple(p.strip().lower() for p in raw if isinstance(p, str) and p.strip())
+    if isinstance(raw, str):
+        if not raw:
+            return ()
+        raw = raw.replace("\n", ",")
+        return tuple(p.strip().lower() for p in raw.split(",") if p.strip())
+    return ()
+
+
+def _is_stt_hallucination(
+    text: str | None,
+    substring_patterns: tuple[str, ...],
+    exact_patterns: tuple[str, ...],
+) -> bool:
+    """
+    Determine whether the text is a phantom STT transcription of noise.
+
+    Matches case-insensitive:
+      - substring_patterns: partial match ('sub' matches 'Subtitles')
+      - exact_patterns: full text must equal pattern (after lower-casing)
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(pat in lowered for pat in substring_patterns) or any(
+        lowered == pat for pat in exact_patterns
+    )
+
+
+# Mirrors tts._SENTENCE_ENDINGS / _SENTENCE_CLOSERS: marks that end a
+# sentence, and quotes or brackets that may follow one.
+_ACK_SENTENCE_ENDINGS = (
+    ".",
+    "!",
+    "?",
+    "\u2026",
+    "\u3002",
+    "\uff01",
+    "\uff1f",
+    "\u061f",
+    "\u0964",
+    "\u0965",
+)
+_ACK_CLOSERS = "\"')]}\u00bb\u201d\u2019\u300d\u300f"
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+# Searched in the original text: indexing str.lower() would misplace every cut
+# after a character whose lowercase is longer (Turkish "İ" becomes two).
+_THINK_OPEN_RE = re.compile(re.escape(_THINK_OPEN), re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(re.escape(_THINK_CLOSE), re.IGNORECASE)
+
+
+def _partial_tag_len(text: str, tag: str) -> int:
+    """Return how many trailing chars of ``text`` could start ``tag``."""
+    for size in range(min(len(tag) - 1, len(text)), 0, -1):
+        if text[-size:].lower() == tag[:size]:
+            return size
+    return 0
+
+
+class _ThinkStreamFilter:
+    """
+    Drop ``<think>`` blocks from streamed text, as extract_final does whole.
+
+    A voice pipeline speaks the deltas as they arrive, before the cleaned
+    final text replaces the streamed copy, so reasoning a model writes inline
+    (qwen3 or deepseek-r1 behind a server without a reasoning parser) has to
+    be removed here or it is read aloud. Tags can straddle deltas, so a
+    possible tag prefix at the end of a delta is held until the next one.
+    An unclosed block runs to the end of the model turn, like extract_final.
+
+    Whitespace follows extract_final(collapse_whitespace=False): once a block
+    has been removed, the reply's outer whitespace is stripped and nothing
+    inside it is touched. Leading whitespace is dropped until the first
+    visible text; trailing whitespace is held until more text follows it and
+    dropped at the end of the turn.
+    """
+
+    def __init__(self) -> None:
+        self._reset()
+
+    def _reset(self) -> None:
+        """Start a new model turn."""
+        self._pending = ""
+        self._inside = False
+        self._removed = False
+        self._emitted = False
+        self._held_space = ""
+
+    def _visible(self, text: str) -> str:
+        """Apply the outer-whitespace rule to text outside any block."""
+        text = self._held_space + text
+        self._held_space = ""
+        if self._removed:
+            if not self._emitted:
+                text = text.lstrip()
+            body = text.rstrip()
+            self._held_space = text[len(body) :]
+            text = body
+        if text:
+            self._emitted = True
+        return text
+
+    def feed(self, text: str) -> str:
+        """Return the part of ``text`` that is safe to show and speak."""
+        self._pending += text
+        out: list[str] = []
+        while self._pending:
+            if self._inside:
+                close = _THINK_CLOSE_RE.search(self._pending)
+                if close is None:
+                    keep = _partial_tag_len(self._pending, _THINK_CLOSE)
+                    self._pending = self._pending[len(self._pending) - keep :]
+                    break
+                self._pending = self._pending[close.end() :]
+                self._inside = False
+                continue
+            opening = _THINK_OPEN_RE.search(self._pending)
+            if opening is not None:
+                out.append(self._visible(self._pending[: opening.start()]))
+                self._pending = self._pending[opening.end() :]
+                self._inside = True
+                self._removed = True
+                continue
+            keep = _partial_tag_len(self._pending, _THINK_OPEN)
+            out.append(self._visible(self._pending[: len(self._pending) - keep]))
+            self._pending = self._pending[len(self._pending) - keep :]
+            break
+        return "".join(out)
+
+    def filter(
+        self,
+        event_type: Any,
+        deltas: Iterable[AssistantContentDeltaDict | ToolResultContentDeltaDict],
+    ) -> Iterator[AssistantContentDeltaDict | ToolResultContentDeltaDict]:
+        """
+        Yield one event's ``deltas`` with content filtered; drop emptied ones.
+
+        Model-call boundaries end a turn: a start discards anything a failed
+        turn left held, an end releases text held as a possible tag ahead of
+        the turn's tool calls.
+        """
+        if event_type == "on_chat_model_start":
+            self.flush()
+        elif event_type == "on_chat_model_end" and (tail := self.flush()):
+            yield AssistantContentDeltaDict(content=tail)
+        for delta in deltas:
+            if content := delta.get("content"):
+                text = self.feed(content)
+                if not text:
+                    continue
+                yield cast(
+                    "AssistantContentDeltaDict | ToolResultContentDeltaDict",
+                    {**delta, "content": text},
+                )
+            else:
+                yield delta
+
+    def flush(self) -> str:
+        """End the model turn: return held text that never became a tag."""
+        tail = "" if self._inside else self._visible(self._pending)
+        self._reset()
+        return tail
+
+
+# HA's Assist pipeline starts streaming speech only after more than this many
+# characters, or on text followed by a tool call. Read from HA at runtime; this
+# is the value when it cannot be read.
+_DEFAULT_STREAM_RESPONSE_CHARS = 60
+
+# Where HA keeps STREAM_RESPONSE_CHARS, newest first: 2026.10 moved it from
+# assist_pipeline/pipeline.py to assist_pipeline/default_pipeline.py.
+_STREAM_RESPONSE_CHARS_MODULES = (
+    "homeassistant.components.assist_pipeline.default_pipeline",
+    "homeassistant.components.assist_pipeline.pipeline",
+)
+
+
+@functools.cache
+def _stream_response_chars() -> int:
+    """Return the Assist pipeline's streaming threshold, or the known default."""
+    # Imported lazily and defensively: assist_pipeline is an after_dependency
+    # and the constant is internal. If it moves, the default keeps the same
+    # behavior, and if HA's rule changes, padding only fails to start early.
+    for module_name in _STREAM_RESPONSE_CHARS_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        value = getattr(module, "STREAM_RESPONSE_CHARS", None)
+        if isinstance(value, int):
+            return value
+    return _DEFAULT_STREAM_RESPONSE_CHARS
+
+
+def _padded_for_streaming(text: str) -> str:
+    """
+    Pad ``text`` until HA's pipeline starts streaming it, and end its sentence.
+
+    The pipeline begins speaking only past its character threshold or on
+    text followed by a tool call. A short phrase at the start of a turn meets
+    neither, so it would be held until the model's own reply pushed the count
+    over -- after the prefill it was meant to cover (#671). The pipeline
+    counts every character it receives. The blank line matters too: engines
+    that split with sentence-stream (HGA's, ElevenLabs, Wyoming) hold a
+    finished sentence until the next word, and a blank line releases it at
+    once. Speech engines drop the whitespace.
+    """
+    text += "\n\n"
+    return text + " " * max(0, _stream_response_chars() + 1 - len(text))
+
+
+def _reply_entry(content: list[Any], ack_index: int | None) -> Any | None:
+    """
+    Return the turn's last chat_log entry, unless it is only the acknowledgement.
+
+    Recovery and the no-reply guard both judge a turn by its last entry. A
+    turn-start acknowledgement is an AssistantContent written before the model
+    runs, so a turn that then failed, or produced only reasoning, would look
+    answered and the user would hear "One moment." and nothing else.
+    """
+    if not content:
+        return None
+    if ack_index is not None and len(content) == ack_index + 1:
+        return None
+    return content[-1]
+
+
+async def _with_tool_acknowledgement(
+    deltas: AsyncGenerator[AssistantContentDeltaDict | ToolResultContentDeltaDict],
+    acknowledgement: str,
+) -> AsyncIterator[AssistantContentDeltaDict | ToolResultContentDeltaDict]:
+    """
+    Insert ``acknowledgement`` as text just ahead of the turn's first tool call.
+
+    The Assist pipeline starts streaming speech when an assistant message has
+    text and then a tool call, so this is what a voice satellite says while
+    the tools run instead of staying silent (#671). Skipped when the model
+    already wrote text before the call (it says something itself), and used
+    at most once per turn. The text lives only in chat_log, never in the
+    graph's thread, so the model never sees it.
+    """
+    wrote_text = False
+    async with contextlib.aclosing(deltas):
+        async for delta in deltas:
+            if delta.get("role"):
+                wrote_text = False
+            if str(delta.get("content") or "").strip():
+                wrote_text = True
+            if delta.get("tool_calls") and acknowledgement:
+                if not wrote_text:
+                    # The trailing space keeps the answer that follows the
+                    # tools from running into this sentence in the TTS text.
+                    yield AssistantContentDeltaDict(content=f"{acknowledgement} ")
+                acknowledgement = ""
+            yield delta
+
+
+async def _stream_langgraph_to_ha(
+    event_stream: AsyncIterable[Mapping[str, Any]],
+    _agent_id: str,
+) -> AsyncGenerator[AssistantContentDeltaDict | ToolResultContentDeltaDict]:
+    """
+    Transform LangGraph astream_events into HA ChatLog deltas.
+
+    Filters for events from the 'agent' node for tokens/tool-calls and the
+    'action' node for tool results.
+    """
+    # pending_tool_map survives across multiple model turns (iterations) within
+    # this generator to handle partial-result cases where some tools return results
+    # and others don't. It is cleared only after synthetic rejections are yielded
+    # at the end of an 'action' node chain.
+    pending_tool_map: dict[str, ToolCall] = {}
+
+    # unidentified_call_ids tracks ULIDs generated for tool calls that lacked
+    # native IDs. This ensures we can correlate ToolMessages from the 'action'
+    # node back to the correct HA ToolInput entry even when the LLM provider
+    # (e.g. local models) drops the ID.
+    unidentified_call_ids: deque[str] = deque()
+
+    # track the current role to avoid yielding redundant 'role' deltas that
+    # might cause the HA frontend to reset the message content during loops.
+    active_role: str | None = None
+
+    # Tracks whether any text was delivered via on_chat_model_stream in the
+    # current model turn. Providers that don't emit on_chat_model_stream (e.g.
+    # Ollama, Gemini, or any provider with streaming disabled) never fire these
+    # events, so text must be extracted from on_chat_model_end instead.
+    text_streamed_in_turn: bool = False
+    think_filter = _ThinkStreamFilter()
+
+    try:
+        async for event in event_stream:
+            metadata = cast("dict[str, Any]", event.get("metadata", {}))
+            node = metadata.get("langgraph_node") or event.get("name")
+            event_type = event.get("event")
+
+            # Reset the per-turn flag at the start of each model call.
+            if node == "agent" and event_type == "on_chat_model_start":
+                text_streamed_in_turn = False
+
+            for delta in think_filter.filter(
+                event_type,
+                _process_stream_event(event, pending_tool_map, unidentified_call_ids),
+            ):
+                new_role = delta.get("role")
+                if new_role == "assistant" and active_role == "assistant":
+                    continue
+                if new_role:
+                    active_role = new_role
+                if delta.get("content"):
+                    text_streamed_in_turn = True
+                yield delta
+
+            # Non-streaming fallback: providers that don't emit on_chat_model_stream
+            # only produce on_chat_model_start and on_chat_model_end — no chunks
+            # fire, so no text was streamed. For text-only responses, yield the
+            # full content from the end event so the chat_log is populated.
+            if (
+                node == "agent"
+                and event_type == "on_chat_model_end"
+                and not text_streamed_in_turn
+                and (text := _nonstreaming_text(event))
+                and (text := extract_final(text, collapse_whitespace=False))
+            ):
+                text_streamed_in_turn = True
+                yield AssistantContentDeltaDict(content=text)
+    except (GeneratorExit, asyncio.CancelledError):
+        # Stop iteration on cancellation or closure.
+        raise
+    except HomeAssistantError:
+        # Application-level failure (e.g. model timeout) — not a generator bug.
+        # Re-raise so _async_run_astream can handle recovery and user messaging.
+        raise
+    except Exception:
+        _LOGGER.exception("Error in LangGraph streaming transformation generator.")
+        # Persistence guard: flush pending tools as synthetic rejections so HA
+        # doesn't hang waiting for results that will never arrive due to the error.
+        for delta in _get_synthetic_rejections(
+            pending_tool_map, "Tool execution failed mid-stream."
+        ):
+            yield delta
+        raise
+    finally:
+        pending_tool_map.clear()
+        unidentified_call_ids.clear()
+
+
+class MultiLLMAPI:
+    """Wrapper to route tool calls across multiple LLM APIs."""
+
+    def __init__(
+        self, apis: dict[str, llm.APIInstance], routing_map: dict[str, str]
+    ) -> None:
+        """Initialize the wrapper."""
+        self.apis = apis
+        self.routing_map = routing_map
+
+    @property
+    def api_prompt(self) -> str:
+        """Return the concatenated API prompts."""
+        return "\n".join(api.api_prompt for api in self.apis.values() if api.api_prompt)
+
+    @property
+    def custom_serializer(self) -> Callable[[Any], Any] | None:
+        """Return the custom serializer from the first available API."""
+        for api in self.apis.values():
+            if api.custom_serializer:
+                return api.custom_serializer
+        return None
+
+    async def async_call_tool(self, tool_input: llm.ToolInput) -> Any:
+        """Route the tool call to the specific provider using the routing map."""
+        api_id = self.routing_map.get(tool_input.tool_name)
+        if not api_id:
+            # Fallback for unexpected calls
+            for api in self.apis.values():
+                try:
+                    return await api.async_call_tool(tool_input)
+                except (HomeAssistantError, vol.Invalid):
+                    continue
+            msg = f"No routing target for {tool_input.tool_name}"
+            raise HomeAssistantError(msg)
+
+        api = self.apis.get(api_id)
+        if not api:
+            msg = f"API {api_id} not available for {tool_input.tool_name}"
+            raise HomeAssistantError(msg)
+
+        return await api.async_call_tool(tool_input)
+
+
+def _format_tool_keys_for_log(keys: set[str], limit: int = 10) -> str:
+    """
+    Sanitize and truncate tool strings for log output.
+
+    Accepts either composite ``api_id::name`` index keys or bare tool names —
+    the exclusion log line already carries its ``api_id`` as its own field, so
+    it passes names. Nothing here parses the string; it only sanitizes and
+    truncates, so both shapes are equally valid input.
+
+    Tool names can originate from remote MCP servers; strip non-printable
+    characters (log-line forgery) and cap the rendered list (log spam). The
+    per-string half of that is ``sanitize_tool_text``, shared with the options
+    form's exclusion picker so both renderers of this untrusted text agree.
+    """
+    safe = [sanitize_tool_text(key) for key in sorted(keys)[:limit]]
+    rendered = ", ".join(safe)
+    if len(keys) > limit:
+        rendered += f", … (+{len(keys) - limit} more)"
+    return rendered
+
+
+async def _run_tool_index_background(
+    *,
+    index_tasks: list[Any],
+    tool_hashes: dict[str, str],
+    rd: HGAData,
+    hass: HomeAssistant,
+) -> None:
+    """
+    Batch tool indexing into the store and update hashes on success.
+
+    Cancelled by the entry unload before the pool closes, and by an
+    embedding-provider switch; a cancel leaves the index neither ready nor
+    failed, so the next pass indexes again.
+    """
+    try:
+        if index_tasks:
+            await gather_store_puts_in_chunks(index_tasks)
+        rd.tool_content_hashes.update(tool_hashes)
+        rd.tool_index_ready = True
+        _LOGGER.info(
+            "Tool index ready: %d tool(s) indexed/updated.",
+            len(tool_hashes),
+        )
+        # The sensor reports the total indexed count, not the batch size.
+        async_dispatcher_send(
+            hass, SIGNAL_TOOL_INDEX_UPDATED, "ready", len(rd.tool_content_hashes)
+        )
+    except asyncio.CancelledError:
+        _LOGGER.debug("Tool index write cancelled by the entry unload.")
+        raise
+    except Exception:
+        _LOGGER.exception("Global tool index background task failed")
+        rd.tool_index_failed = True
+        async_dispatcher_send(hass, SIGNAL_TOOL_INDEX_UPDATED, "failed", 0)
+    finally:
+        rd.tool_indexing_in_progress = False
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,  # noqa: ARG001
+    config_entry: HGAConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up conversation entities."""
+    agent = HGAConversationEntity(config_entry)
+    async_add_entities([agent])
+
+
+class HGAConversationEntity(conversation.ConversationEntity, AbstractConversationAgent):
+    """Home Generative Assistant conversation agent."""
+
+    _attr_has_entity_name = True
+    _attr_name = None
+    _attr_supports_streaming = True
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        """Initialize the agent."""
+        self.entry = entry
+        self._attr_unique_id = entry.entry_id
+        self._attr_device_info = dr.DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="Lindo St. Angel",
+            model="Home Generative Agent",
+            entry_type=dr.DeviceEntryType.SERVICE,
+        )
+        # CONTROL tells Home Assistant this agent controls entities.  Its only
+        # consumer is assist_pipeline, which uses it to route *state questions*
+        # and media search to the agent instead of answering them locally --
+        # this agent has GetLiveContext, so it gives better answers than the
+        # built-in sentence matcher.
+        #
+        # It is NOT a security control.  The filter it installs is a reject
+        # list, so every other intent -- including HassTurnOn/HassTurnOff on a
+        # lock -- is still handled locally when "Prefer handling commands
+        # locally" is on, whatever this flag says.  Guarding that combination
+        # is the repair issue raised in async_added_to_hass, not this line.
+        #
+        # The default matters because the options flow deletes the key when no
+        # API is selected, so an absent key means "use Assist" to every other
+        # reader; active_llm_api_ids is the single definition of that.
+        if active_llm_api_ids(self.entry.runtime_data.options):
+            self._attr_supported_features = (
+                conversation.ConversationEntityFeature.CONTROL
+            )
+
+        self.tz = dt_util.get_default_time_zone()
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to Home Assistant."""
+        await super().async_added_to_hass()
+        conversation.async_set_agent(self.hass, self.entry, self)
+        # Warn if a pipeline routing to this agent has "Prefer handling
+        # commands locally" on while a critical-action PIN is configured: Home
+        # Assistant then executes lock/unlock itself and this agent's PIN gate
+        # never runs.  Runs here rather than in __init__ because it needs
+        # self.entity_id, which only exists once the entity is registered.
+        #
+        # Re-evaluated on every setup and reload.  Changing the pipeline
+        # setting alone does not reload this entry, so the issue clears on the
+        # next reload or restart rather than instantly -- acceptable for a
+        # warning, and it never reports a conflict that has stopped existing
+        # without the user having touched something.
+        async_check_pin_pipeline_conflict(
+            self.hass,
+            self.entry.entry_id,
+            self.entity_id,
+            pin_enabled=resolve_critical_action_policy(
+                self.entry.runtime_data.options
+            ).enabled,
+        )
+        # Kick off tool indexing at startup so the index is ready before the first
+        # user query. Construct a minimal LLMContext — no live ConversationInput needed
+        # because async_get_apis / tool discovery only uses platform/assistant.
+        startup_llm_context = llm.LLMContext(
+            platform=DOMAIN,
+            context=None,
+            language=self.hass.config.language,
+            assistant=conversation.DOMAIN,
+            device_id=None,
+        )
+        await self._async_index_tools(startup_llm_context, self.entry.runtime_data)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """When entity will be removed from Home Assistant."""
+        conversation.async_unset_agent(self.hass, self.entry)
+        await super().async_will_remove_from_hass()
+
+    @property
+    def supported_languages(self) -> list[str] | Literal["*"]:
+        """Return a list of supported languages."""
+        return MATCH_ALL
+
+    def _async_get_message_history(
+        self, chat_log: conversation.ChatLog
+    ) -> list[HumanMessage | AIMessage]:
+        """
+        Return the chat_log turns that the agent's own thread does not hold yet.
+
+        The LangGraph checkpointer already persists, in full, every turn this
+        entity handled: the thread is keyed on the conversation_id. The only
+        chat_log content worth ingesting is therefore what ANOTHER agent added
+        to the same conversation — Home Assistant's built-in agent answering a
+        quick local command on a shared pipeline, say — because the checkpointer
+        never saw it. Re-ingesting one of our own turns appends a second copy
+        under a fresh message id, and that stale copy then sits directly before
+        the new request, which the model frequently answers instead of the new
+        question (issue #621).
+
+        Turns are grouped from each UserContent. A turn is ours when its final
+        entry is an AssistantContent we wrote: HA's built-in agent stamps its
+        tool_calls and ToolResultContent with the pipeline's agent id (ours, on
+        an HGA pipeline) but speaks the result under its own id, so only the
+        last entry tells the two apart. Every foreign turn BEFORE our latest
+        own turn was ingested when that turn ran, so only the foreign turns
+        after it are new; the walk is stateless and per-conversation by
+        construction. The trailing user-only turn is the current request,
+        which the caller appends. Ingested messages carry an id derived from
+        their chat_log position, so a turn that failed or was cancelled before
+        it could leave our mark only upserts the same messages next time.
+
+        A foreign turn that used tools contributes only the user's message.
+        A tool-using turn writes three entries — tool_calls, ToolResultContent,
+        then the spoken text — and the spoken text alone ("Turned on the
+        light") is indistinguishable from a turn that answered without acting.
+        Ingesting it teaches the model that such a request is answered with
+        prose and no tool call, after which every device command silently
+        becomes a lie (issue #588).
+        """
+        turns: list[list[tuple[int, Any]]] = []
+        for index, m in enumerate(chat_log.content):
+            if isinstance(m, conversation.UserContent):
+                turns.append([(index, m)])
+            elif turns and isinstance(
+                m, conversation.AssistantContent | conversation.ToolResultContent
+            ):
+                turns[-1].append((index, m))
+
+        # The last chat_log entry is the current user request; the caller adds it.
+        if turns and len(turns[-1]) == 1:
+            turns.pop()
+
+        def _is_own(turn: list[tuple[int, Any]]) -> bool:
+            _, last = turn[-1]
+            return (
+                isinstance(last, conversation.AssistantContent)
+                and last.agent_id == self.entity_id
+            )
+
+        def _used_tools(turn: list[tuple[int, Any]]) -> bool:
+            # `is not None` keeps the #588 inclusion predicate exactly: an
+            # empty-but-present tool_calls list still marks the turn.
+            return any(
+                isinstance(entry, conversation.ToolResultContent)
+                or entry.tool_calls is not None
+                for _, entry in turn[1:]
+            )
+
+        last_own = max((i for i, turn in enumerate(turns) if _is_own(turn)), default=-1)
+
+        def _message_id(index: int) -> str:
+            return f"chat_log:{chat_log.conversation_id}:{index}"
+
+        message_history: list[HumanMessage | AIMessage] = []
+        for turn in turns[last_own + 1 :]:
+            index, user = turn[0]
+            message = _convert_content(user, _message_id(index))
+            if _used_tools(turn):
+                # The question alone reads as still unanswered, and a small
+                # model answers every such question again in its next reply,
+                # claiming actions it never took (issue #671; qwen3:8b 6/6).
+                # Saying in the USER message that it was handled, and how,
+                # stops that and keeps "turn it off" resolvable, without the
+                # assistant-prose shape #588 removed (0/6, 6/6 tool calls).
+                message.content = _handled_elsewhere(
+                    str(message.content), _spoken_answer(turn)
+                )
+                message_history.append(message)
+                continue
+            message_history.append(message)
+            message_history.extend(
+                _convert_content(entry, _message_id(index)) for index, entry in turn[1:]
+            )
+
+        return message_history
+
+    async def _async_init_llm_apis(self, llm_context: llm.LLMContext) -> MultiLLMAPI:
+        """Load and validate configured LLM APIs, returning a MultiLLMAPI instance."""
+        hass = self.hass
+        options = self.entry.runtime_data.options
+
+        active_api_ids = active_llm_api_ids(options)
+        # Single enforcement point for the per-tool exclusion list: every
+        # downstream consumer (tool binding, the RAG fallback set, the live-tool
+        # filter, and dispatch through APIInstance.async_call_tool) reads
+        # `.tools` off these instances, so an excluded tool is unreachable
+        # rather than merely unadvertised.
+        excluded = tool_exclusions(options)
+
+        active_apis: dict[str, llm.APIInstance] = {}
+        failed_apis: list[str] = []
+        for api_id in active_api_ids:
+            try:
+                api = await llm.async_get_api(hass, api_id, llm_context)
+            except HomeAssistantError:
+                _LOGGER.warning("Could not load LLM API: %s", api_id)
+                failed_apis.append(api_id)
+                continue
+            api, dropped = filter_excluded_tools(api_id, api, excluded)
+            if dropped:
+                _LOGGER.debug(
+                    "Excluded %d tool(s) of API %s: %s",
+                    len(dropped),
+                    api_id,
+                    _format_tool_keys_for_log(set(dropped)),
+                )
+            active_apis[api_id] = api
+
+        if not active_apis:
+            msg = (
+                "No LLM APIs could be loaded. "
+                f"Failed: {', '.join(failed_apis)}. "
+                f"Configured: {', '.join(active_api_ids)}"
+            )
+            raise HomeAssistantError(msg)
+
+        return MultiLLMAPI(active_apis, {})
+
+    def _network_audit_available(self) -> bool:
+        """
+        Return True when ``audit_home_security`` can answer.
+
+        Sentinel must be running with its network audit on. Gates the tool's
+        dispatch table, its index entry, and the system-prompt instruction
+        together so the model is never told to call a tool it cannot be given.
+        """
+        runtime_data = self.entry.runtime_data
+        return runtime_data.sentinel is not None and bool(
+            runtime_data.options.get(
+                CONF_SENTINEL_NETWORK_ENABLED, RECOMMENDED_SENTINEL_NETWORK_ENABLED
+            )
+        )
+
+    def _async_get_all_tools(
+        self, active_apis: dict[str, llm.APIInstance]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Aggregate HA tools and LangChain-native tools."""
+        options = self.entry.runtime_data.options
+
+        tools = (
+            [
+                format_tool(tool, api.custom_serializer)
+                for api in active_apis.values()
+                for tool in api.tools
+            ]
+            if active_apis
+            else []
+        )
+
+        # Add LangChain-native tools (wired in graph via config).
+        langchain_tools: dict[str, Any] = {
+            "get_and_analyze_camera_image": get_and_analyze_camera_image,
+            "get_camera_last_events": get_camera_last_events,
+            "upsert_memory": upsert_memory,
+            "get_entity_history": get_entity_history,
+            "confirm_sensitive_action": confirm_sensitive_action,
+            "alarm_control": alarm_control,
+            "resolve_entity_ids": resolve_entity_ids,
+            "write_yaml_file": write_yaml_file,
+        }
+        if not options.get(CONF_SCHEMA_FIRST_YAML, False):
+            langchain_tools["add_automation"] = add_automation
+        if self._network_audit_available():
+            langchain_tools["audit_home_security"] = audit_home_security
+        tools.extend(langchain_tools.values())
+
+        return tools, langchain_tools
+
+    def _async_render_system_prompt(
+        self,
+        llm_context: llm.LLMContext,
+        user_name: str | None,
+        llm_api: MultiLLMAPI,
+        *,
+        has_tools: bool,
+    ) -> tuple[str, str]:
+        """
+        Render the system instructions as a (stable, volatile) pair.
+
+        The stable part — instructions, timezone, the PIN and YAML-mode
+        guidance, the tool-subset and tool-error rules, the LLM APIs'
+        exposed-entity context — is identical from one turn to the next and
+        forms the prefix a cloud provider can serve from cache. The volatile
+        part is Home Assistant's date/time line, which changes every second and
+        therefore must come *after* the stable part (issue #617); the graph
+        appends the other per-turn context (memories, summary) behind it.
+        """
+        options = self.entry.runtime_data.options
+
+        pin_enabled = options.get(CONF_CRITICAL_ACTION_PIN_ENABLED, False)
+        critical_prompt = CRITICAL_ACTION_PROMPT if pin_enabled else ""
+        schema_prompt = (
+            SCHEMA_FIRST_YAML_PROMPT
+            if options.get(CONF_SCHEMA_FIRST_YAML, False)
+            else ""
+        )
+        tool_error_prompt = TOOL_CALL_ERROR_SYSTEM_MESSAGE if has_tools else ""
+        tool_subset_prompt = TOOL_SUBSET_PROMPT if has_tools else ""
+        push_service = str(options.get(CONF_NOTIFY_SERVICE) or "").strip()
+        push_prompt = (
+            AUTOMATION_PUSH_SERVICE_PROMPT.format(
+                service=normalize_notify_service(push_service)
+            )
+            if has_tools and push_service
+            else ""
+        )
+        audit_prompt = (
+            NETWORK_AUDIT_TOOL_PROMPT
+            if has_tools and self._network_audit_available()
+            else ""
+        )
+        variables = {
+            "ha_name": self.hass.config.location_name,
+            "user_name": user_name,
+            "llm_context": llm_context,
+        }
+        try:
+            stable = template.Template(
+                (
+                    options.get(CONF_PROMPT, llm.DEFAULT_INSTRUCTIONS_PROMPT)
+                    + f"\nYou are in the {self.tz} timezone."
+                    + critical_prompt
+                    + schema_prompt
+                    + audit_prompt
+                    + tool_subset_prompt
+                    + tool_error_prompt
+                    + push_prompt
+                ),
+                self.hass,
+            ).async_render(variables, parse_result=False)
+            volatile = template.Template(llm.DATE_TIME_PROMPT, self.hass).async_render(
+                variables, parse_result=False
+            )
+        except TemplateError as err:
+            _LOGGER.exception("Error rendering prompt")
+            msg = f"Error rendering prompt: {err}"
+            raise HomeAssistantError(msg) from err
+
+        stable_parts = [stable]
+        if llm_api:
+            stable_parts.append(llm_api.api_prompt)
+
+        return "\n".join(stable_parts), volatile.strip()
+
+    async def _async_run_ainvoke(
+        self,
+        app: Any,
+        input_data: State,
+        config: RunnableConfig,
+        chat_log: conversation.ChatLog,
+        tools: list[dict[str, Any]] | None,
+    ) -> None:
+        """Handle the non-streaming ainvoke path."""
+        options = self.entry.runtime_data.options
+        hass = self.hass
+
+        try:
+            response = await app.ainvoke(input=input_data, config=config)
+        except Exception as err:
+            _LOGGER.exception("LangGraph error during conversation processing.")
+            # Leave our mark on the turn even though it failed. LangGraph
+            # checkpoints the input before the first node runs, so the thread
+            # already holds this request and any foreign history prepended to
+            # it; without an own entry HA drops the whole turn from chat_log as
+            # one with no assistant message, and _async_get_message_history
+            # would see no boundary next turn (issue #621, review finding).
+            chat_log.async_add_assistant_content_without_tools(
+                conversation.AssistantContent(
+                    agent_id=self.entity_id,
+                    content=_streaming_failure_content(err),
+                )
+            )
+            if isinstance(err, HomeAssistantError):
+                msg = f"Something went wrong: {err}"
+                raise HomeAssistantError(msg) from err
+            raise HomeAssistantError(_streaming_failure_content(err)) from err
+
+        trace.async_conversation_trace_append(
+            trace.ConversationTraceEventType.AGENT_DETAIL,
+            {"messages": response["messages"], "tools": tools or None},
+        )
+
+        _LOGGER.debug("====== End of run (ainvoke) ======")
+
+        # Post-process the final LLM text (entity ID resolution, YAML conversion).
+        final_content = response["messages"][-1].content
+        if isinstance(final_content, str):
+            if options.get(CONF_SCHEMA_FIRST_YAML, False):
+                final_content = _maybe_fix_dashboard_entities(final_content, hass)
+                final_content = _convert_schema_json_to_yaml(
+                    final_content, enabled=True
+                )
+            else:
+                final_content = _fix_entity_ids_in_text(final_content, hass)
+            _LOGGER.debug("Final response content: %s", final_content)
+
+        # Backfill chat_log with the messages produced this turn so HA's
+        # "Show Details" panel renders the full tool call / result chain.
+        # ainvoke returns the whole checkpointed thread, not input plus output,
+        # so slicing by the input length would replay earlier turns' replies
+        # into chat_log once the thread holds more than this turn. Net-new is
+        # everything after the current request, found by the id stamped on it.
+        # The request is absent only when this turn's own trim-and-summarize
+        # removed it; the final reply is then all Show Details can carry.
+        thread = response["messages"]
+        request_id = input_data["messages"][-1].id
+        request_index = next(
+            (i for i in range(len(thread) - 1, -1, -1) if thread[i].id == request_id),
+            None,
+        )
+        if request_index is None:
+            _LOGGER.debug("Request was summarized away; backfilling the reply only.")
+            new_messages = thread[-1:]
+        else:
+            new_messages = thread[request_index + 1 :]
+
+        # Guard: async_get_result_from_chat_log requires last entry to be
+        # AssistantContent, which means the last new message must be an
+        # AIMessage.
+        if not new_messages or not isinstance(new_messages[-1], AIMessage):
+            _LOGGER.error(
+                "LangGraph response did not end with AIMessage (got %s). "
+                "Falling back to manual ConversationResult.",
+                type(new_messages[-1]) if new_messages else "empty",
+            )
+            chat_log.async_add_assistant_content_without_tools(
+                conversation.AssistantContent(
+                    agent_id=self.entity_id,
+                    content=final_content if isinstance(final_content, str) else "",
+                )
+            )
+            return
+
+        # Replace the final AIMessage content with the post-processed text so
+        # Show Details reflects the same text the user hears.
+        if isinstance(final_content, str):
+            processed_messages: list[AnyMessage] = [
+                *new_messages[:-1],
+                AIMessage(
+                    content=final_content,
+                    tool_calls=new_messages[-1].tool_calls,
+                ),
+            ]
+        else:
+            processed_messages = list(new_messages)
+
+        _populate_chat_log_from_response(chat_log, self.entity_id, processed_messages)
+
+    async def _async_run_astream(  # noqa: PLR0913, PLR0915
+        self,
+        app: Any,
+        input_data: State,
+        config: RunnableConfig,
+        chat_log: conversation.ChatLog,
+        tools: list[dict[str, Any]] | None,
+        acknowledgement: VoiceAck | None = None,
+        ack_index: int | None = None,
+    ) -> None:
+        """
+        Handle the streaming astream_events path.
+
+        ``ack_index`` is where a turn-start acknowledgement was committed, so
+        recovery does not mistake it for the reply.
+        """
+        hass = self.hass
+        ack = acknowledgement or VoiceAck()
+        tool_ack = ack.text if ack.timing == VOICE_ACK_TIMING_TOOL_CALL else ""
+
+        async def _run_streaming_task() -> None:
+            """Coroutine to drive the delta stream and ensure cancellation."""
+            event_stream = app.astream_events(
+                input=input_data, config=config, version="v2"
+            )
+            async for _ in chat_log.async_add_delta_content_stream(
+                self.entity_id,
+                _with_tool_acknowledgement(
+                    _stream_langgraph_to_ha(event_stream, self.entity_id),
+                    tool_ack,
+                ),
+            ):
+                pass
+
+        # Create a task for the streaming process to enable explicit cancellation
+        # if the client disconnects or the conversation turn is aborted.
+        stream_task = hass.async_create_task(_run_streaming_task())
+        stream_error: Exception | None = None
+        try:
+            await stream_task
+        except HomeAssistantError as err:
+            # Partial content already committed — cannot roll back.
+            # Log and return whatever was committed.
+            stream_error = err
+            _LOGGER.exception(
+                "HomeAssistantError mid-stream; partial content committed."
+            )
+        except asyncio.CancelledError:
+            # Hard kill: cancel the background graph run if the consumer has left.
+            stream_task.cancel()
+            raise
+        except Exception as err:
+            # Any other exception (e.g. GraphRecursionError, tool failure) leaves
+            # the chat_log in a partial state. Log and fall through to recovery.
+            stream_error = err
+            _LOGGER.exception(
+                "Unexpected error in streaming task; attempting state recovery."
+            )
+        finally:
+            if not stream_task.done():
+                stream_task.cancel()
+                # Non-blocking wait to allow generators to close.
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await stream_task
+            _recommit_final_assistant_content(chat_log)
+
+        try:
+            final_state = await app.aget_state(config)
+            trace.async_conversation_trace_append(
+                trace.ConversationTraceEventType.AGENT_DETAIL,
+                {
+                    "messages": final_state.values.get("messages", []),
+                    "tools": tools or None,
+                },
+            )
+
+            # If streaming ended without committing a final AssistantContent
+            # (e.g. the generator raised before the last LLM turn), recover the
+            # final AIMessage from the graph state so the caller can return it.
+            # Also replace partial streaming content when a model fallback
+            # produced a different final response (mid-stream fallback).
+            messages = final_state.values.get("messages", [])
+            recovered_content = (
+                _normalize_ai_content(messages[-1].content)
+                if messages and isinstance(messages[-1], AIMessage)
+                else None
+            )
+            last_chat_content = _reply_entry(chat_log.content, ack_index)
+            # A turn that ended on a tool call has no spoken reply yet (the
+            # tool-loop guard's give-up is one): the recovered text must be
+            # added and spoken, not swapped in for the tool call -- which
+            # would also drop the call and, once a turn-start
+            # acknowledgement has started the speech stream, never be heard.
+            reply = (
+                last_chat_content
+                if isinstance(last_chat_content, conversation.AssistantContent)
+                and not last_chat_content.tool_calls
+                else None
+            )
+            has_reply = reply is not None
+            replace_partial = (
+                reply is not None
+                and recovered_content is not None
+                and reply.content != recovered_content
+            )
+            add_recovered = not has_reply and recovered_content is not None
+            if replace_partial:
+                chat_log.content.pop()
+                chat_log.async_add_assistant_content_without_tools(
+                    conversation.AssistantContent(
+                        agent_id=self.entity_id,
+                        content=recovered_content,
+                    )
+                )
+                _LOGGER.debug(
+                    "Replaced partial streaming content with fallback "
+                    "response from graph state."
+                )
+            elif add_recovered and recovered_content is not None:
+                await self._async_add_spoken_reply(chat_log, recovered_content)
+                _LOGGER.debug(
+                    "Recovered final AssistantContent from graph state after "
+                    "streaming failure."
+                )
+            elif not has_reply:
+                # Graph state has no usable AI response (e.g. model timed out
+                # before generating a reply). Emit a user-visible error message
+                # so the chat UI shows something instead of a blank bubble.
+                await self._async_add_spoken_reply(
+                    chat_log, _streaming_failure_content(stream_error)
+                )
+                _LOGGER.debug(
+                    "Added fallback AssistantContent after streaming failure "
+                    "with no recoverable graph state."
+                )
+        except ValueError:
+            # Expected when no checkpointer is configured (e.g. tests)
+            _LOGGER.debug("aget_state unavailable; skipping trace for streaming turn.")
+        except Exception:
+            _LOGGER.exception("Failed to retrieve final state for tracing.")
+
+        await self._async_ensure_reply_after_ack(chat_log, ack_index, stream_error)
+
+    async def _async_add_spoken_reply(
+        self, chat_log: conversation.ChatLog, text: str
+    ) -> None:
+        """
+        Add a reply as a delta, so a pipeline already streaming speech says it.
+
+        Once the Assist pipeline has started streaming a turn's speech (a
+        turn-start acknowledgement does that at once), it speaks only what
+        arrives as chat_log deltas and skips the final result. A reply added
+        directly would be shown but never heard.
+        """
+
+        async def _reply() -> AsyncIterator[AssistantContentDeltaDict]:
+            yield AssistantContentDeltaDict(role="assistant", content=text)
+
+        async for _ in chat_log.async_add_delta_content_stream(
+            self.entity_id, _reply()
+        ):
+            pass
+        _recommit_final_assistant_content(chat_log)
+
+    async def _async_speak_turn_start_ack(
+        self, chat_log: conversation.ChatLog, ack: VoiceAck
+    ) -> int | None:
+        """
+        Speak a turn-start acknowledgement now; return its chat_log index.
+
+        Called before tool indexing and model setup, so it covers those as
+        well as the model's prefill (#671). None when there was none or it was
+        not committed.
+        """
+        if not ack.text or ack.timing != VOICE_ACK_TIMING_TURN_START:
+            return None
+        index = len(chat_log.content)
+        await self._async_add_spoken_reply(chat_log, _padded_for_streaming(ack.text))
+        committed = len(chat_log.content) == index + 1 and isinstance(
+            chat_log.content[index], conversation.AssistantContent
+        )
+        return index if committed else None
+
+    async def _async_ensure_reply_after_ack(
+        self,
+        chat_log: conversation.ChatLog,
+        ack_index: int | None,
+        stream_error: Exception | None,
+    ) -> None:
+        """
+        Add the failure reply when a turn-start acknowledgement is all there is.
+
+        The caller's no-reply guard reads the last entry, which a lone
+        acknowledgement would satisfy; recovery covers the usual paths, this
+        covers recovery being skipped (graph state unavailable).
+        """
+        if ack_index is None or _reply_entry(chat_log.content, ack_index) is not None:
+            return
+        await self._async_add_spoken_reply(
+            chat_log, _streaming_failure_content(stream_error)
+        )
+
+    async def _async_handle_message(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
+    ) -> conversation.ConversationResult:
+        """Process the user input."""
+        runtime_data = self.entry.runtime_data
+        intent_response = intent.IntentResponse(language=user_input.language)
+
+        llm_context = llm.LLMContext(
+            platform=DOMAIN,
+            context=user_input.context,
+            language=user_input.language,
+            assistant=conversation.DOMAIN,
+            device_id=user_input.device_id,
+        )
+
+        message_history = self._async_get_message_history(chat_log)
+
+        conversation_id = (
+            ulid.ulid_now()
+            if chat_log.conversation_id is None
+            else chat_log.conversation_id
+        )
+
+        deployment = runtime_data.model_deployments.get("chat", "edge")
+        async with local_chat_session(deployment, category="chat"):
+            return await self._async_handle_message_active(
+                user_input,
+                chat_log,
+                intent_response,
+                llm_context,
+                message_history,
+                conversation_id,
+            )
+
+    async def _async_handle_message_active(  # noqa: PLR0913
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
+        intent_response: intent.IntentResponse,
+        llm_context: llm.LLMContext,
+        message_history: list[Any],
+        conversation_id: str,
+    ) -> conversation.ConversationResult:
+        """Process user input while local chat activity is already marked."""
+        hass = self.hass
+        runtime_data = self.entry.runtime_data
+        options = runtime_data.options
+
+        # Multi-API initialization
+        try:
+            llm_api = await self._async_init_llm_apis(llm_context)
+        except HomeAssistantError as err:
+            intent_response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                str(err),
+            )
+            return conversation.ConversationResult(
+                response=intent_response, conversation_id=conversation_id
+            )
+
+        if not options.get(CONF_SCHEMA_FIRST_YAML, False) and _is_dashboard_request(
+            user_input.text
+        ):
+            intent_response.async_set_speech(
+                "Please enable 'Schema-first JSON for YAML requests' in "
+                "HGA's configuration and try again"
+            )
+            return conversation.ConversationResult(
+                response=intent_response, conversation_id=conversation_id
+            )
+
+        # Silently drop phantom STT transcriptions of silence/background noise.
+        noise_patterns = _get_stt_hallucination_patterns(options)
+        exact_noise_patterns = _get_stt_hallucination_exact_patterns(options)
+        if _is_stt_hallucination(user_input.text, noise_patterns, exact_noise_patterns):
+            _LOGGER.debug("Ignoring hallucinated STT input: %s", user_input.text)
+            return conversation.ConversationResult(
+                response=intent_response, conversation_id=conversation_id
+            )
+
+        # The schema-first path adds its whole reply at once, which a pipeline
+        # already streaming (started by the acknowledgement) would never speak.
+        ack = _voice_tool_acknowledgement(options, user_input)
+        ack_index = (
+            None
+            if options.get(CONF_SCHEMA_FIRST_YAML, False)
+            else await self._async_speak_turn_start_ack(chat_log, ack)
+        )
+
+        # --- Global Tool Indexing ---
+        # Passing llm_api enables the per-turn top-up: live tools missing from
+        # the index (device-gated Assist tools) are indexed inline before
+        # retrieval runs for this turn. Runs after the dashboard/noise early
+        # returns so phantom STT turns never pay for index writes.
+        await self._async_index_tools(llm_context, runtime_data, llm_api)
+
+        tools, langchain_tools = self._async_get_all_tools(llm_api.apis)
+
+        # Resolve user name (None means automation)
+        user_name = None
+        # A voice satellite or an automation carries no user: not an admin.
+        requester_is_admin = False
+        if (
+            user_input.context
+            and user_input.context.user_id
+            and (user := await hass.auth.async_get_user(user_input.context.user_id))
+        ):
+            user_name = user.name
+            requester_is_admin = bool(user.is_admin)
+
+        prompt, volatile_prompt = self._async_render_system_prompt(
+            llm_context, user_name, llm_api, has_tools=bool(tools)
+        )
+
+        # Use the already-configured chat model from __init__.py.
+        base_llm = runtime_data.chat_model
+        if not hasattr(base_llm, "bind_tools"):
+            _LOGGER.error("Error during conversation processing.")
+            intent_response = intent.IntentResponse(language=user_input.language)
+            has_provider = any(
+                subentry.subentry_type == SUBENTRY_TYPE_MODEL_PROVIDER
+                for subentry in self.entry.subentries.values()
+            )
+            if not has_provider:
+                msg = (
+                    "This integration isn't configured with a model provider. "
+                    "Go to Settings -> Devices & Services -> Home Generative Agent -> "
+                    "Add Model Provider."
+                )
+            else:
+                msg = (
+                    "This model doesn't support tool calling. "
+                    "Choose a compatible model or provider."
+                )
+            intent_response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                msg,
+            )
+            return conversation.ConversationResult(
+                response=intent_response, conversation_id=conversation_id
+            )
+
+        # A user name of None indicates an automation is being run.
+        clean_user_name = "robot" if user_name is None else user_name
+        # Remove special characters since memory namespace labels cannot contain them.
+        clean_user_name = clean_user_name.translate(
+            str.maketrans("", "", string.punctuation)
+        )
+
+        app_config: RunnableConfig = {
+            "configurable": {
+                "thread_id": conversation_id,
+                "user_id": clean_user_name,
+                "requester_is_admin": requester_is_admin,
+                "chat_model": base_llm,
+                "chat_model_options": runtime_data.chat_model_options,
+                "prompt": prompt,
+                "prompt_volatile": volatile_prompt,
+                "options": options,
+                "vlm_model": runtime_data.vision_model,
+                "summarization_model": runtime_data.summarization_model,
+                "langchain_tools": langchain_tools,
+                "ha_llm_api": llm_api or None,
+                "hass": hass,
+                "pending_actions": runtime_data.pending_actions,
+                "hga_runtime_data": runtime_data,
+                "tool_index_ready": runtime_data.tool_index_ready,
+                "tool_indexing_in_progress": runtime_data.tool_indexing_in_progress,
+                "tool_index_failed": runtime_data.tool_index_failed,
+            },
+            "recursion_limit": 20,
+        }
+
+        # Compile graph into a LangChain Runnable.
+        app = workflow.compile(
+            store=self.entry.runtime_data.store,
+            checkpointer=self.entry.runtime_data.checkpointer,
+            debug=LANGCHAIN_LOGGING_LEVEL == "debug",
+        )
+
+        # Agent input: message history + current user request. The request
+        # carries an explicit id so the non-streaming path can find it in the
+        # returned thread (add_messages keeps a caller-supplied id).
+        messages = [
+            *message_history,
+            HumanMessage(content=user_input.text, id=ulid.ulid_now()),
+        ]
+        app_input: State = {
+            "messages": messages,
+            "summary": "",
+            "chat_model_usage_metadata": {},
+            "messages_to_remove": [],
+            "selected_tools": [],
+            "tool_routing_map": {},
+            "turn_memories": {},
+        }
+
+        # Interact with agent app.
+        if options.get(CONF_SCHEMA_FIRST_YAML, False):
+            try:
+                await self._async_run_ainvoke(
+                    app, app_input, app_config, chat_log, tools
+                )
+            except HomeAssistantError as err:
+                intent_response.async_set_error(
+                    intent.IntentResponseErrorCode.UNKNOWN,
+                    str(err),
+                )
+                return conversation.ConversationResult(
+                    response=intent_response, conversation_id=conversation_id
+                )
+        else:
+            await self._async_run_astream(
+                app,
+                app_input,
+                app_config,
+                chat_log,
+                tools,
+                ack,
+                ack_index,
+            )
+
+        # Guard against a turn that committed no reply (e.g. a HomeAssistantError
+        # swallowed mid-stream and a state recovery that raised too). Earlier
+        # turns' replies do not count: async_get_result_from_chat_log reads the
+        # LAST entry, and HA drops the whole turn from chat_log unless we leave
+        # our mark on it (see _async_get_message_history).
+        if not chat_log.content or not isinstance(
+            chat_log.content[-1], conversation.AssistantContent
+        ):
+            await self._async_add_spoken_reply(
+                chat_log, "I'm sorry, I was unable to respond. Please try again."
+            )
+
+        return conversation.async_get_result_from_chat_log(user_input, chat_log)
+
+    async def _async_discover_provider_tools(  # noqa: PLR0913
+        self,
+        llm_context: llm.LLMContext,
+        runtime_data: HGAData,
+        all_available_api_ids: list[str],
+        index_tasks: list[Any],
+        new_hashes: dict[str, str],
+        seen_keys: set[str],
+        discovered_api_ids: set[str],
+    ) -> None:
+        """Discover and prepare provider tools for indexing."""
+        for api_id in all_available_api_ids:
+            try:
+                # Isolate each provider discovery
+                api_instance = await llm.async_get_api(self.hass, api_id, llm_context)
+                self._queue_api_instance_tools(
+                    api_id,
+                    api_instance,
+                    runtime_data,
+                    index_tasks,
+                    new_hashes,
+                    seen_keys,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Failed to index tool provider %s: %s", api_id, err)
+                continue
+            # Only an api that enumerated cleanly may have its rows evicted: a
+            # discovery that raised knows nothing about which tools still exist.
+            discovered_api_ids.add(api_id)
+
+    def _queue_api_instance_tools(  # noqa: PLR0913
+        self,
+        api_id: str,
+        api_instance: llm.APIInstance,
+        runtime_data: HGAData,
+        index_tasks: list[Any],
+        new_hashes: dict[str, str],
+        seen_keys: set[str] | None = None,
+    ) -> None:
+        """
+        Queue index writes for an API instance's new or changed tools.
+
+        Failures are isolated per tool: one unserializable schema must not
+        starve every later tool of its API (which would reproduce the very
+        missing-tool bug the top-up exists to fix, and re-fire the top-up
+        every turn for the healthy neighbors too).
+        """
+        for tool in api_instance.tools:
+            # Recorded before the schema conversion below, which can raise: a
+            # tool whose schema fails to serialize is still LIVE, and the
+            # eviction sweep must not read its absence here as "gone".
+            if seen_keys is not None:
+                seen_keys.add(tool_index_key(api_id, tool.name))
+            try:
+                # Composite hash: api_id + name + description + schema
+                schema_json = json.dumps(
+                    safe_convert(
+                        tool.parameters,
+                        custom_serializer=api_instance.custom_serializer,
+                    ),
+                    sort_keys=True,
+                )
+                is_actuation = is_actuation_tool(tool.name)
+                raw_content = (
+                    f"provider:{api_id}\nname:{tool.name}\n"
+                    f"description:{tool.description}\nparameters:{schema_json}\n"
+                    f"actuation:{is_actuation}"
+                )
+                content_hash = hashlib.sha256(raw_content.encode()).hexdigest()
+
+                tool_key = tool_index_key(api_id, tool.name)
+                if runtime_data.tool_content_hashes.get(tool_key) != content_hash:
+                    # Prep for embedding
+                    embedding_text = strip_for_embedding(
+                        f"{tool.name}: {tool.description}"
+                    )
+                    index_tasks.append(
+                        runtime_data.store.aput(
+                            ("system", "tools"),
+                            key=tool_key,
+                            value={
+                                "content": truncate_for_embedding_index(embedding_text),
+                                "name": tool.name,
+                                "api_id": api_id,
+                                "description": tool.description,
+                                "parameters": schema_json,
+                                "is_actuation": is_actuation,
+                            },
+                        )
+                    )
+                    new_hashes[tool_key] = content_hash
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Failed to queue tool %s of API %s for indexing: %s",
+                    _format_tool_keys_for_log({str(getattr(tool, "name", "?"))}),
+                    api_id,
+                    err,
+                )
+
+    async def _async_discover_local_tools(
+        self,
+        runtime_data: HGAData,
+        index_tasks: list[Any],
+        new_hashes: dict[str, str],
+        seen_keys: set[str],
+    ) -> None:
+        """Discover and prepare local tools for indexing."""
+        local_tools = {
+            "get_and_analyze_camera_image": get_and_analyze_camera_image,
+            "get_camera_last_events": get_camera_last_events,
+            "upsert_memory": upsert_memory,
+            "get_entity_history": get_entity_history,
+            "confirm_sensitive_action": confirm_sensitive_action,
+            "alarm_control": alarm_control,
+            "resolve_entity_ids": resolve_entity_ids,
+            "write_yaml_file": write_yaml_file,
+        }
+        # Mirror the dispatch-time guard: add_automation is excluded when
+        # schema_first_yaml=True so the index and langchain_tools stay in sync.
+        if not self.entry.options.get(CONF_SCHEMA_FIRST_YAML, False):
+            local_tools["add_automation"] = add_automation
+        if self._network_audit_available():
+            local_tools["audit_home_security"] = audit_home_security
+        for t_name, t_func in local_tools.items():
+            # Recorded up front for the same reason as the provider loop: a
+            # tool that fails to serialize is still live, not evictable.
+            seen_keys.add(tool_index_key("hga_local", t_name))
+            try:
+                # tool_call_schema excludes InjectedToolArg / InjectedStore.
+                params = langchain_tool_parameters_json(t_func)
+
+                is_actuation = is_actuation_tool(t_name)
+                # LangChain tools have .name, .description,
+                # and .args_schema (or similar)
+                # We'll use a simplified schema extraction for indexing
+                raw_content = (
+                    f"provider:hga_local\nname:{t_name}\n"
+                    f"description:{t_func.description}\nparameters:{params}\n"
+                    f"actuation:{is_actuation}"
+                )
+                content_hash = hashlib.sha256(raw_content.encode()).hexdigest()
+                tool_key = tool_index_key("hga_local", t_name)
+                if runtime_data.tool_content_hashes.get(tool_key) != content_hash:
+                    embedding_text = strip_for_embedding(
+                        f"{t_name}: {t_func.description}"
+                    )
+
+                    index_tasks.append(
+                        runtime_data.store.aput(
+                            ("system", "tools"),
+                            key=tool_key,
+                            value={
+                                "content": truncate_for_embedding_index(embedding_text),
+                                "name": t_name,
+                                "api_id": "hga_local",
+                                "description": t_func.description,
+                                "parameters": params,
+                                "is_actuation": is_actuation,
+                            },
+                        )
+                    )
+                    new_hashes[tool_key] = content_hash
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Failed to index local tool %s: %s", t_name, err)
+
+    async def _async_index_tools(  # noqa: PLR0912, PLR0915
+        self,
+        llm_context: llm.LLMContext,
+        runtime_data: HGAData,
+        llm_api: MultiLLMAPI | None = None,
+    ) -> None:
+        """
+        Discover and index tools in the vector store.
+
+        Called at startup (async_added_to_hass) so the index is ready before the
+        first user query. Also called per-turn with the loaded ``llm_api``: once
+        the index is ready, a set comparison of live tool keys against the cached
+        hashes detects tools that exist this turn but were never indexed —
+        device-gated Assist tools (e.g. the timer intents, exposed only when a
+        timer-capable satellite is the requester) can never appear in the
+        device-less startup pass. Any missing key triggers an inline top-up
+        sourced from the already-loaded API instances, so the new tools are
+        retrievable on the triggering turn.
+        """
+        if runtime_data.tool_indexing_in_progress or runtime_data.tool_index_failed:
+            _LOGGER.debug(
+                "Tool index guard skipped indexing: ready=%s indexing=%s "
+                "failed=%s cached_hashes=%d.",
+                runtime_data.tool_index_ready,
+                runtime_data.tool_indexing_in_progress,
+                runtime_data.tool_index_failed,
+                len(runtime_data.tool_content_hashes),
+            )
+            return
+        inline_delta = False
+        missing_keys: set[str] = set()
+        if runtime_data.tool_index_ready:
+            if llm_api is None:
+                return
+            live_keys = {
+                tool_index_key(api_id, tool.name)
+                for api_id, api in llm_api.apis.items()
+                for tool in api.tools
+            }
+            missing_keys = live_keys - runtime_data.tool_content_hashes.keys()
+            if not missing_keys:
+                return
+            inline_delta = True
+            _LOGGER.info(
+                "Tool index top-up: %d live tool(s) not in index: %s.",
+                len(missing_keys),
+                _format_tool_keys_for_log(missing_keys),
+            )
+        runtime_data.tool_indexing_in_progress = True
+        async_dispatcher_send(self.hass, SIGNAL_TOOL_INDEX_UPDATED, "indexing", 0)
+
+        index_tasks: list[Any] = []
+        new_hashes: dict[str, str] = {}
+        seen_keys: set[str] = set()
+        discovered_api_ids: set[str] = set()
+        handed_off = False
+        try:
+            if inline_delta and llm_api is not None:
+                # Source definitions from the APIs already loaded for this turn:
+                # the tools are in hand, so no second llm.async_get_api round
+                # trip (whose failure would leave the key unindexed and re-fire
+                # discovery every turn). Local tools cannot be missing here —
+                # they are not device-gated and were indexed at startup.
+                for api_id, api_instance in llm_api.apis.items():
+                    try:
+                        self._queue_api_instance_tools(
+                            api_id, api_instance, runtime_data, index_tasks, new_hashes
+                        )
+                    except Exception as err:  # noqa: BLE001
+                        _LOGGER.warning(
+                            "Failed to queue tools of loaded API %s: %s", api_id, err
+                        )
+            else:
+                all_available_api_ids = [
+                    api.id for api in llm.async_get_apis(self.hass)
+                ]
+                # 1. Index Providers
+                await self._async_discover_provider_tools(
+                    llm_context,
+                    runtime_data,
+                    all_available_api_ids,
+                    index_tasks,
+                    new_hashes,
+                    seen_keys,
+                    discovered_api_ids,
+                )
+                # 2. Index Local LangChain Tools (provider: hga_local)
+                await self._async_discover_local_tools(
+                    runtime_data, index_tasks, new_hashes, seen_keys
+                )
+                discovered_api_ids.add("hga_local")
+                # 3. Drop rows for tools that no longer exist.
+                await self._async_evict_stale_tool_index_rows(
+                    runtime_data, seen_keys, discovered_api_ids
+                )
+
+            if index_tasks:
+                _LOGGER.info(
+                    "Tool index starting: %d tool(s) queued for indexing/update.",
+                    len(new_hashes),
+                )
+                if inline_delta:
+                    # Await the write so this very turn (the one whose device
+                    # exposed the new tools) retrieves from the updated index.
+                    await self._async_write_tool_index_delta(
+                        runtime_data, index_tasks, new_hashes
+                    )
+                elif runtime_data.pool is not None and runtime_data.pool.closed:
+                    # The entry unloaded while this turn was in discovery:
+                    # the write would only die on the closed pool.
+                    _LOGGER.debug("Tool index write skipped: the entry unloaded.")
+                    runtime_data.tool_indexing_in_progress = False
+                else:
+                    runtime_data.tool_index_task = self.hass.async_create_task(
+                        _run_tool_index_background(
+                            index_tasks=index_tasks,
+                            tool_hashes=new_hashes,
+                            rd=runtime_data,
+                            hass=self.hass,
+                        ),
+                        name="hga_tool_index",
+                    )
+                    handed_off = True
+            elif inline_delta:
+                # The missing live keys produced no writes (e.g. a tool whose
+                # schema fails to serialize). The index stays valid but
+                # incomplete; the next turn recomputes the same keys and
+                # retries, so warn rather than claim success.
+                _LOGGER.warning(
+                    "Tool index top-up queued no writes; still missing: %s.",
+                    _format_tool_keys_for_log(missing_keys),
+                )
+                async_dispatcher_send(
+                    self.hass,
+                    SIGNAL_TOOL_INDEX_UPDATED,
+                    "ready",
+                    len(runtime_data.tool_content_hashes),
+                )
+            else:
+                runtime_data.tool_index_ready = True
+                _LOGGER.info(
+                    "Tool index ready: no tool changes detected (%d cached hash(es)).",
+                    len(runtime_data.tool_content_hashes),
+                )
+                async_dispatcher_send(
+                    self.hass,
+                    SIGNAL_TOOL_INDEX_UPDATED,
+                    "ready",
+                    len(runtime_data.tool_content_hashes),
+                )
+        finally:
+            if not handed_off:
+                # Reset here — not in the write helpers — so a cancelled turn
+                # (assist pipelines are routinely cancelled mid-await) cannot
+                # latch the in-progress guard and block all future indexing.
+                runtime_data.tool_indexing_in_progress = False
+                # Close never-awaited store.aput coroutines from interrupted
+                # paths; close() on a consumed coroutine is a no-op.
+                for task in index_tasks:
+                    close_fn = getattr(task, "close", None)
+                    if callable(close_fn):
+                        with contextlib.suppress(Exception):
+                            close_fn()
+
+    async def _async_evict_stale_tool_index_rows(
+        self,
+        runtime_data: HGAData,
+        seen_keys: set[str],
+        discovered_api_ids: set[str],
+    ) -> None:
+        """
+        Delete index rows for tools that no longer exist.
+
+        The indexer only ever ``aput()``s, so a renamed or removed tool leaves
+        its row behind forever. Those rows were assumed inert — the bind-time
+        live filter excludes them — but inert is not harmless: vector search
+        ranks and truncates *before* that filter runs, so a dead row consumes a
+        retrieval slot and then vanishes. HA 2026.9 renamed every built-in tool
+        to ``<domain>__<Name>``, which left a complete shadow copy of the old
+        index behind; the old rows embed almost identically to their live twins
+        and score slightly *higher* (same text, one prefix shorter), so they
+        swept the top of every search and the model was handed a near-empty
+        tool list.
+
+        Scoped to ``discovered_api_ids`` so an API that failed to enumerate
+        never loses its tools, and run only on the full discovery pass — the
+        per-turn delta sees one device's view of the world, not all of it.
+        Device-gated tools (timer intents, exposed only to a timer-capable
+        satellite) are absent from this device-less pass and are evicted here,
+        then re-added by the next such device's top-up; that round trip already
+        happens on every restart, so it costs nothing new.
+        """
+        try:
+            existing: list[Any] = []
+            offset = 0
+            while True:
+                page = await runtime_data.store.asearch(
+                    ("system", "tools"),
+                    limit=_TOOL_INDEX_PAGE_SIZE,
+                    offset=offset,
+                )
+                existing.extend(page)
+                if len(page) < _TOOL_INDEX_PAGE_SIZE:
+                    break
+                offset += _TOOL_INDEX_PAGE_SIZE
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "Could not list the tool index to evict stale rows: %s", err
+            )
+            return
+
+        stale = [
+            item.key
+            for item in existing
+            if item.key not in seen_keys
+            and str(item.value.get("api_id", "")) in discovered_api_ids
+        ]
+        if not stale:
+            return
+
+        evicted = 0
+        for key in stale:
+            try:
+                await runtime_data.store.adelete(("system", "tools"), key)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Failed to evict stale tool index row %s: %s", key, err)
+                continue
+            runtime_data.tool_content_hashes.pop(key, None)
+            evicted += 1
+        _LOGGER.info(
+            "Tool index eviction: removed %d stale row(s) of %d: %s.",
+            evicted,
+            len(stale),
+            _format_tool_keys_for_log(set(stale)),
+        )
+
+    async def _async_write_tool_index_delta(
+        self,
+        runtime_data: HGAData,
+        index_tasks: list[Any],
+        new_hashes: dict[str, str],
+    ) -> None:
+        """
+        Write a per-turn index delta inline and record its hashes.
+
+        Unlike the startup path, a failure here must not latch
+        ``tool_index_failed``: the existing index is still valid and keeps
+        serving retrieval (``tool_index_ready`` remains True) — only the delta
+        is missing. The next turn recomputes the same missing keys and retries
+        cheaply from the already-loaded API instances, so a transient store or
+        embedding-provider blip recovers on its own.
+        """
+        try:
+            # Time budget: this write sits on the user-facing turn's critical
+            # path; a hung embedding provider must not stall the voice turn.
+            async with asyncio.timeout(_TOOL_INDEX_DELTA_TIMEOUT_S):
+                await gather_store_puts_in_chunks(index_tasks)
+        except Exception:
+            _LOGGER.exception("Tool index top-up write failed; retrying next turn")
+            # Terminal sensor signal: retrieval still serves the pre-delta
+            # index, so the state is "ready", not a stuck "indexing".
+            async_dispatcher_send(
+                self.hass,
+                SIGNAL_TOOL_INDEX_UPDATED,
+                "ready",
+                len(runtime_data.tool_content_hashes),
+            )
+            return
+        runtime_data.tool_content_hashes.update(new_hashes)
+        _LOGGER.info(
+            "Tool index top-up complete: %d tool(s) indexed (%d total).",
+            len(new_hashes),
+            len(runtime_data.tool_content_hashes),
+        )
+        async_dispatcher_send(
+            self.hass,
+            SIGNAL_TOOL_INDEX_UPDATED,
+            "ready",
+            len(runtime_data.tool_content_hashes),
+        )
+
+    async def _async_entry_update_listener(
+        self, hass: HomeAssistant, entry: ConfigEntry
+    ) -> None:
+        """Handle options update."""
+        # Reload as we update device info + entity name + supported features.
+        await hass.config_entries.async_reload(entry.entry_id)

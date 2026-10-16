@@ -1,0 +1,1999 @@
+"""
+Sentinel notification orchestrator — Issue #261.
+
+Provides ``SentinelNotifier``, which wraps the notification dispatch layer
+with:
+
+* Action buttons: primary action (Ask Agent / Execute), False Alarm, Snooze
+  24 h, Snooze Always.
+* ``always`` confirmation guard: a permanent snooze fires a confirmation
+  notification before writing to ``SuppressionState``; no HA service is
+  called until the user explicitly confirms.
+* Per-area routing: when ``CONF_SENTINEL_AREA_NOTIFY_MAP`` maps an area name
+  to a notify service, findings whose triggering entities belong to that area
+  are routed to that service instead of the global one.
+* ``is_sensitive`` redaction: recognised-person names in the explanation text
+  are replaced with ``"a recognised person"`` before the message is sent.
+
+Non-snooze action callbacks (``execute``, ``handoff``, ``dismiss``) are
+delegated to ``ActionHandler``.  The ``dismiss`` action sets
+``user_response.false_positive = True`` in the audit record.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import re
+import unicodedata
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any
+
+from homeassistant.core import callback
+from homeassistant.helpers.event import async_call_later, async_track_time_change
+from homeassistant.util import dt as dt_util
+
+from custom_components.home_generative_agent.const import (
+    ACT_SNOOZE_24H,
+    ACT_SNOOZE_ALWAYS,
+    ACT_SNOOZE_CANCEL,
+    ACT_SNOOZE_CONFIRM,
+    ACT_TRUST,
+    ACTION_PREFIX,
+    CONF_NOTIFY_SERVICE,
+    CONF_SENTINEL_AREA_NOTIFY_MAP,
+    CONF_SENTINEL_DAILY_DIGEST_ENABLED,
+    CONF_SENTINEL_DAILY_DIGEST_TIME,
+    CONF_SENTINEL_RESPONSE_LANGUAGE,
+    RECOMMENDED_SENTINEL_DAILY_DIGEST_ENABLED,
+    RECOMMENDED_SENTINEL_DAILY_DIGEST_TIME,
+    SNOOZE_24H,
+    SNOOZE_PERMANENT,
+)
+from custom_components.home_generative_agent.core.utils import extract_final
+from custom_components.home_generative_agent.sentinel.models import (
+    SEVERITY_RANK,
+    enrolled_people,
+    trust_device_ids,
+)
+from custom_components.home_generative_agent.sentinel.notifier_messages import (
+    notif_msg,
+)
+from custom_components.home_generative_agent.sentinel.power_units import (
+    is_energy_unit,
+    is_power_unit,
+)
+from custom_components.home_generative_agent.sentinel.proposal_templates import (
+    NETWORK_TEMPLATES,
+)
+from custom_components.home_generative_agent.sentinel.rules.network_common import (
+    NETWORK_RULE_TYPES,
+)
+from custom_components.home_generative_agent.sentinel.suppression import (
+    SUPPRESSION_REASON_NOT_SUPPRESSED,
+    record_cooldown_feedback,
+    register_snooze,
+)
+from custom_components.home_generative_agent.snapshot.network import sanitize_label
+
+if TYPE_CHECKING:
+    import asyncio
+    from collections.abc import Callable, Mapping, Sequence
+
+    from homeassistant.core import Event, HomeAssistant
+
+    from custom_components.home_generative_agent.audit.store import AuditStore
+    from custom_components.home_generative_agent.notify.actions import ActionHandler
+    from custom_components.home_generative_agent.sentinel.models import AnomalyFinding
+    from custom_components.home_generative_agent.snapshot.schema import (
+        FullStateSnapshot,
+    )
+
+    from .suppression import SuppressionManager
+
+LOGGER = logging.getLogger(__name__)
+
+MAX_MOBILE_MESSAGE_CHARS = 220
+# Ceiling for the burst-batch digest body (header plus per-finding lines).
+MAX_BATCH_BODY_CHARS = 1200
+# Ceiling for the "Also: ..." line a grouped push adds under its body. It has
+# its own budget so the body's figures and call to action are never cut.
+MAX_ALSO_LINE_CHARS = 120
+# The also line keeps room for a two-digit "+N more" count; a larger count
+# is shown as this.
+_ALSO_MORE_RESERVED_COUNT = 99
+_AUDIT_FETCH_LIMIT = 1000
+
+_SEVERITY_INTERRUPT_LEVEL: dict[str, str] = {
+    "high": "time-sensitive",
+    "medium": "active",
+    "low": "passive",
+}
+# Severity title strings now live in notifier_messages.py (localized).
+# Localized severity words (digest summary, persistent fallback). Unknown
+# severities must NOT be routed through notif_msg as keys: stored audit data
+# could collide with an unrelated message id and surface its copy.
+_SEVERITY_WORD_KEYS: dict[str, str] = {
+    "high": "severity_word_high",
+    "medium": "severity_word_medium",
+    "low": "severity_word_low",
+}
+
+# Notification batching / rate-limiting.
+_BATCH_RATE_LIMIT = 3
+_BATCH_RATE_WINDOW_SECS = 60
+_BATCH_FLUSH_DELAY_SECS = 30
+
+# Per-finding cooldown: suppress repeated notifications for the same anomaly.
+_FINDING_COOLDOWN_SECS = 1800  # 30 minutes
+
+# Findings whose primary button records their devices as trusted. Each
+# aggregates every device it found into one finding, and one tap trusts every
+# id the finding carries while the push shows 220 characters: the button is
+# offered only when the finding names exactly one device (a field test
+# trusted an unidentified client together with the laptop the owner meant).
+# With several devices the primary slot stays empty rather than falling back
+# to Ask Agent, which cannot trust anything; the summary names the service.
+_TRUST_DEVICE_TYPES = frozenset(
+    {
+        "radio_new_device_joined",
+        "network_unknown_device_joined",
+        "network_guest_client_present",
+    }
+)
+
+
+def _offers_trust(finding: AnomalyFinding) -> bool:
+    """Return True when the finding's primary button is Trust device."""
+    return finding.type in _TRUST_DEVICE_TYPES and len(trust_device_ids(finding)) == 1
+
+
+def _trust_hint(finding: AnomalyFinding, hass: HomeAssistant | None) -> str | None:
+    """
+    Return the "trust them with the service" line for a multi-device finding.
+
+    The suggested actions are never rendered into a notification (they only
+    pick the button), so the pointer has to be part of the body.
+    """
+    if finding.type in _TRUST_DEVICE_TYPES and len(trust_device_ids(finding)) > 1:
+        return notif_msg(hass, "trust_several")
+    return None
+
+
+_SNOOZE_VERBS = frozenset(
+    {
+        ACT_SNOOZE_24H,
+        ACT_SNOOZE_ALWAYS,
+        ACT_SNOOZE_CONFIRM,
+        ACT_SNOOZE_CANCEL,
+    }
+)
+
+
+class SentinelNotifier:
+    """
+    Notification orchestrator for sentinel findings.
+
+    Notification orchestrator injected into ``SentinelEngine``.  Exposes
+    ``async_notify(finding, snapshot, explanation)`` and ``start()`` /
+    ``stop()`` lifecycle methods.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        options: dict[str, Any],
+        suppression: SuppressionManager,
+        action_handler: ActionHandler,
+        audit_store: AuditStore | None = None,
+    ) -> None:
+        """Initialise the sentinel notifier."""
+        self._hass = hass
+        self._options = options
+        self._suppression = suppression
+        self._action_handler = action_handler
+        self._audit_store = audit_store
+        self._unsub: Callable[[], None] | None = None
+        # Pending permanent-snooze intents: anomaly_id -> finding_type.
+        # Written when the user taps "Snooze Always"; cleared on confirm/cancel.
+        self._pending_always_snooze: dict[str, str] = {}
+        # Notification batching state.
+        self._notification_times: list[datetime] = []
+        self._held_batch: list[tuple[AnomalyFinding, str | None, str | None]] = []
+        self._batch_cancel: Callable[[], None] | None = None
+        # Per-finding cooldown: anomaly_id -> time of last dispatch.
+        self._cooldown_times: dict[str, datetime] = {}
+        # Daily digest time-change unsubscribe handle.
+        self._digest_unsub: Callable[[], None] | None = None
+        # Task spawned by the daily digest callback; kept so stop() can cancel it.
+        self._digest_task: asyncio.Task[None] | None = None
+
+    # ---------------------------------------------------------------------- #
+    # Lifecycle
+    # ---------------------------------------------------------------------- #
+
+    def start(self) -> None:
+        """Subscribe to mobile app action events and start the daily digest timer."""
+        if self._unsub is not None:
+            return
+        self._unsub = self._hass.bus.async_listen(
+            "mobile_app_notification_action",
+            self._handle_action_event,
+        )
+        enabled = bool(
+            self._options.get(
+                CONF_SENTINEL_DAILY_DIGEST_ENABLED,
+                RECOMMENDED_SENTINEL_DAILY_DIGEST_ENABLED,
+            )
+        )
+        if enabled and self._audit_store is not None:
+            if self._digest_unsub is not None:
+                self._digest_unsub()
+                self._digest_unsub = None
+            time_str = str(
+                self._options.get(
+                    CONF_SENTINEL_DAILY_DIGEST_TIME,
+                    RECOMMENDED_SENTINEL_DAILY_DIGEST_TIME,
+                )
+            )
+            try:
+                parts = time_str.split(":")
+                hour, minute = int(parts[0]), int(parts[1])
+            except (ValueError, TypeError, IndexError):
+                LOGGER.warning(
+                    "Invalid daily digest time %r; defaulting to 08:00.", time_str
+                )
+                hour, minute = 8, 0
+            self._digest_unsub = async_track_time_change(
+                self._hass,
+                self._async_send_daily_digest,
+                hour=hour,
+                minute=minute,
+                second=0,
+            )
+
+    def stop(self) -> None:
+        """Unsubscribe from action events and cancel the daily digest timer."""
+        if self._unsub is not None:
+            self._unsub()
+            self._unsub = None
+        if self._batch_cancel is not None:
+            self._batch_cancel()
+            self._batch_cancel = None
+        if self._digest_unsub is not None:
+            self._digest_unsub()
+            self._digest_unsub = None
+        if self._digest_task is not None:
+            self._digest_task.cancel()
+            self._digest_task = None
+
+    # ---------------------------------------------------------------------- #
+    # Notification dispatch
+    # ---------------------------------------------------------------------- #
+
+    async def async_notify(
+        self,
+        finding: AnomalyFinding,
+        snapshot: FullStateSnapshot,
+        explanation: str | None,
+        *,
+        also_line: str | None = None,
+    ) -> bool:
+        """
+        Send a proactive notification for *finding*.
+
+        * Adds snooze action buttons.
+        * Redacts person names when ``finding.is_sensitive`` is True.
+        * Routes to a per-area notify service when configured.
+        * Appends *also_line* (see ``related_findings_line``) under the body
+          of a grouped push; the buttons still act on *finding* alone. Such a
+          push is never held for the burst batch: the batch can cut a line or
+          be lost at unload, while the engine holds every finding it names.
+
+        Returns False when the push was dropped as a repeat of the same
+        anomaly within the per-finding cooldown, so the audit does not count
+        it as reaching the user. True when it was sent or held for the next
+        batch; a batch still held when ``stop`` runs is not sent (see
+        TODOS.md).
+        """
+        # Register finding with the action handler so execute/handoff work.
+        self._action_handler.register_finding(finding)
+
+        # Sensitive redaction before building the message.
+        clean_explanation = _redact_if_sensitive(explanation, finding)
+
+        severity = finding.severity
+        title_key = {
+            "high": "severity_title_high",
+            "low": "severity_title_low",
+        }.get(severity, "severity_title_medium")
+        title = notif_msg(self._hass, title_key)
+        interrupt_level = _SEVERITY_INTERRUPT_LEVEL.get(severity, "active")
+        subtitle = _build_subtitle(finding, self._hass, snapshot)
+        mobile_msg = _mobile_message(
+            clean_explanation,
+            finding,
+            str(self._options.get(CONF_SENTINEL_RESPONSE_LANGUAGE, "") or ""),
+            self._hass,
+        )
+        persistent_msg = _persistent_message(clean_explanation, finding, self._hass)
+        if also_line:
+            mobile_msg = f"{mobile_msg}\n{also_line}"
+            persistent_msg = f"{persistent_msg}\n\n{escape_markdown(also_line)}"
+        actions = _build_actions(finding)
+
+        # Per-area routing.
+        target_service = _resolve_notify_service(finding, snapshot, self._options)
+
+        # Shared timestamp for both cooldown and burst-batching guards.
+        now_dt = datetime.now()  # noqa: DTZ005
+
+        # Per-finding cooldown: suppress if the same anomaly fired recently.
+        # High-severity always bypasses so security events are never silenced.
+        if severity != "high":
+            last_fired = self._cooldown_times.get(finding.anomaly_id)
+            if (
+                last_fired is not None
+                and (now_dt - last_fired).total_seconds() < _FINDING_COOLDOWN_SECS
+            ):
+                LOGGER.debug(
+                    "Sentinel suppressed duplicate finding %s (cooldown %ds).",
+                    finding.anomaly_id,
+                    _FINDING_COOLDOWN_SECS,
+                )
+                return False
+            # Record cooldown before the batch check so that batched findings
+            # also consume their cooldown slot (prevents re-fire after flush).
+            self._cooldown_times[finding.anomaly_id] = now_dt
+            # Prune entries older than 2x the cooldown window to bound memory.
+            cutoff_cd = now_dt - timedelta(seconds=_FINDING_COOLDOWN_SECS * 2)
+            self._cooldown_times = {
+                aid: ts for aid, ts in self._cooldown_times.items() if ts >= cutoff_cd
+            }
+
+        # Batching / rate-limiting for non-high severity.
+        if severity != "high":
+            cutoff = now_dt - timedelta(seconds=_BATCH_RATE_WINDOW_SECS)
+            self._notification_times = [
+                t for t in self._notification_times if t >= cutoff
+            ]
+            if len(self._notification_times) >= _BATCH_RATE_LIMIT and not also_line:
+                # Rate limit exceeded — buffer this finding.  Hold the redacted
+                # explanation, never the raw one: the flush discards it today,
+                # but storing the unredacted text would silently bypass
+                # _redact_if_sensitive the moment anyone renders it.
+                self._held_batch.append((finding, clean_explanation, target_service))
+                if self._batch_cancel is None:
+                    self._batch_cancel = async_call_later(
+                        self._hass,
+                        _BATCH_FLUSH_DELAY_SECS,
+                        self._async_flush_batch,
+                    )
+                return True
+            self._notification_times.append(now_dt)
+
+        if target_service:
+            domain, _, service = target_service.partition(".")
+            if not service:
+                service = target_service
+                domain = "notify"
+            tag = f"hga_sentinel_{finding.anomaly_id[:32]}"
+            data: dict[str, Any] = {
+                "title": title,
+                "message": mobile_msg,
+                "data": {
+                    "actions": actions,
+                    "tag": tag,
+                    "subtitle": subtitle,
+                    "push": {"interruption-level": interrupt_level},
+                },
+            }
+            LOGGER.debug("Sending sentinel notification via %s.", target_service)
+            await self._hass.services.async_call(domain, service, data, blocking=False)
+        else:
+            LOGGER.debug("Sending sentinel notification via persistent_notification.")
+            await self._hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": title,
+                    "message": persistent_msg,
+                    "notification_id": f"hga_sentinel_{finding.anomaly_id}",
+                },
+                blocking=False,
+            )
+        return True
+
+    # ---------------------------------------------------------------------- #
+    # Action event handling
+    # ---------------------------------------------------------------------- #
+
+    @callback
+    def _handle_action_event(self, event: Event) -> None:
+        """Dispatch incoming mobile-action events."""
+        action = event.data.get("action")
+        if not isinstance(action, str):
+            return
+        if not action.startswith(ACTION_PREFIX):
+            return
+
+        stripped = action.removeprefix(ACTION_PREFIX)
+
+        # Try to match a snooze verb prefix.
+        for verb in _SNOOZE_VERBS:
+            prefix = f"{verb}_"
+            if stripped.startswith(prefix):
+                anomaly_id = stripped[len(prefix) :]
+                self._hass.async_create_task(self._handle_snooze(verb, anomaly_id))
+                return
+
+        # Non-snooze action — delegate to ActionHandler.
+        self._hass.async_create_task(
+            self._action_handler.handle_action(
+                action, dict(event.data), user_id=event.context.user_id
+            )
+        )
+
+    async def _handle_snooze(self, verb: str, anomaly_id: str) -> None:
+        """Process a snooze action for *anomaly_id*."""
+        now = dt_util.utcnow()
+        finding = self._action_handler._pending_findings.get(  # noqa: SLF001
+            anomaly_id
+        )
+
+        if verb == ACT_SNOOZE_24H:
+            if finding:
+                register_snooze(self._suppression.state, finding.type, SNOOZE_24H, now)
+                for _entity_id in finding.triggering_entities:
+                    record_cooldown_feedback(
+                        self._suppression.state, _entity_id, finding.type
+                    )
+                await self._suppression.async_save()
+                LOGGER.debug(
+                    "Snooze 24 h registered for finding type %s.", finding.type
+                )
+
+        elif verb == ACT_SNOOZE_ALWAYS:
+            # Guard: send confirmation notification; do NOT write snooze yet.
+            if finding:
+                self._pending_always_snooze[anomaly_id] = finding.type
+                await self._send_always_confirmation(finding)
+
+        elif verb == ACT_SNOOZE_CONFIRM:
+            # User confirmed — write permanent snooze now.
+            finding_type = self._pending_always_snooze.pop(anomaly_id, None)
+            if finding_type:
+                register_snooze(
+                    self._suppression.state, finding_type, SNOOZE_PERMANENT, now
+                )
+                await self._suppression.async_save()
+                LOGGER.debug(
+                    "Permanent snooze confirmed for finding type %s.", finding_type
+                )
+            else:
+                LOGGER.debug(
+                    "Snooze confirm for %s but no pending intent; ignoring.",
+                    anomaly_id,
+                )
+
+        elif verb == ACT_SNOOZE_CANCEL:
+            self._pending_always_snooze.pop(anomaly_id, None)
+            LOGGER.debug("Permanent snooze cancelled for %s.", anomaly_id)
+
+    @callback
+    def _async_flush_batch(self, _now: Any = None) -> None:
+        """Flush held batch of non-high-severity notifications as a single summary."""
+        self._batch_cancel = None
+        held = self._held_batch[:]
+        self._held_batch.clear()
+        if not held:
+            return
+
+        count = len(held)
+        types = list({_display_type(f, self._hass) for f, _, _svc in held})
+        type_summary = ", ".join(types)
+        header = notif_msg(
+            self._hass,
+            "batch_message",
+            count=count,
+            plural="s" if count > 1 else "",
+            type_summary=type_summary,
+        )
+        message = _batch_body(header, held, self._options, self._hass)
+        batch_title = notif_msg(self._hass, "batch_title")
+
+        # Use the first non-None resolved service from the held batch (which
+        # already incorporated the area map), then fall back to the global service.
+        target_service = next(
+            (svc for _f, _e, svc in held if svc is not None), None
+        ) or self._options.get(CONF_NOTIFY_SERVICE)
+        if target_service and isinstance(target_service, str):
+            domain, _, service = target_service.partition(".")
+            if not service:
+                service = target_service
+                domain = "notify"
+            data: dict[str, Any] = {
+                "title": batch_title,
+                "message": message,
+                "data": {
+                    "tag": "hga_sentinel_batch_summary",
+                    "push": {"interruption-level": "passive"},
+                },
+            }
+            self._hass.async_create_task(
+                self._hass.services.async_call(domain, service, data, blocking=False)
+            )
+        else:
+            self._hass.async_create_task(
+                self._hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": batch_title,
+                        "message": message,
+                        "notification_id": "hga_sentinel_batch_summary",
+                    },
+                    blocking=False,
+                )
+            )
+
+    @callback
+    def _async_send_daily_digest(self, _now: Any = None) -> None:
+        """Schedule the async daily digest coroutine from the time-change callback."""
+        if self._digest_task is not None and not self._digest_task.done():
+            LOGGER.debug(
+                "Daily digest already in progress; skipping duplicate trigger."
+            )
+            return
+        self._digest_task = self._hass.async_create_task(self._async_run_daily_digest())
+
+    async def _async_run_daily_digest(self) -> None:
+        """Fetch the last 24 hours of notified findings and push a summary."""
+        if self._audit_store is None:
+            return
+
+        cutoff = dt_util.utcnow() - timedelta(hours=24)
+        try:
+            records = await self._audit_store.async_get_latest(_AUDIT_FETCH_LIMIT)
+        except Exception:
+            LOGGER.warning(
+                "Daily digest: failed to fetch audit records.", exc_info=True
+            )
+            return
+
+        notified = [
+            r
+            for r in records
+            if r.get("suppression_reason_code") == SUPPRESSION_REASON_NOT_SUPPRESSED
+            and _record_notified_after(r, cutoff)
+        ]
+        count = len(notified)
+        if count == 0:
+            LOGGER.debug("Daily digest: no notified findings in the last 24 h.")
+            return
+
+        severity_counts: dict[str, int] = {}
+        for r in notified:
+            # Stored records are untrusted shapes: "finding" may be null or
+            # a non-dict, and severity may be None/non-string. None of that
+            # may break sorted() below or kill the digest task.
+            finding_rec = r.get("finding")
+            sev_raw = (
+                finding_rec.get("severity") if isinstance(finding_rec, dict) else None
+            )
+            sev = str(sev_raw or "unknown")
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+        sev_summary = ", ".join(
+            f"{v} {notif_msg(self._hass, _SEVERITY_WORD_KEYS[k]) if k in _SEVERITY_WORD_KEYS else k}"  # noqa: E501
+            for k, v in sorted(severity_counts.items())
+        )
+        digest_title = notif_msg(self._hass, "digest_title")
+        message = notif_msg(
+            self._hass,
+            "digest_message",
+            count=count,
+            plural="s" if count > 1 else "",
+            sev_summary=sev_summary,
+        )
+
+        notify_service = self._options.get(CONF_NOTIFY_SERVICE)
+        if notify_service and isinstance(notify_service, str):
+            domain, _, service = notify_service.partition(".")
+            if not service:
+                service = notify_service
+                domain = "notify"
+            data: dict[str, Any] = {
+                "title": digest_title,
+                "message": message,
+                "data": {
+                    "tag": "hga_sentinel_daily_digest",
+                    "push": {"interruption-level": "passive"},
+                },
+            }
+            await self._hass.services.async_call(domain, service, data, blocking=False)
+        else:
+            await self._hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": digest_title,
+                    "message": message,
+                    "notification_id": "hga_sentinel_daily_digest",
+                },
+                blocking=False,
+            )
+        LOGGER.debug("Daily digest sent: %s.", message)
+
+    async def _send_always_confirmation(self, finding: AnomalyFinding) -> None:
+        """
+        Send a mobile confirmation notification for permanent snooze.
+
+        No HA action is taken until the user taps Confirm.
+        """
+        notify_service = self._options.get(CONF_NOTIFY_SERVICE)
+        if not notify_service or not isinstance(notify_service, str):
+            LOGGER.debug(
+                "No notify_service configured; cannot send snooze confirmation."
+            )
+            return
+
+        friendly = _display_type(finding, self._hass)
+        confirm_action = f"{ACTION_PREFIX}{ACT_SNOOZE_CONFIRM}_{finding.anomaly_id}"
+        cancel_action = f"{ACTION_PREFIX}{ACT_SNOOZE_CANCEL}_{finding.anomaly_id}"
+        domain, _, service = notify_service.partition(".")
+        if not service:
+            service = notify_service
+            domain = "notify"
+
+        data: dict[str, Any] = {
+            "title": notif_msg(self._hass, "snooze_confirm_title"),
+            "message": notif_msg(
+                self._hass, "snooze_confirm_message", friendly=friendly
+            ),
+            "data": {
+                "actions": [
+                    {"action": confirm_action, "title": "Confirm"},
+                    {"action": cancel_action, "title": "Cancel"},
+                ],
+                "tag": f"hga_sentinel_snooze_{finding.anomaly_id[:32]}",
+            },
+        }
+        await self._hass.services.async_call(domain, service, data, blocking=False)
+        LOGGER.debug(
+            "Permanent snooze confirmation sent for finding %s.", finding.anomaly_id
+        )
+
+
+# ---------------------------------------------------------------------------
+# Action list builder
+# ---------------------------------------------------------------------------
+
+
+def _build_actions(finding: AnomalyFinding) -> list[dict[str, Any]]:
+    """
+    Build mobile action buttons for *finding*.
+
+    Primary action (execute or ask) is first, then False Alarm, then snooze.
+    """
+    actions: list[dict[str, Any]] = []
+
+    if _offers_trust(finding):
+        # Android shows three buttons; for a newly paired device the useful
+        # primary action is recording it as recognized, not asking the agent.
+        actions.append(
+            {
+                "action": f"{ACTION_PREFIX}{ACT_TRUST}_{finding.anomaly_id}",
+                "title": "Trust device",
+            }
+        )
+    elif finding.suggested_actions and finding.type not in _TRUST_DEVICE_TYPES:
+        # A trust finding naming several devices gets no primary button at
+        # all (see _TRUST_DEVICE_TYPES); every other sensitive finding may
+        # be handed to the agent.
+        if finding.is_sensitive:
+            actions.append(
+                {
+                    "action": f"{ACTION_PREFIX}handoff_{finding.anomaly_id}",
+                    "title": "Ask Agent",
+                }
+            )
+        elif "arm_alarm" in finding.suggested_actions:
+            actions.append(
+                {
+                    "action": f"{ACTION_PREFIX}execute_{finding.anomaly_id}",
+                    "title": "Arm Alarm",
+                }
+            )
+        else:
+            actions.append(
+                {
+                    "action": f"{ACTION_PREFIX}execute_{finding.anomaly_id}",
+                    "title": "Execute",
+                }
+            )
+
+    actions.extend(
+        [
+            {
+                "action": f"{ACTION_PREFIX}dismiss_{finding.anomaly_id}",
+                "title": "False Alarm",
+            },
+            {
+                "action": f"{ACTION_PREFIX}{ACT_SNOOZE_24H}_{finding.anomaly_id}",
+                "title": "Snooze 24 h",
+            },
+            {
+                "action": f"{ACTION_PREFIX}{ACT_SNOOZE_ALWAYS}_{finding.anomaly_id}",
+                "title": "Snooze Always",
+            },
+        ]
+    )
+    return actions
+
+
+# ---------------------------------------------------------------------------
+# Message helpers
+# ---------------------------------------------------------------------------
+
+
+def _redact_if_sensitive(
+    explanation: str | None, finding: AnomalyFinding
+) -> str | None:
+    """
+    Return *explanation* with recognised person names replaced.
+
+    When ``finding.is_sensitive`` is True, enrolled names in
+    ``finding.evidence["recognized_people"]`` are replaced with the generic
+    phrase ``"a recognised person"``.  Reserved pipeline labels ("Unknown
+    Person", "Indeterminate") are never redacted — they are not private
+    identities, and substituting "Unknown Person" would rewrite "an unknown
+    person was seen" into "a recognised person was seen", inverting the
+    security meaning of the very findings that carry the label.  Returns the
+    original string unchanged when the finding is not sensitive or there are
+    no names to redact.
+    """
+    if not explanation or not finding.is_sensitive:
+        return explanation
+
+    recognized: list[Any] = finding.evidence.get("recognized_people", []) or []
+    names = enrolled_people(
+        person for person in recognized if isinstance(person, str) and person
+    )
+    if not names:
+        return explanation
+
+    redacted = explanation
+    for person in names:
+        redacted = re.sub(
+            re.escape(person), "a recognised person", redacted, flags=re.IGNORECASE
+        )
+    return redacted
+
+
+def _resolve_notify_service(
+    finding: AnomalyFinding,
+    snapshot: FullStateSnapshot,
+    options: Mapping[str, Any],
+) -> str | None:
+    """
+    Return the notify service to use for *finding*.
+
+    Checks the per-area map first; falls back to the global notify service.
+    Returns ``None`` when neither is configured (→ persistent notification).
+    """
+    area_map: dict[str, str] = options.get(CONF_SENTINEL_AREA_NOTIFY_MAP) or {}
+    if area_map:
+        area = _get_finding_area(finding, snapshot)
+        if area and area in area_map:
+            return area_map[area]
+
+    global_service = options.get(CONF_NOTIFY_SERVICE)
+    return global_service if isinstance(global_service, str) else None
+
+
+def _get_finding_area(
+    finding: AnomalyFinding, snapshot: FullStateSnapshot
+) -> str | None:
+    """Return the area of the first triggering entity found in the snapshot."""
+    entity_map = {e["entity_id"]: e for e in snapshot.get("entities", [])}
+    for entity_id in finding.triggering_entities:
+        entity = entity_map.get(entity_id)
+        if entity:
+            area = entity.get("area")
+            if area:
+                return str(area)
+    return None
+
+
+def _normalize_text(text: str) -> str:
+    text = extract_final(text)  # strips <think> blocks and collapses whitespace
+    return text.replace("**", "").replace("`", "")
+
+
+# Anomaly-type / template-id keys mapped to notif_msg() message ids. Values
+# are message keys in notifier_messages.py, not display text -- the actual
+# strings are localized there.
+_KNOWN_TYPE_LABEL_KEYS = {
+    "open_entry_while_away": "type_open_entry_while_away",
+    "open_entry_at_night_when_home": "type_open_entry_at_night",
+    "open_entry_at_night_when_home_window": "type_open_entry_at_night",
+    "open_entry_at_night_while_away": "type_open_entry_at_night",
+    "open_entry_at_night": "type_open_entry_at_night",
+    "open_entry_at_night_window": "type_open_entry_at_night",
+    "open_entry_at_night_door": "type_open_entry_at_night",
+    "open_entry_at_night_entry": "type_open_entry_at_night",
+    "open_any_window_at_night_while_away": "type_open_any_window_at_night_while_away",
+    "motion_detected_at_night_while_away": "type_motion_detected_at_night_while_away",
+    "motion_detected_while_away": "type_motion_detected_while_away",
+    "unlocked_lock_at_night": "type_unlocked_lock_at_night",
+    "camera_entry_unsecured": "type_camera_entry_unsecured",
+    "alarm_disarmed_during_external_threat": (
+        "type_alarm_disarmed_during_external_threat"
+    ),
+    "ha_sensitive_entity_exposed_without_pin": (
+        "type_ha_sensitive_entity_exposed_without_pin"
+    ),
+    "ha_new_admin_or_token": "type_ha_new_admin_or_token",
+    "ha_long_lived_token_stale": "type_ha_long_lived_token_stale",
+    "ha_failed_logins": "type_ha_failed_logins",
+    "ha_cloud_remote_ui_enabled": "type_ha_cloud_remote_ui_enabled",
+    "ha_addon_exposed_port": "type_ha_addon_exposed_port",
+    "ha_addon_unprotected": "type_ha_addon_unprotected",
+    "ha_webhook_automation_public": "type_ha_webhook_automation_public",
+    "ha_trusted_networks_bypass_login": "type_ha_trusted_networks_bypass_login",
+    "ha_http_proxy_misconfigured": "type_ha_http_proxy_misconfigured",
+    "security_device_unavailable": "type_security_device_unavailable",
+    "network_unconfigured_discovered_device": (
+        "type_network_unconfigured_discovered_device"
+    ),
+    "network_router_update_pending": "type_network_router_update_pending",
+    "network_upnp_enabled": "type_network_upnp_enabled",
+    "network_public_ip_changed": "type_network_public_ip_changed",
+    "network_upnp_port_mapping_added": "type_network_upnp_port_mapping_added",
+    "radio_new_device_joined": "type_radio_new_device_joined",
+    "network_unknown_device_joined": "type_network_unknown_device_joined",
+    "network_guest_client_present": "type_network_guest_client_present",
+    "network_client_usage_anomaly": "type_network_client_usage_anomaly",
+    # Discovery templates over the network section (keyed by template_id).
+    "network_client_present_when": "type_network_client_present_when",
+    "network_client_absent_when": "type_network_client_absent_when",
+    "network_posture_equals": "type_network_posture_equals",
+    "network_guest_network_idle": "type_network_guest_network_idle",
+    "network_wpa3_disabled": "type_network_wpa3_disabled",
+    "network_protection_disabled": "type_network_protection_disabled",
+    "network_ddns_enabled": "type_network_ddns_enabled",
+    "zwave_insecure_security_class": "type_zwave_insecure_security_class",
+    "zigbee_permit_join_open": "type_zigbee_permit_join_open",
+    "zwave_inclusion_active": "type_zwave_inclusion_active",
+    "radio_coordinator_update_pending": "type_radio_coordinator_update_pending",
+    "appliance_power_duration": "type_appliance_power_duration",
+    "low_battery_sensors": "type_low_battery_sensors",
+    "entity_state_duration": "type_entity_state_duration",
+    "motion_detected_at_night_while_alarm_disarmed": (
+        "type_motion_detected_at_night_while_alarm_disarmed"
+    ),
+}
+
+
+def _display_type(finding: AnomalyFinding, hass: HomeAssistant | None = None) -> str:
+    """
+    Friendly label for a finding.
+
+    Dynamic rules carry slugified candidate IDs as ``finding.type``; when the
+    type has no curated label but the rule's template does, prefer the
+    template label so notifications never show raw candidate slugs
+    (issue #516 review).
+    """
+    if finding.type in _KNOWN_TYPE_LABEL_KEYS:
+        return notif_msg(hass, _KNOWN_TYPE_LABEL_KEYS[finding.type])
+    template_id = str(finding.evidence.get("template_id") or "")
+    if template_id in _KNOWN_TYPE_LABEL_KEYS:
+        return notif_msg(hass, _KNOWN_TYPE_LABEL_KEYS[template_id])
+    return _friendly_type(finding.type, hass)
+
+
+def _friendly_type(anomaly_type: str, hass: HomeAssistant | None = None) -> str:
+    if anomaly_type in _KNOWN_TYPE_LABEL_KEYS:
+        return notif_msg(hass, _KNOWN_TYPE_LABEL_KEYS[anomaly_type])
+    # Strip internal prefixes so they never appear in user-visible text:
+    # • "candidate_"          — LLM-proposed dynamic rules awaiting approval
+    # • "rule_NN_"            — LLM-generated rules with sequential numbering
+    #                           e.g. "rule_02_high_energy_consumption_away"
+    display = anomaly_type.removeprefix("candidate_")
+    # Strip "rule_<digits>_" prefix (e.g. "rule_02_")
+    parts = display.split("_")
+    if len(parts) >= 3 and parts[0] == "rule" and parts[1].isdigit():  # noqa: PLR2004
+        display = "_".join(parts[2:])
+    display = display.replace("_", " ").strip().capitalize()
+    # An approved rule id like "candidate_1" leaves no words at all.
+    if not any(char.isalpha() for char in display):
+        return notif_msg(hass, "type_unlabeled_rule")
+    return display
+
+
+def _record_notified_after(record: dict[str, Any], cutoff: datetime) -> bool:
+    """Return True if *record* has a notification timestamp on or after *cutoff*."""
+    notified_at_str = record.get("notification", {}).get("notified_at")
+    if not notified_at_str:
+        return False
+    notified_dt = dt_util.parse_datetime(str(notified_at_str))
+    if notified_dt is None:
+        return False
+    return notified_dt >= cutoff
+
+
+def _friendly_entity(entity_id: str) -> str:
+    if "." in entity_id:
+        _, _, name = entity_id.partition(".")
+    else:
+        name = entity_id
+    return name.replace("_", " ").strip().title()
+
+
+# Suffixes appended to HA power-sensor entity names that don't describe the
+# appliance itself (e.g. "Dishwasher Power" → strip " Power" → "Dishwasher").
+_POWER_SUFFIXES: tuple[str, ...] = (
+    " Power",
+    " Wattage",
+    " Energy",
+    " Consumption",
+    " Usage",
+    " Draw",
+    " Load",
+)
+
+
+def _strip_power_suffix(name: str) -> str:
+    """Remove trailing power-sensor label words from an appliance display name."""
+    name_lower = name.lower()
+    for suffix in _POWER_SUFFIXES:
+        if name_lower.endswith(suffix.lower()):
+            return name[: -len(suffix)].strip()
+    return name
+
+
+def _is_power_class_evidence(ev: dict[str, Any]) -> bool:
+    """
+    Return True when a baseline finding's entity is a power/energy sensor.
+
+    Baseline rules can target any numeric sensor (humidity, temperature, …),
+    but the power/appliance copy only fits power-class entities.  Findings
+    persisted before unit/device_class were captured in evidence fall back to
+    the entity_id substring heuristic the copy previously relied on.
+    """
+    device_class = str(ev.get("device_class") or "")
+    if device_class in {"power", "energy"}:
+        return True
+    unit = str(ev.get("unit_of_measurement") or "")
+    if unit and (is_power_unit(unit) or is_energy_unit(unit)):
+        # A power-dimension unit wins even under an exotic device_class
+        # (e.g. energy_storage sensors reporting kWh).
+        return True
+    if "device_class" in ev or "unit_of_measurement" in ev:
+        # New finding whose captured metadata says non-power; never fall back
+        # to the entity_id heuristic here or unitless sensors named like
+        # sensor.energy_score would get appliance copy.
+        return False
+    # Legacy findings persisted before the metadata was captured.
+    entity_id = str(ev.get("entity_id") or "")
+    return "power" in entity_id or "energy" in entity_id
+
+
+def _appliance_power_duration_mobile_message(finding: AnomalyFinding) -> str:
+    """Deterministic mobile copy for appliance_power_duration."""
+    ev = finding.evidence
+    raw_name = (ev.get("friendly_name") or "").strip()
+    if raw_name:
+        appliance = _strip_power_suffix(raw_name)
+    else:
+        entity_id = str(
+            ev.get("entity_id")
+            or (finding.triggering_entities[0] if finding.triggering_entities else "")
+        )
+        appliance = _strip_power_suffix(_friendly_entity(entity_id))
+
+    power_w = ev.get("power_w")
+    duration_min = ev.get("duration_min")
+    threshold_min = ev.get("threshold_min")
+
+    power_str = (
+        f"about {round(float(power_w))} W" if power_w is not None else "high power"
+    )
+    dur_str = (
+        f"{int(duration_min)} min" if duration_min is not None else "an extended period"
+    )
+    thr_str = (
+        f"{int(threshold_min)} min" if threshold_min is not None else "the configured"
+    )
+
+    msg = (
+        f"{appliance} drew {power_str} for {dur_str},"
+        f" above the {thr_str} threshold. Check it."
+    )
+    return msg[:MAX_MOBILE_MESSAGE_CHARS].rstrip()
+
+
+def _build_subtitle(
+    finding: AnomalyFinding,
+    hass: HomeAssistant | None = None,
+    snapshot: FullStateSnapshot | None = None,
+) -> str:
+    """Return the notification subtitle line for *finding*."""
+    if finding.evidence.get("is_completion"):
+        raw_name = str(finding.evidence.get("friendly_name") or "").strip()
+        if not raw_name and finding.triggering_entities:
+            raw_name = _friendly_entity(finding.triggering_entities[0])
+        appliance = _strip_power_suffix(raw_name).title()
+        if appliance:
+            return notif_msg(hass, "subtitle_appliance_finished", appliance=appliance)
+        return notif_msg(hass, "subtitle_appliance_cycle_complete")
+    if finding.evidence.get("template_id") == "alarm_disarmed_open_entry":
+        entry_id = str(finding.evidence.get("entry_entity_id") or "")
+        entry_name = (
+            _snapshot_name(entry_id, snapshot)
+            if entry_id
+            else notif_msg(hass, "fallback_entry")
+        )
+        return notif_msg(
+            hass, "subtitle_entry_open_alarm_disarmed", entry_name=entry_name
+        )
+    if finding.evidence.get("template_id") in {
+        "baseline_deviation",
+        "time_of_day_anomaly",
+    }:
+        raw_name = str(finding.evidence.get("friendly_name") or "").strip()
+        if not raw_name and finding.triggering_entities:
+            raw_name = _friendly_entity(finding.triggering_entities[0])
+        appliance = _strip_power_suffix(raw_name).title() or notif_msg(
+            hass, "fallback_sensor"
+        )
+        deviation = str(finding.evidence.get("deviation_direction") or "")
+        direction_key = (
+            "direction_lower" if deviation == "below" else "direction_higher"
+        )
+        direction = notif_msg(hass, direction_key)
+        subtitle_key = (
+            "subtitle_power_deviation"
+            if _is_power_class_evidence(finding.evidence)
+            else "subtitle_reading_deviation"
+        )
+        return notif_msg(hass, subtitle_key, appliance=appliance, direction=direction)
+    device_subtitle = (
+        _state_duration_subtitle(finding, hass, snapshot)
+        if finding.evidence.get("template_id") == "entity_state_duration"
+        else _open_entry_subtitle(finding, hass, snapshot)
+    )
+    return device_subtitle or _display_type(finding, hass)
+
+
+# Open-entry findings whose subtitle names the door or window (issue #729):
+# the built-in rule by type, approved rules by template. The body is often
+# model prose, which can leave the device out, so two pushes about two
+# windows in one room read as duplicates.
+_OPEN_ENTRY_TYPES = frozenset({"open_entry_while_away"})
+_OPEN_ENTRY_TEMPLATES = frozenset(
+    {
+        "open_entry_while_away",
+        "open_entry_when_home",
+        "open_entry_at_night",
+        "open_entry_at_night_when_home",
+        "open_entry_at_night_while_away",
+        "open_any_window_at_night_while_away",
+    }
+)
+
+
+def _open_entry_subtitle(
+    finding: AnomalyFinding,
+    hass: HomeAssistant | None = None,
+    snapshot: FullStateSnapshot | None = None,
+) -> str | None:
+    """
+    Return "<door or window> open" for an open-entry finding, else None.
+
+    An approved rule is matched by its template, which also says where the
+    device is; only a finding with no template is matched by type, since an
+    approved rule's type is its rule id and can be any slug. The device must
+    be a door, window or cover in *snapshot*: approved entry rules pick their
+    entities by name ("window" in the id), so the subtitle never calls a
+    lock or a window heater "open". The name is the snapshot's friendly name,
+    not read from the evidence, which is hashed into the anomaly id.
+    """
+    evidence = finding.evidence
+    template_id = str(evidence.get("template_id") or "")
+    if template_id:
+        if template_id not in _OPEN_ENTRY_TEMPLATES:
+            return None
+        entity_id = str(evidence.get("entry_entity_id") or "")
+    elif finding.type in _OPEN_ENTRY_TYPES:
+        entity_id = str(evidence.get("entity_id") or "")
+    else:
+        return None
+    entity = _snapshot_entity(entity_id, snapshot)
+    if entity is None or not _is_entry_device(entity):
+        return None
+    return notif_msg(
+        hass, "subtitle_entry_open", entity=_snapshot_name(entity_id, snapshot)
+    )
+
+
+def _snapshot_name(entity_id: str, snapshot: FullStateSnapshot | None) -> str:
+    """
+    Return *entity_id*'s friendly name from *snapshot*, else one from its id.
+
+    Friendly names are untrusted entity attributes: ``sanitize_label`` drops
+    control and format characters, collapses whitespace and caps the length,
+    so a name can neither restyle a push nor push it past the payload limit.
+    """
+    entity = _snapshot_entity(entity_id, snapshot)
+    if entity is not None:
+        name = sanitize_label(entity.get("friendly_name"))
+        if any(ch.isalnum() for ch in name):
+            return name
+    return sanitize_label(_friendly_entity(entity_id))
+
+
+def _state_duration_subtitle(
+    finding: AnomalyFinding,
+    hass: HomeAssistant | None = None,
+    snapshot: FullStateSnapshot | None = None,
+) -> str | None:
+    """
+    Return "<device> open for 3 h" for an entity_state_duration finding.
+
+    "open" only for a door, window or cover and "unlocked" only for a lock,
+    per *snapshot*: approved rules pick their entity by name, so "on" may be
+    a motion sensor. Any other device reads "unchanged for". Returns None
+    when the evidence lacks the device or a usable duration, so the caller
+    falls back to the template label.
+    """
+    entity_id = str(finding.evidence.get("entity_id") or "")
+    hours = finding.evidence.get("duration_hours")
+    if not isinstance(hours, (int, float)):
+        return None
+    if not entity_id or hours <= 0:
+        return None
+    raw_name = sanitize_label(finding.evidence.get("friendly_name"))
+    entity = (
+        raw_name
+        if any(ch.isalnum() for ch in raw_name)
+        else sanitize_label(_friendly_entity(entity_id))
+    )
+    duration = (
+        notif_msg(hass, "duration_hours_short", hours=int(hours))
+        if hours >= 1
+        else notif_msg(hass, "duration_minutes_short", minutes=max(int(hours * 60), 1))
+    )
+    state = str(finding.evidence.get("state") or "")
+    device = _snapshot_entity(entity_id, snapshot)
+    key = "subtitle_state_unchanged_for"
+    if device is not None:
+        if _is_lock_device(device) and state in {"unlocked", "on"}:
+            # A lock-class binary sensor reports "on" for unlocked.
+            key = "subtitle_state_unlocked_for"
+        elif _is_entry_device(device) and state in {"on", "open"}:
+            key = "subtitle_state_open_for"
+    return notif_msg(hass, key, entity=entity, duration=duration)
+
+
+def _fallback_message(
+    finding: AnomalyFinding, hass: HomeAssistant | None = None
+) -> str:
+    summary = _display_type(finding, hass)
+    entity = (
+        _friendly_entity(finding.triggering_entities[0])
+        if finding.triggering_entities
+        else notif_msg(hass, "fallback_unknown_entity")
+    )
+    return notif_msg(
+        hass,
+        "fallback_message",
+        summary=summary,
+        entity=entity,
+        action_hint=_severity_action_hint(finding.severity, hass),
+    )
+
+
+def _format_disarm_since(parsed: datetime) -> str:
+    """
+    Return a human-readable 'since …' string for a disarm timestamp.
+
+    Shows time-only when the disarm was today; prepends the date otherwise so
+    a disarm from days ago is not mistaken for earlier today.
+    """
+    local = dt_util.as_local(parsed)
+    local_now = dt_util.now()
+    time_str = local.strftime("%-I:%M %p")
+    if local.date() == local_now.date():
+        return time_str
+    return local.strftime(f"%-d %b at {time_str}")
+
+
+def _alarm_disarmed_mobile_message(finding: AnomalyFinding) -> str:
+    """Deterministic mobile copy for alarm_disarmed_during_external_threat."""
+    ev = finding.evidence
+
+    cam_name: str = (ev.get("camera_friendly_name") or "").strip()[:30]
+    if not cam_name:
+        cam_id = str(ev.get("camera_entity_id", ""))
+        if cam_id:
+            cam_name = cam_id.partition(".")[2].replace("_", " ").title()[:30]
+        else:
+            cam_name = ""
+    if not cam_name:
+        cam_name = "A camera"
+
+    age = ev.get("camera_activity_age_minutes")
+    if age is not None:
+        age_mins = max(1, round(float(age)))
+        activity_phrase = f"{cam_name} saw an unrecognized person {age_mins} min ago."
+    else:
+        # Unreachable for newly generated findings — the rule's freshness
+        # gate guarantees a numeric age — but findings persisted before that
+        # gate existed can still re-render through this branch.
+        activity_phrase = f"{cam_name} saw an unrecognized person."
+
+    last_changed = ev.get("alarm_last_changed")
+    alarm_phrase = ""
+    if last_changed:
+        parsed = dt_util.parse_datetime(str(last_changed))
+        if parsed is not None:
+            alarm_phrase = (
+                f" The alarm has been disarmed since {_format_disarm_since(parsed)}."
+            )
+    if not alarm_phrase:
+        alarm_phrase = " The alarm is currently disarmed."
+
+    cta = " Arm the alarm or view the camera."
+    return (activity_phrase + alarm_phrase + cta)[:MAX_MOBILE_MESSAGE_CHARS].rstrip()
+
+
+def _alarm_disarmed_open_entry_mobile_message(finding: AnomalyFinding) -> str:
+    """Deterministic mobile copy for alarm_disarmed_open_entry dynamic rule."""
+    ev = finding.evidence
+    entry_id = str(ev.get("entry_entity_id") or "")
+    entry_name = _friendly_entity(entry_id) if entry_id else "An entry"
+
+    alarm_last_changed = ev.get("alarm_last_changed")
+    if alarm_last_changed:
+        parsed = dt_util.parse_datetime(str(alarm_last_changed))
+        if parsed is not None:
+            alarm_phrase = f"Alarm disarmed since {_format_disarm_since(parsed)}."
+        else:
+            alarm_phrase = "Alarm is disarmed."
+    else:
+        alarm_phrase = "Alarm is disarmed."
+
+    msg = f"{entry_name} is open. {alarm_phrase} Close it or snooze if expected."
+    return msg[:MAX_MOBILE_MESSAGE_CHARS].rstrip()
+
+
+def _baseline_deviation_mobile_message(finding: AnomalyFinding) -> str:
+    """Deterministic mobile copy for baseline_deviation and time_of_day_anomaly."""
+    ev = finding.evidence
+    raw_name = (ev.get("friendly_name") or "").strip()
+    if not raw_name and finding.triggering_entities:
+        raw_name = _friendly_entity(finding.triggering_entities[0])
+    appliance = _strip_power_suffix(raw_name).title() or "Sensor"
+
+    current_value = ev.get("current_value")
+    # DOW-blended time_of_day_anomaly findings carry the comparison value as
+    # expected_value, not baseline_value (see _evaluate_dow_anomaly).
+    baseline_value = ev.get("baseline_value")
+    if baseline_value is None:
+        baseline_value = ev.get("expected_value")
+    deviation_pct = ev.get("deviation_pct")
+    direction = str(ev.get("deviation_direction") or "")
+
+    is_power = _is_power_class_evidence(ev)
+    # Untrusted entity attribute: drop control/format characters (bidi
+    # overrides can visually reorder push text), collapse whitespace, and cap
+    # before it is embedded in notification copy.
+    raw_unit = str(ev.get("unit_of_measurement") or "")
+    unit = " ".join(
+        "".join(ch for ch in raw_unit if unicodedata.category(ch)[0] != "C").split()
+    )[:12]
+    if not unit and is_power and "unit_of_measurement" not in ev:
+        # Findings persisted before the unit was captured in evidence: power
+        # circuits report watts by convention, energy circuits kWh.  Key
+        # ABSENCE is the legacy signal — a present-but-empty unit means a
+        # genuinely unitless sensor, where fabricating a unit would be wrong.
+        unit = "kWh" if "energy" in str(ev.get("entity_id") or "") else "W"
+    cta = "Check appliance." if is_power else "Worth checking."
+
+    direction_word = "below" if direction == "below" else "above"
+    # Persisted evidence re-renders through here: values may be missing,
+    # non-numeric, or non-finite (poisoned baselines).  Rendering must never
+    # raise — a crash here kills the dispatch path.
+    pct_val: int | None = None
+    if deviation_pct is not None:
+        try:
+            pct_f = float(deviation_pct)
+            pct_val = round(pct_f) if math.isfinite(pct_f) else None
+        except (TypeError, ValueError):
+            pct_val = None
+    have_values = False
+    cur_f = base_f = 0.0
+    if current_value is not None and baseline_value is not None:
+        try:
+            cur_f = float(current_value)
+            base_f = float(baseline_value)
+            have_values = math.isfinite(cur_f) and math.isfinite(base_f)
+        except (TypeError, ValueError):
+            have_values = False
+    if have_values:
+        cur = round(cur_f, 1)
+        base = round(base_f, 1)
+        pct = f" ({pct_val}% {direction_word} normal)" if pct_val is not None else ""
+        msg = f"{appliance}: {cur}{unit} vs usual {base}{unit}{pct}. {cta}"
+    else:
+        noun = "power" if is_power else "reading"
+        dev = f" {pct_val}%" if pct_val is not None else ""
+        msg = f"{appliance} {noun}{dev} {direction_word} normal. {cta}"
+    return msg[:MAX_MOBILE_MESSAGE_CHARS].rstrip()
+
+
+def _entity_staleness_mobile_message(finding: AnomalyFinding) -> str:
+    """Deterministic mobile copy for entity_staleness findings."""
+    ev = finding.evidence
+    entity_id = str(ev.get("entity_id") or "").strip()
+    raw_name = str(ev.get("friendly_name") or "").strip()
+    if not raw_name and entity_id:
+        raw_name = _friendly_entity(entity_id)
+
+    age_hours = ev.get("age_hours")
+    age_str = "an extended period"
+    if age_hours is not None:
+        try:
+            age_h = float(age_hours)
+            if age_h >= 48:  # noqa: PLR2004
+                age_str = f"about {int(age_h // 24)} days"
+            elif age_h >= 24:  # noqa: PLR2004
+                age_str = "about 1 day"
+            elif age_h >= 2:  # noqa: PLR2004
+                age_str = f"about {int(age_h)} hours"
+            else:
+                age_str = "about 1 hour"
+        except (TypeError, ValueError):
+            pass
+
+    if entity_id.startswith("person."):
+        msg = (
+            f"{raw_name}'s location tracking has been outdated for {age_str}. "
+            f"Check if their phone is on and reachable."
+        )
+    else:
+        msg = (
+            f"{raw_name or 'Sensor'} data has been outdated for {age_str}. "
+            f"Please check the sensor."
+        )
+    return msg[:MAX_MOBILE_MESSAGE_CHARS].rstrip()
+
+
+_TEMPLATE_MOBILE_FORMATTERS: dict[
+    str,
+    Any,
+] = {
+    "alarm_disarmed_open_entry": _alarm_disarmed_open_entry_mobile_message,
+    "baseline_deviation": _baseline_deviation_mobile_message,
+    "time_of_day_anomaly": _baseline_deviation_mobile_message,
+    "entity_staleness": _entity_staleness_mobile_message,
+}
+
+
+# Deterministic copy that carries security actuation detail — which camera,
+# which entry, when the alarm was disarmed, and what to do about it. An LLM
+# paraphrase blurs those or asserts things the evidence does not support
+# ("someone is still inside"), so these never defer to a translated
+# explanation, even when a response language is configured. Translating them
+# needs real string templates, not model prose.
+# Findings whose deterministic copy must never be replaced by model prose.
+# The network / HA-security family qualifies as a whole: its summaries carry
+# the exact token label, port, account, or device an attacker would want
+# blurred, and parts of that evidence originate from untrusted sources.
+_SECURITY_MESSAGE_TYPES = frozenset(
+    {"alarm_disarmed_during_external_threat"} | NETWORK_RULE_TYPES
+)
+_SECURITY_MESSAGE_TEMPLATE_IDS = frozenset(
+    {"alarm_disarmed_open_entry", *NETWORK_TEMPLATES}
+)
+
+
+# Characters that start Markdown links, images, emphasis, code, raw HTML, or
+# tables. Persistent notifications render Markdown, and parts of a network
+# summary come from the LAN (SSDP friendly names, mDNS titles) or from
+# third-party add-on repositories, so a name shaped like a link must read as
+# text there. Mobile pushes are plain text and stay unescaped.
+_MARKDOWN_ESCAPE_RE = re.compile(r"([\\`*_\[\]<>~|])")
+
+
+def escape_markdown(text: str) -> str:
+    """Return *text* with Markdown syntax characters backslash-escaped."""
+    return _MARKDOWN_ESCAPE_RE.sub(r"\\\1", text)
+
+
+def _network_summary(finding: AnomalyFinding) -> str | None:
+    """
+    Return the pre-rendered summary of a network / HA-security finding.
+
+    These rules render their exact facts themselves; most have no triggering
+    entity, so the generic fallback would name nothing. None for every other
+    finding type or when the summary is empty.
+    """
+    template_id = str(finding.evidence.get("template_id") or "")
+    if finding.type not in NETWORK_RULE_TYPES and template_id not in NETWORK_TEMPLATES:
+        return None
+    summary = str(finding.evidence.get("summary") or "").strip()
+    return summary or None
+
+
+def is_security_copy(finding: AnomalyFinding) -> bool:
+    """
+    Return True when *finding*'s deterministic copy must never be paraphrased.
+
+    The engine consults this before calling the explainer: a finding whose
+    push and persistent notification are both rendered from its own summary
+    would spend a model call on prose that reaches nobody.
+    """
+    return (
+        finding.type in _SECURITY_MESSAGE_TYPES
+        or str(finding.evidence.get("template_id") or "")
+        in _SECURITY_MESSAGE_TEMPLATE_IDS
+    )
+
+
+def _deterministic_mobile_message(finding: AnomalyFinding) -> str | None:
+    """
+    Return the hardcoded-English template message for *finding*, or ``None``.
+
+    These formatters render exact figures, units, and entity names that an LLM
+    paraphrase can blur, so they are preferred whenever the notification is
+    meant to be English.
+    """
+    if finding.type == "alarm_disarmed_during_external_threat":
+        return _alarm_disarmed_mobile_message(finding)
+    if finding.type == "appliance_power_duration":
+        return _appliance_power_duration_mobile_message(finding)
+    if (summary := _network_summary(finding)) is not None:
+        hint = _trust_hint(finding, None)
+        if hint is None:
+            return summary[:MAX_MOBILE_MESSAGE_CHARS].rstrip()
+        # The names come first and are cut; the pointer must survive the cut.
+        room = MAX_MOBILE_MESSAGE_CHARS - len(hint) - 1
+        return f"{summary[:room].rstrip()} {hint}"
+    formatter = _TEMPLATE_MOBILE_FORMATTERS.get(
+        str(finding.evidence.get("template_id") or "")
+    )
+    if formatter:
+        return formatter(finding)
+    return None
+
+
+def _batch_body(
+    header: str,
+    held: list[tuple[AnomalyFinding, str | None, str | None]],
+    options: Mapping[str, Any],
+    hass: HomeAssistant | None,
+) -> str:
+    """
+    Return the burst-batch digest: *header* plus one line per held finding.
+
+    Each line is the body the finding's own push would have carried, so a
+    finding delayed by the rate limiter still names its devices, ports, or
+    figures instead of collapsing to a bare type label (a four-device
+    ``network_unconfigured_discovered_device`` finding once reached the phone
+    as "1 home update: Unconfigured device discovered."). Duplicate bodies
+    are listed once.
+    """
+    response_language = str(options.get(CONF_SENTINEL_RESPONSE_LANGUAGE, "") or "")
+    lines: list[str] = []
+    for finding, explanation, _svc in held:
+        body = _mobile_message(explanation, finding, response_language, hass).strip()
+        if body and body not in lines:
+            lines.append(body)
+    if not lines:
+        return header
+    shown: list[str] = []
+    total = len(header)
+    omitted = 0
+    for line in lines:
+        if shown and total + len(line) + 3 > MAX_BATCH_BODY_CHARS:
+            omitted += 1
+            continue
+        shown.append(line)
+        total += len(line) + 3
+    if omitted:
+        shown.append(notif_msg(hass, "batch_more", count=omitted))
+    return header + "\n\n" + "\n".join(f"\u2022 {line}" for line in shown)
+
+
+def _entity_display_name(entity_id: str, names: Mapping[str, str]) -> str | None:
+    """
+    Return the name the also line shows for *entity_id*, or None.
+
+    Friendly names are untrusted entity attributes: control and format
+    characters (bidi overrides, zero-width spaces) are dropped and whitespace
+    collapsed, so a name can neither fake a line nor render as nothing. None
+    when no visible name is left, or the name holds the list separator, since
+    such a device cannot be named recognizably.
+    """
+    raw = names.get(entity_id) or _friendly_entity(entity_id)
+    name = " ".join(
+        "".join(
+            ch if not unicodedata.category(ch).startswith("C") or ch.isspace() else ""
+            for ch in raw
+        ).split()
+    )
+    if any(ch in name for ch in ",()") or not any(ch.isalnum() for ch in name):
+        return None
+    return name
+
+
+def related_findings_line(
+    shown: AnomalyFinding,
+    related: Sequence[AnomalyFinding],
+    snapshot: FullStateSnapshot,
+    options: Mapping[str, Any],
+    hass: HomeAssistant | None = None,
+) -> tuple[str | None, list[AnomalyFinding]]:
+    """
+    Return the "Also: ..." line for a grouped push and the findings it names.
+
+    A grouped push shows *shown*; the other due constituents in *related* are
+    named by their devices (issue #727), most severe first, until the line
+    reaches ``MAX_ALSO_LINE_CHARS``. The engine holds every returned finding
+    as alerted, so a finding is returned only when the push really tells the
+    user about it:
+
+    * it has a device of its own, not one of *shown*'s, and every such device
+      is on the line, so nothing is held without a mention. A device *shown*
+      also has (the alarm panel behind every alarm-disarmed finding) is left
+      off the line: the push already names it, and a same-type finding on
+      it describes the same condition;
+    * each device name on the line belongs to one device in the home: a
+      name (ignoring case) that another device also goes by, under any name
+      a notification may show for it, cannot be told apart;
+    * it is the same type of finding as *shown*: a device name says what is
+      wrong only when the condition is the one the push describes, so a
+      stranger on camera or an unlocked lock is never reduced to a name;
+    * or it is about the same door or window as *shown* (its subject
+      device, see ``_subject_entity``) and its condition has a curated
+      phrase (``_condition_label``): the line names that device with each
+      condition, "Garage Window (open while home, alarm disarmed)", so one
+      window tripping several rules is one push (field test of #727). Its
+      own phrase must be on the line and true of that device. A rule
+      without a curated phrase keeps its own push: a label made from an
+      approved rule's id can say something else entirely;
+    * it is routed to the same notify service as *shown*, so a finding for
+      another area's phone is not held after reaching the wrong one.
+
+    Any other finding is left out and keeps coming due on its own.
+    """
+    names = {
+        str(entity["entity_id"]): str(entity.get("friendly_name") or "").strip()
+        for entity in snapshot.get("entities", [])
+        if entity.get("entity_id")
+    }
+    owners = _name_owners(shown, related, names)
+    target = _resolve_notify_service(shown, snapshot, options)
+    ordered = sorted(
+        related,
+        key=lambda f: (SEVERITY_RANK.get(f.severity, 0), f.confidence),
+        reverse=True,
+    )
+    # Room for the "+N more" suffix is kept from the start: it can only grow
+    # as later findings fail to fit.
+    budget = MAX_ALSO_LINE_CHARS - len(
+        " " + notif_msg(hass, "also_more", count=_ALSO_MORE_RESERVED_COUNT)
+    )
+    listed: dict[str, str] = {}
+    left_out: set[str] = set()
+    named: list[AnomalyFinding] = []
+    conditions = _same_device_conditions(
+        shown, ordered, snapshot, options, names, owners, budget, hass
+    )
+    head: list[str] = []
+    if conditions is not None:
+        head_text, same_device = conditions
+        named.extend(same_device)
+        head = [head_text] if head_text else []
+    for finding in ordered:
+        if (
+            finding in named
+            or not finding.triggering_entities
+            or finding.type != shown.type
+            or _resolve_notify_service(finding, snapshot, options) != target
+        ):
+            continue
+        own = [
+            entity_id
+            for entity_id in finding.triggering_entities
+            if entity_id not in shown.triggering_entities
+        ]
+        if not own:
+            continue
+        new = {
+            entity_id: _entity_display_name(entity_id, names)
+            for entity_id in own
+            if entity_id not in listed
+        }
+        if any(
+            name is None or owners.get(name.casefold()) != {entity_id}
+            for entity_id, name in new.items()
+        ):
+            left_out.update(new)
+            continue
+        shown_new = {
+            entity_id: name for entity_id, name in new.items() if name is not None
+        }
+        candidate = [*head, *listed.values(), *shown_new.values()]
+        if new and len(_also_text(candidate, 0, hass)) > budget:
+            left_out.update(new)
+            continue
+        listed.update(shown_new)
+        named.append(finding)
+    left_out.difference_update(listed)
+    if not head and not listed:
+        # Nothing on the line: hold nothing, so a push the batch or a failed
+        # delivery loses can never take a partner down with it.
+        return None, []
+    return _also_text([*head, *listed.values()], len(left_out), hass), named
+
+
+def _same_device_conditions(  # noqa: PLR0913
+    shown: AnomalyFinding,
+    ordered: Sequence[AnomalyFinding],
+    snapshot: FullStateSnapshot,
+    options: Mapping[str, Any],
+    names: Mapping[str, str],
+    owners: Mapping[str, set[str]],
+    budget: int,
+    hass: HomeAssistant | None,
+) -> tuple[str | None, list[AnomalyFinding]] | None:
+    """
+    Return the "<device> (<conditions>)" head and the partners it covers.
+
+    Partners about *shown*'s subject device whose condition has a curated
+    phrase that is true of that device (see ``_condition_label``). A partner
+    is covered only when its own phrase is on the line, even one the shown
+    finding states too: its copy may never say it. One phrase covers only
+    partners with the same other devices (the alarm panel), so a second
+    panel's finding keeps its own push. None when *shown* has no nameable
+    subject.
+    """
+    subject = _subject_entity(shown)
+    if subject is None:
+        return None
+    subject_name = _entity_display_name(subject, names)
+    if subject_name is None or owners.get(subject_name.casefold()) != {subject}:
+        return None
+    entity = _snapshot_entity(subject, snapshot)
+    if entity is None:
+        return None
+    target = _resolve_notify_service(shown, snapshot, options)
+    implied = _implied_context(shown, snapshot)
+    phrases: dict[str, frozenset[str]] = {}
+    covered: list[AnomalyFinding] = []
+    for finding in ordered:
+        if (
+            _subject_entity(finding) != subject
+            or _resolve_notify_service(finding, snapshot, options) != target
+        ):
+            continue
+        condition = _condition_label(finding, entity, hass)
+        if condition is None:
+            continue
+        context = frozenset(finding.triggering_entities) - {subject}
+        # The phrase must not leave a device unidentified: an alarm panel is
+        # named by "alarm disarmed" only when the push is about it or it is
+        # the home's only panel.
+        if not context <= implied:
+            continue
+        if condition in phrases:
+            if phrases[condition] == context:
+                covered.append(finding)
+            continue
+        head = _subject_text(subject_name, [*phrases, condition])
+        if len(_also_text([head], 0, hass)) > budget or head.casefold() in owners:
+            # Over the budget, or the rendered text is another device's name.
+            continue
+        phrases[condition] = context
+        covered.append(finding)
+    if not phrases:
+        return None, []
+    return _subject_text(subject_name, list(phrases)), covered
+
+
+def _implied_context(
+    shown: AnomalyFinding, snapshot: FullStateSnapshot
+) -> frozenset[str]:
+    """
+    Return the devices a condition phrase may leave unnamed.
+
+    Those the push is already about (*shown*'s), and the home's alarm panel
+    when it has exactly one. An approved alarm rule may watch another entity
+    (an alarm-mode select); "alarm disarmed" names only a lone panel.
+    """
+    by_domain: dict[str, list[str]] = {}
+    for entity in snapshot.get("entities", []):
+        entity_id = str(entity.get("entity_id") or "")
+        if entity_id:
+            by_domain.setdefault(entity_id.split(".", 1)[0], []).append(entity_id)
+    panels = by_domain.get("alarm_control_panel", [])
+    sole = set(panels) if len(panels) == 1 else set()
+    return frozenset({*shown.triggering_entities, *sole})
+
+
+def _subject_text(name: str, phrases: list[str]) -> str:
+    """Render "<device> (<condition>, <condition>)"."""
+    return f"{name} ({', '.join(phrases)})"
+
+
+def _subject_entity(finding: AnomalyFinding) -> str | None:
+    """
+    Return the device *finding* is about, or None.
+
+    The entry an open-entry or alarm-disarmed finding names, the entity a
+    duration finding watches, else the single triggering entity. The alarm
+    panel an alarm-disarmed finding also carries is context, not subject.
+    """
+    evidence = finding.evidence
+    for key in ("entry_entity_id", "entity_id"):
+        value = evidence.get(key)
+        if isinstance(value, str) and value:
+            return value
+    if len(finding.triggering_entities) == 1:
+        return finding.triggering_entities[0]
+    return None
+
+
+# Curated condition phrases for same-device folding, by template id (approved
+# rules) or type (built-in rules). Only these: an approved rule's own label is
+# built from its id, which the discovery model wrote and which can describe a
+# different condition ("garage window open away night" on a rule that fires
+# whenever the window has been open two hours).
+_CONDITION_KEYS = {
+    "open_entry_while_away": "condition_open_while_away",
+    "open_entry_when_home": "condition_open_while_home",
+    "open_entry_at_night": "condition_open_at_night",
+    "open_entry_at_night_when_home": "condition_open_at_night",
+    "open_entry_at_night_while_away": "condition_open_at_night",
+    "open_any_window_at_night_while_away": "condition_open_at_night",
+    "alarm_disarmed_open_entry": "condition_alarm_disarmed",
+}
+_DURATION_CONDITION_KEYS = {
+    "on": "condition_open_too_long",
+    "open": "condition_open_too_long",
+    "unlocked": "condition_unlocked_too_long",
+}
+
+
+def _condition_label(
+    finding: AnomalyFinding,
+    subject: Mapping[str, Any],
+    hass: HomeAssistant | None,
+) -> str | None:
+    """
+    Return *finding*'s curated condition phrase, or None.
+
+    Only when the phrase is true of *subject*, the device's snapshot entry:
+    approved rules pick their devices by name, so "on" may be a motion
+    sensor or a lock-class sensor rather than an open door. An "open" phrase
+    needs a door, window or cover; "unlocked" needs a lock.
+    """
+    template_id = str(finding.evidence.get("template_id") or "")
+    if template_id == "entity_state_duration":
+        key = _DURATION_CONDITION_KEYS.get(str(finding.evidence.get("state") or ""))
+    else:
+        key = _CONDITION_KEYS.get(template_id or finding.type)
+    if key is None:
+        return None
+    is_true = (
+        _is_lock_device(subject)
+        if key == "condition_unlocked_too_long"
+        else _is_entry_device(subject)
+    )
+    return notif_msg(hass, key) if is_true else None
+
+
+# Device classes whose "on" state means open, and covers (garage doors,
+# gates), whose "open" state does.
+_ENTRY_DEVICE_CLASSES = frozenset({"door", "window", "opening", "garage_door"})
+
+
+def _device_class(entity: Mapping[str, Any]) -> str | None:
+    """Return *entity*'s device class when it is a string."""
+    # Attributes come from integrations; a malformed device class (a list,
+    # say) must not raise and lose the alert.
+    attributes = entity.get("attributes")
+    if not isinstance(attributes, dict):
+        return None
+    device_class = attributes.get("device_class")
+    return device_class if isinstance(device_class, str) else None
+
+
+def _is_entry_device(entity: Mapping[str, Any]) -> bool:
+    """Return True when *entity* is a door, window, or cover."""
+    if entity.get("domain") == "cover":
+        return True
+    return _device_class(entity) in _ENTRY_DEVICE_CLASSES
+
+
+def _is_lock_device(entity: Mapping[str, Any]) -> bool:
+    """Return True when *entity* is a lock (or a lock-class binary sensor)."""
+    return entity.get("domain") == "lock" or _device_class(entity) == "lock"
+
+
+def _snapshot_entity(
+    entity_id: str, snapshot: FullStateSnapshot | None
+) -> Mapping[str, Any] | None:
+    """Return *entity_id*'s snapshot entry, or None."""
+    if not entity_id:
+        return None
+    for entity in (snapshot or {}).get("entities", []):
+        if entity.get("entity_id") == entity_id:
+            return entity
+    return None
+
+
+def _name_aliases(entity_id: str, names: Mapping[str, str]) -> set[str]:
+    """
+    Return every name a notification may show for *entity_id*, casefolded.
+
+    The friendly name, the name derived from the id (the fallback copy), and
+    the appliance copy's forms of both without a "Power"-style suffix. A
+    friendly name the also line refuses to list (one with parentheses) is
+    still an alias: rendered text could match it.
+    """
+    aliases: set[str] = set()
+    raw = " ".join(
+        "".join(
+            ch if not unicodedata.category(ch).startswith("C") or ch.isspace() else ""
+            for ch in str(names.get(entity_id) or "")
+        ).split()
+    )
+    for name in (
+        _entity_display_name(entity_id, names),
+        raw,
+        _friendly_entity(entity_id),
+    ):
+        if name:
+            aliases.update(
+                alias.casefold() for alias in (name, _strip_power_suffix(name)) if alias
+            )
+    return aliases
+
+
+def _name_owners(
+    shown: AnomalyFinding,
+    related: Sequence[AnomalyFinding],
+    names: Mapping[str, str],
+) -> dict[str, set[str]]:
+    """
+    Map each casefolded name to the devices that may go by it.
+
+    Covers every device in the snapshot and in the push, so a name shared
+    with a device elsewhere in the home is caught, plus the names the shown
+    finding's own copy takes from its evidence (the appliance name, the
+    entry an alarm finding is about).
+    """
+    owners: dict[str, set[str]] = {}
+    entity_ids = {
+        *names,
+        *shown.triggering_entities,
+        *(
+            entity_id
+            for finding in related
+            for entity_id in finding.triggering_entities
+        ),
+    }
+    entry_id = str(shown.evidence.get("entry_entity_id") or "")
+    if entry_id:
+        entity_ids.add(entry_id)
+    for entity_id in entity_ids:
+        for alias in _name_aliases(entity_id, names):
+            owners.setdefault(alias, set()).add(entity_id)
+    evidence_name = str(shown.evidence.get("friendly_name") or "").strip()
+    if evidence_name:
+        # Belongs to the shown device when there is one; otherwise to no
+        # device, so every partner going by it is refused.
+        owner = (
+            shown.triggering_entities[0]
+            if len(shown.triggering_entities) == 1
+            else "\0shown"
+        )
+        for alias in {evidence_name, _strip_power_suffix(evidence_name)}:
+            if alias:
+                owners.setdefault(alias.casefold(), set()).add(owner)
+    return owners
+
+
+def _also_text(names: list[str], more: int, hass: HomeAssistant | None) -> str:
+    """Render the also line for *names*, plus a count of devices left out."""
+    text = notif_msg(hass, "also_line", names=", ".join(names))
+    if more:
+        count = min(more, _ALSO_MORE_RESERVED_COUNT)
+        text = f"{text} {notif_msg(hass, 'also_more', count=count)}"
+    return text
+
+
+def _mobile_message(
+    explanation: str | None,
+    finding: AnomalyFinding,
+    response_language: str = "",
+    hass: HomeAssistant | None = None,
+) -> str:
+    """
+    Return the mobile push body for *finding*.
+
+    Deterministic per-template formatters win by default.  When a response
+    language is configured the translated *explanation* wins instead for
+    informational findings: the deterministic strings are English-only, so
+    they would otherwise be the one part of the notification that ignores the
+    setting — and because ``_persistent_message`` already prefers the
+    explanation, the mobile push and the persistent notification would
+    disagree for the same finding.
+
+    Security copy (see ``is_security_copy``) is exempt and stays
+    deterministic in every case: losing the camera, the entry, the disarm
+    time, or the call to action matters more than the language it is in.
+
+    Falls back to the deterministic string when no translation is usable
+    (explainer disabled or empty explanation): accurate English beats a
+    generic English fallback.
+    """
+    deterministic = _deterministic_mobile_message(finding)
+    if deterministic is not None and (
+        not response_language or is_security_copy(finding)
+    ):
+        return deterministic
+    if explanation:
+        text = _normalize_text(explanation)
+        if text and len(text) <= MAX_MOBILE_MESSAGE_CHARS:
+            return text
+    if deterministic is not None:
+        return deterministic
+    return _fallback_message(finding, hass)[:MAX_MOBILE_MESSAGE_CHARS].rstrip()
+
+
+def _persistent_message(
+    explanation: str | None,
+    finding: AnomalyFinding,
+    hass: HomeAssistant | None = None,
+) -> str:
+    # Security copy never yields to model prose (see is_security_copy):
+    # the summary names the token, port, or account, and a paraphrase built
+    # from attacker-influenced evidence could drop or reshape it.
+    if (summary := _network_summary(finding)) is not None:
+        hint = _trust_hint(finding, hass)
+        text = escape_markdown(summary)
+        return f"{text}\n\n{escape_markdown(hint)}" if hint else text
+    if explanation:
+        text = _normalize_text(explanation)
+        if text:
+            return text
+
+    if finding.type == "appliance_power_duration":
+        return _appliance_power_duration_mobile_message(finding)
+
+    entities = ", ".join(
+        _friendly_entity(entity) for entity in finding.triggering_entities
+    )
+    entities = entities or notif_msg(hass, "fallback_unknown_entity")
+    severity_key = _SEVERITY_WORD_KEYS.get(finding.severity)
+    severity_word = notif_msg(hass, severity_key) if severity_key else finding.severity
+    return notif_msg(
+        hass,
+        "persistent_fallback",
+        summary=_display_type(finding, hass),
+        severity=severity_word,
+        entities=entities,
+        hint=_severity_action_hint(finding.severity, hass),
+    )
+
+
+def _severity_action_hint(severity: str, hass: HomeAssistant | None = None) -> str:
+    key = {"high": "action_hint_high", "medium": "action_hint_medium"}.get(
+        severity, "action_hint_low"
+    )
+    return notif_msg(hass, key)

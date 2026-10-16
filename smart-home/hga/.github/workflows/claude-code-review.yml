@@ -1,0 +1,70 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+    # Optional: Only run on specific file changes
+    # paths:
+    #   - "src/**/*.ts"
+    #   - "src/**/*.tsx"
+    #   - "src/**/*.js"
+    #   - "src/**/*.jsx"
+
+jobs:
+  claude-review:
+    # Optional: Filter by PR author
+    # if: |
+    #   github.event.pull_request.user.login == 'external-contributor' ||
+    #   github.event.pull_request.user.login == 'new-developer' ||
+    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+
+    runs-on: ubuntu-latest
+    env:
+      # secrets is not an allowed context in step-level `if`, so surface the
+      # check here. Dependabot-triggered runs read from the Dependabot secrets
+      # store, which has no token, so this is 'false' for them.
+      HAS_CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    permissions:
+      contents: read
+      # write: the review now posts its findings (a summary comment, or
+      # inline comments per issue); read-only would block that whenever the
+      # action posts with the job token rather than the Claude app's.
+      pull-requests: write
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        id: claude-review
+        # Only run if credentials are available (see HAS_CLAUDE_TOKEN above).
+        if: ${{ env.HAS_CLAUDE_TOKEN == 'true' }}
+        uses: anthropics/claude-code-action@v1
+        env:
+          # The plugin's first step launches an eligibility-check subagent.
+          # Since Claude Code 2.1.198 subagents run in the background by
+          # default, so the headless run ended its turn to wait for it and the
+          # job exited "passed" in ~30 s having reviewed nothing (every run
+          # since, e.g. #679/#680: "The eligibility check is still running").
+          # Foreground subagents let each step finish before the next.
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          # --comment: without it the plugin prints its findings to the job's
+          # terminal and stops, and the job log hid that output, so every review
+          # was discarded unread.
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
+          allowed_bots: 'dependabot,dependabot[bot]'
+          # Off: the transcript lands in the public job log. It was on to find
+          # why reviews stopped after ~2 turns (background subagents, fixed by
+          # CLAUDE_CODE_DISABLE_BACKGROUND_TASKS above; verified on #679/#680).
+          show_full_output: false
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
+          

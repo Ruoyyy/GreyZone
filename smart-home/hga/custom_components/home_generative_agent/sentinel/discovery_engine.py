@@ -1,0 +1,1117 @@
+"""LLM discovery engine for advisory anomaly ideas."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import hashlib
+import json
+import logging
+import re
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, cast
+
+import voluptuous as vol
+from homeassistant.util import dt as dt_util
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from custom_components.home_generative_agent.const import (
+    CONF_SENTINEL_DISCOVERY_INTERVAL_SECONDS,
+)
+from custom_components.home_generative_agent.core.utils import (
+    SENTINEL_ADMISSION_TIMEOUT_S,
+    SentinelLLMDeferredError,
+    extract_final,
+    run_sentinel_model_call,
+)
+from custom_components.home_generative_agent.explain.discovery_prompts import (
+    SYSTEM_PROMPT,
+    USER_PROMPT_TEMPLATE,
+)
+from custom_components.home_generative_agent.snapshot.builder import (
+    async_build_full_state_snapshot,
+)
+from custom_components.home_generative_agent.snapshot.discovery_reducer import (
+    reduce_snapshot_for_discovery,
+)
+
+from .discovery_schema import DISCOVERY_OUTPUT_SCHEMA, DISCOVERY_SCHEMA_VERSION
+from .discovery_semantic import (
+    battery_evidence_entity_id,
+    battery_slug_device_token,
+    candidate_semantic_key,
+    entity_evidence_path,
+    is_battery_level_entity_id,
+    rule_semantic_key,
+    sanitize_environmental_candidate,
+)
+from .evidence_paths import (
+    is_derived_path,
+    network_client_keys,
+    network_posture_keys,
+)
+from .logging_utils import RepeatingLogLimiter
+from .proposal_templates import explain_normalize_candidate
+from .redaction import redact_network_identifiers
+from .rules.network_common import NETWORK_RULE_TYPES
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
+    from .baseline import SentinelBaselineUpdater
+    from .discovery_store import DiscoveryStore
+    from .proposal_store import ProposalStore
+    from .rule_registry import RuleRegistry
+
+LOGGER = logging.getLogger(__name__)
+
+# Hard cap on discovery LLM calls: prevents the chat model from being
+# monopolised when the snapshot is large (observed 180s+ without a cap).
+_DISCOVERY_LLM_TIMEOUT_S: float = 60.0
+# Max semantic keys sent in the discovery prompt. The post-hoc filter catches
+# any duplicates that slip through, so a generous cap is safe.
+_MAX_SEMANTIC_KEYS_IN_PROMPT: int = 60
+
+# Markers that identify rule-derived baseline monitoring hint keys.
+# rule_semantic_key() for baseline_deviation and time_of_day_anomaly embeds
+# |template=<name>| in the key; candidate_semantic_key() never does.
+# Using template markers (not predicate markers) is critical: candidate keys
+# with predicate=power_anomaly may be multi-entity bundles from rejected or
+# pending proposals, and a single bundle key must not suppress individual
+# entity proposals for all entities it lists.
+_BASELINE_TEMPLATE_MARKERS: frozenset[str] = frozenset(
+    {
+        "|template=baseline_deviation",
+        "|template=time_of_day_anomaly",
+    }
+)
+
+_ENTITIES_FIELD_RE = re.compile(r"\|entities=([^|]*)")
+# Third alternative: bare-bracket evidence format entities[sensor.foo].state
+# (issue #522). Without it, all-bare-bracket evidence yields an empty
+# evidence set — short-circuiting the entity-text mismatch guard — and
+# mixed-format evidence reads a legitimately-cited entity as a hallucination,
+# silently dropping an approvable candidate. Pseudo-domain tokens
+# (entities[derived.x]) are harmless here: the evidence set is only an
+# exclusion list matched against real snapshot entity IDs.
+_EVIDENCE_ENTITY_RE = re.compile(
+    r"\bentity_id=([a-z0-9_]+\.[a-z0-9_]+)|"
+    r"\bentity_ids\s+contains\s+([a-z0-9_]+\.[a-z0-9_]+)|"
+    r"\bentities\[['\"`]*([a-z0-9_]+\.[a-z0-9_]+)"
+)
+_TEXT_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_ENTITY_DESCRIPTOR_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "binary",
+        "class",
+        "device",
+        "entity",
+        "high",
+        "low",
+        "percentage",
+        "sensor",
+        "state",
+        "switch",
+    }
+)
+_MIN_PLURAL_TOKEN_LENGTH = 3
+
+
+def _is_cumulative_energy_entity(entity_id: str) -> bool:
+    """
+    Return True for monotonically increasing kWh counters.
+
+    These sensors can never produce meaningful rolling-average baseline
+    proposals — the ever-growing value drifts away from any fixed baseline.
+    Mirrors proposal_templates._is_cumulative_energy_sensor. Used only for
+    the monitoring-gap hint; dropping a candidate is decided by the
+    normalizer itself (_is_unpromotable_cumulative_energy), so the two
+    cannot disagree on which candidates are unpromotable.
+    """
+    local = entity_id.split(".", 1)[-1] if "." in entity_id else entity_id
+    return local.endswith("_energy") or local == "energy"
+
+
+def _is_unpromotable_cumulative_energy(candidate: dict[str, Any]) -> bool:
+    """
+    Return True when normalization would reject a cumulative energy counter.
+
+    A statistical candidate over a kWh counter (the value only ever grows)
+    can never become a rule, so letting it through only mints an
+    "unsupported" draft the user has to reject by hand. The monitoring-gap
+    hint already omits these counters, but the model still finds them in the
+    snapshot. Ask the normalizer itself rather than re-deriving its routing
+    here: a THRESHOLD candidate on the same counter is a valid rule and must
+    pass. The normalizer assumes string evidence paths, so a candidate with
+    junk elements is left to the existing gates rather than crashing the
+    discovery cycle.
+    """
+    evidence_paths = candidate.get("evidence_paths")
+    if not isinstance(evidence_paths, list) or not all(
+        isinstance(p, str) for p in evidence_paths
+    ):
+        return False
+    return (
+        explain_normalize_candidate(candidate).reason_code == "cumulative_energy_sensor"
+    )
+
+
+def _is_battery_level_entity(hass: HomeAssistant, entity_id: str) -> bool:
+    """
+    Metadata-first battery-level check for the monitoring-gap exclusion.
+
+    Live state metadata is locale-independent and authoritative where
+    present: a ``device_class: battery`` sensor is a charge level whatever
+    its object id says (``sensor.zamek_vrata_baterie``), and any other
+    declared device_class or a non-percent unit marks a telemetry stream
+    (``sensor.ev_battery_charging_rate``) that must stay baseline-eligible
+    even though its name contains "battery" (Codex review rounds). Only
+    when metadata is absent does the English name heuristic decide.
+    """
+    state = hass.states.get(entity_id)
+    if state is not None:
+        attributes = getattr(state, "attributes", {}) or {}
+        device_class = attributes.get("device_class")
+        if device_class is not None:
+            return device_class == "battery"
+        unit = attributes.get("unit_of_measurement")
+        if unit is not None and unit != "%":
+            return False
+    return is_battery_level_entity_id(entity_id)
+
+
+def _battery_level_entity_ids(
+    hass: HomeAssistant, snapshot: Mapping[str, Any]
+) -> list[str]:
+    """
+    List the battery-LEVEL sensors this home actually reports.
+
+    Sourced from the snapshot (the authoritative home-state representation)
+    and classified by the same metadata-first predicate the monitoring-gap
+    exclusion uses, so there is one answer to "is this a battery level" in
+    this module rather than two that can drift.
+    """
+    entity_ids: list[str] = []
+    for entity in snapshot.get("entities", []):
+        if not isinstance(entity, Mapping):
+            continue
+        entity_id = str(entity.get("entity_id", ""))
+        if entity_id.startswith("sensor.") and _is_battery_level_entity(
+            hass, entity_id
+        ):
+            entity_ids.append(entity_id)
+    return entity_ids
+
+
+def _backfill_battery_evidence(
+    candidate: dict[str, Any],
+    key: str | None,
+    battery_entity_ids: list[str] | None,
+) -> tuple[dict[str, Any], str | None]:
+    """
+    Cite the sensor an evidence-less low-battery candidate only names.
+
+    Issue #571's remaining symptom: the discovery LLM writes the device
+    address into the slug and the prose but leaves evidence_paths empty, so
+    the candidate keys None and falls back to an identity hash — and a hash
+    can never equal the semantic key of the properly-evidenced proposal
+    about the same sensor. The two describe one idea and sit side by side on
+    the approval card forever.
+
+    The prompt already forbids this shape (ENTITY REQUIREMENT) and the model
+    emits it anyway, which is why the enforcement here is deterministic
+    rather than another sentence of instruction: resolve the address against
+    the sensors the home actually reports and add the evidence path the
+    candidate should have carried.
+
+    Returns the (candidate, key) pair to carry on with — the originals
+    unchanged unless a sensor was resolved. Only null-key candidates are
+    eligible: one that already keys semantically is already deduping, and
+    adding evidence to it would move the key it is deduping on.
+
+    The rewritten key is re-computed and required to be non-null before the
+    rewrite is accepted: a path that buys no key would be a fabricated
+    citation on the card for no dedup benefit.
+    """
+    if key is not None or not battery_entity_ids:
+        return candidate, key
+    entity_id = battery_evidence_entity_id(candidate, battery_entity_ids)
+    if entity_id is None:
+        return candidate, key
+    path = entity_evidence_path(entity_id)
+    existing = candidate.get("evidence_paths")
+    paths: list[Any] = list(existing) if isinstance(existing, list) else []
+    if path in paths:
+        return candidate, key
+    enriched = dict(candidate)
+    enriched["evidence_paths"] = [*paths, path]
+    backfilled_key = candidate_semantic_key(enriched)
+    if backfilled_key is None:
+        return candidate, key
+    # Marked so the stored record, the approval card, and any later audit
+    # can tell a cited entity the model chose from one the integration
+    # resolved on its behalf.
+    enriched["evidence_backfilled"] = True
+    LOGGER.debug(
+        "Discovery backfilled battery evidence for %s: %s",
+        enriched.get("candidate_id"),
+        path,
+    )
+    return enriched, backfilled_key
+
+
+def _entity_ids_from_key(key: str) -> set[str]:
+    """Parse the entities= CSV field from a semantic key into exact entity IDs."""
+    m = _ENTITIES_FIELD_RE.search(key)
+    if not m:
+        return set()
+    return {e for e in m.group(1).split(",") if e}
+
+
+_STATIC_RULE_IDS: frozenset[str] = frozenset(
+    {
+        "unlocked_lock_at_night",
+        "open_entry_while_away",
+        "appliance_power_duration",
+        "camera_entry_unsecured",
+        "unknown_person_camera_no_home",
+        "unknown_person_camera_night_home",
+        "vehicle_detected_near_camera_home",
+        "camera_missing_snapshot_night_home",
+        "alarm_disarmed_during_external_threat",
+        "phone_battery_low_at_night_home",
+    }
+    # The HA / network security family, so discovery does not re-propose
+    # "alert on unavailable locks" or "failed logins" as candidates.
+    | NETWORK_RULE_TYPES
+)
+
+
+class SentinelDiscoveryEngine:
+    """Periodic LLM discovery loop (advisory only)."""
+
+    def __init__(  # noqa: PLR0913
+        self,
+        hass: HomeAssistant,
+        options: dict[str, object],
+        model: Any,
+        store: DiscoveryStore,
+        rule_registry: RuleRegistry | None = None,
+        proposal_store: ProposalStore | None = None,
+        baseline_updater: SentinelBaselineUpdater | None = None,
+        deployment: str = "edge",
+        health_stats: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize advisory discovery dependencies and runtime state."""
+        self._hass = hass
+        self._options = options
+        self._model = model
+        self._store = store
+        self._rule_registry = rule_registry
+        self._proposal_store = proposal_store
+        self._baseline_updater = baseline_updater
+        self._deployment = deployment
+        self._health_stats = health_stats
+        self._task: asyncio.Task[None] | None = None
+        self._stop_event = asyncio.Event()
+        self._run_lock = asyncio.Lock()
+        self._discovery_cycle_stats: dict[str, int] = {}
+        self._log_limiter = RepeatingLogLimiter(LOGGER)
+        # One-way latch set by stop(). An engine belongs to exactly one
+        # config-entry setup, so once it has been stopped it must never run
+        # again — see the note in start().
+        self._stopped = False
+
+    def start(self) -> None:
+        """Start the discovery loop."""
+        # A deferred start can still be in flight when the entry unloads.
+        # async_unload_entry() calls stop() and then awaits several more times,
+        # and Home Assistant runs the entry's on-unload callbacks only after it
+        # returns — so EVENT_HOMEASSISTANT_STARTED landing in one of those
+        # windows would resurrect this instance moments before HA deletes its
+        # runtime_data, leaving an orphaned discovery loop with stale options
+        # proposing candidates alongside the replacement entry. The listener
+        # cancel cannot close that window; the latch can, because it is checked
+        # here rather than at dispatch.
+        if self._stopped:
+            LOGGER.debug("SentinelDiscoveryEngine stopped; refusing to start.")
+            return
+
+        if self._task is not None:
+            return
+        self._stop_event.clear()
+        self._task = self._hass.async_create_task(self._run_loop())
+
+    async def stop(self) -> None:
+        """Stop the discovery loop."""
+        # Latch before the not-started early return, not after: the entry that
+        # never started is exactly the one whose deferred start is still armed.
+        self._stopped = True
+
+        if self._task is None:
+            return
+        self._stop_event.set()
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+        self._task = None
+
+    async def _run_loop(self) -> None:
+        interval = _coerce_int(
+            self._options.get(CONF_SENTINEL_DISCOVERY_INTERVAL_SECONDS), default=3600
+        )
+        while not self._stop_event.is_set():
+            try:
+                await self._run_once_guarded()
+            except Exception:  # noqa: BLE001
+                # A dead loop silently disables discovery until the
+                # integration reloads (issue #465); drop the cycle and
+                # keep the loop alive.
+                self._log_limiter.warning(
+                    "cycle_error",
+                    "Discovery cycle failed unexpectedly; will retry next interval.",
+                    exc_info=True,
+                )
+            else:
+                self._log_limiter.recovered(
+                    "cycle_error",
+                    "Discovery cycle recovered after %d failed cycle(s).",
+                )
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
+            except TimeoutError:
+                continue
+
+    async def async_run_now(self) -> bool:
+        """Run one discovery cycle immediately if idle."""
+        if self._run_lock.locked():
+            LOGGER.debug("Discovery run already in progress; skipping manual trigger.")
+            return False
+        await self._run_once_guarded()
+        return True
+
+    async def _run_once_guarded(self) -> None:
+        async with self._run_lock:
+            await self._run_once()
+
+    @property
+    def discovery_cycle_stats(self) -> dict[str, int]:
+        """Return stats from the most recent discovery cycle."""
+        return dict(self._discovery_cycle_stats)
+
+    async def _run_once(self) -> None:  # noqa: PLR0911, PLR0912, PLR0915
+        self._discovery_cycle_stats = {
+            "candidates_generated": 0,
+            "candidates_novel": 0,
+            "candidates_deduplicated": 0,
+            "unsupported_ttl_expired": 0,
+        }
+        if self._model is None:
+            LOGGER.warning("Discovery skipped: no model configured.")
+            return
+
+        try:
+            snapshot = await async_build_full_state_snapshot(self._hass)
+        except (ValueError, TypeError, KeyError):
+            self._log_limiter.warning(
+                "snapshot_build",
+                "Failed to build snapshot for discovery.",
+            )
+            return
+        self._log_limiter.recovered(
+            "snapshot_build",
+            "Discovery snapshot build recovered after %d failed cycle(s).",
+        )
+
+        if self._baseline_updater is not None:
+            ready_ids = await self._baseline_updater.async_fetch_ready_entity_ids()
+            snapshot["derived"]["baseline_ready_entities"] = ready_ids
+
+        # The reducer's network section carries pseudonymized client keys
+        # and boolean router settings only; the gate catches any address a
+        # future field could bring (network-security-plan.md, step 8).
+        reduced_snapshot = redact_network_identifiers(
+            reduce_snapshot_for_discovery(snapshot)
+        )
+        compact_snapshot = json.dumps(
+            reduced_snapshot, default=str, separators=(",", ":")
+        )
+        # Bug 3 fix: prune stale unsupported proposals before building exclusion
+        # context so they stop blocking the card indefinitely.  Wrapped in
+        # try/except so a cleanup failure never aborts the discovery cycle.
+        if self._proposal_store is not None:
+            try:
+                expired = await self._proposal_store.cleanup_unsupported_ttl()
+                if expired:
+                    LOGGER.debug(
+                        "Discovery TTL cleanup: expired %d unsupported proposal(s).",
+                        expired,
+                    )
+                    self._discovery_cycle_stats["unsupported_ttl_expired"] += expired
+            except Exception:  # noqa: BLE001
+                self._log_limiter.warning(
+                    "ttl_cleanup",
+                    "Discovery TTL cleanup failed; continuing.",
+                    exc_info=True,
+                )
+        (
+            active_rule_ids,
+            hint_keys,
+            filter_keys,
+        ) = await self._existing_semantic_context()
+        # hint_keys: active rules + pending proposals — what is truly active or
+        # awaiting approval.  Sent to the LLM so it avoids re-proposing covered
+        # topics.  History record keys are intentionally excluded: a past
+        # multi-entity bundle key listing "sensor.fridge_switch_0_power" among
+        # several others would mislead the LLM into thinking each individual
+        # entity is already monitored, suppressing standalone proposals.
+        # filter_keys: full set including history — used only by the post-hoc
+        # dedup filter to prevent identical candidates from re-appearing.
+        capped_keys = sorted(hint_keys)[:_MAX_SEMANTIC_KEYS_IN_PROMPT]
+
+        # Compute monitoring gaps: baseline-ready entities with no active
+        # statistical anomaly rule.  Only rule_semantic_key()-derived keys
+        # contain |template=<name>|; candidate_semantic_key()-derived keys never
+        # do.  Using template markers prevents rejected or pending multi-entity
+        # bundle proposals (which list many entity_ids in one key) from
+        # suppressing individual entity proposals for every entity they mention.
+        baseline_hint_keys = {
+            k for k in hint_keys if any(m in k for m in _BASELINE_TEMPLATE_MARKERS)
+        }
+        try:
+            baseline_ready: list[str] = (
+                reduced_snapshot.get("derived", {}).get("baseline_ready_entities") or []
+            )
+        except (AttributeError, TypeError):
+            baseline_ready = []
+        covered_entity_ids: set[str] = set()
+        for key in baseline_hint_keys:
+            covered_entity_ids.update(_entity_ids_from_key(key))
+        # Battery-level sensors are excluded like cumulative energy counters:
+        # a battery percentage declines monotonically, so baseline deviation
+        # on it is only a laggy low-battery detector — and gap-hinting them
+        # makes the LLM propose confusing occupancy/night-conditioned battery
+        # candidates the threshold template never evaluates.
+        unmonitored = [
+            eid
+            for eid in baseline_ready
+            if eid not in covered_entity_ids
+            and not _is_cumulative_energy_entity(eid)
+            and not _is_battery_level_entity(self._hass, eid)
+        ]
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            for eid in baseline_ready:
+                if eid in covered_entity_ids:
+                    covering = [
+                        k for k in baseline_hint_keys if eid in _entity_ids_from_key(k)
+                    ]
+                    LOGGER.debug(
+                        "Discovery gap: %s covered by %d key(s): %s",
+                        eid,
+                        len(covering),
+                        covering,
+                    )
+        LOGGER.debug(
+            "Discovery gap analysis: %d baseline-ready, %d baseline hint keys, "
+            "%d unmonitored: %s",
+            len(baseline_ready),
+            len(baseline_hint_keys),
+            len(unmonitored),
+            unmonitored,
+        )
+        unmonitored_json = json.dumps(unmonitored, separators=(",", ":"))
+
+        now = dt_util.utcnow().isoformat()
+        # Rule ids and stored semantic keys join the prompt after the
+        # snapshot, so the rendered prompt passes the gate as a whole.
+        prompt = redact_network_identifiers(
+            USER_PROMPT_TEMPLATE.format(
+                snapshot=compact_snapshot,
+                active_rule_ids=json.dumps(
+                    sorted(active_rule_ids), separators=(",", ":")
+                ),
+                existing_semantic_keys=json.dumps(capped_keys, separators=(",", ":")),
+                unmonitored_baseline_entities=unmonitored_json,
+            )
+        )
+        messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=prompt)]
+
+        try:
+            result = await run_sentinel_model_call(
+                self._model,
+                messages,
+                deployment=self._deployment,
+                category="discovery",
+                admission_timeout_s=SENTINEL_ADMISSION_TIMEOUT_S,
+                call_timeout_s=_DISCOVERY_LLM_TIMEOUT_S,
+                health_stats=self._health_stats,
+            )
+        except SentinelLLMDeferredError as err:
+            LOGGER.info("Discovery LLM call deferred: %s", err)
+            return
+        except TimeoutError:
+            self._log_limiter.warning(
+                "llm_call",
+                "Discovery LLM call timed out after %.0fs; skipping cycle.",
+                _DISCOVERY_LLM_TIMEOUT_S,
+            )
+            return
+        except Exception as err:  # noqa: BLE001
+            # Provider errors (e.g. ollama.ResponseError for an un-pulled
+            # model, httpx transport failures) do not subclass the usual
+            # ValueError/RuntimeError families; a narrow catch here let them
+            # escape and kill the discovery loop (issue #465).
+            self._log_limiter.warning(
+                "llm_call",
+                "Discovery LLM call failed: %s",
+                err,
+            )
+            return
+        self._log_limiter.recovered(
+            "llm_call",
+            "Discovery LLM call recovered after %d failed cycle(s).",
+        )
+
+        content = extract_final(getattr(result, "content", None) or "")
+        if not content:
+            LOGGER.debug("Discovery LLM returned empty content.")
+            return
+
+        try:
+            payload = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            self._log_limiter.warning(
+                "invalid_output",
+                "Discovery output was not valid JSON.",
+            )
+            return
+
+        payload.setdefault("schema_version", DISCOVERY_SCHEMA_VERSION)
+        payload.setdefault("generated_at", now)
+        payload.setdefault("model", _resolved_model_name(self._model))
+
+        try:
+            validated = cast("dict[str, Any]", DISCOVERY_OUTPUT_SCHEMA(payload))
+        except vol.Invalid:
+            self._log_limiter.warning(
+                "invalid_output",
+                "Discovery output failed schema validation.",
+            )
+            return
+        self._log_limiter.recovered(
+            "invalid_output",
+            "Discovery output recovered after %d invalid response(s).",
+        )
+
+        raw_candidates = validated.get("candidates", [])
+        if not isinstance(raw_candidates, list):
+            self._log_limiter.warning(
+                "invalid_candidates",
+                "Discovery output candidates were not a list.",
+            )
+            return
+        self._log_limiter.recovered(
+            "invalid_candidates",
+            "Discovery candidates recovered after %d invalid response(s).",
+        )
+        candidates = [item for item in raw_candidates if isinstance(item, dict)]
+        self._discovery_cycle_stats["candidates_generated"] = len(candidates)
+        candidates, unknown_network = _drop_unknown_network_citations(
+            candidates, reduced_snapshot
+        )
+        filtered, filtered_candidates = self._filter_novel_candidates(
+            candidates,
+            filter_keys,
+            baseline_ready,
+            # From the FULL snapshot, not the reduced one: the reducer caps
+            # and trims entities, and a battery sensor dropped from the
+            # prompt is still the sensor a candidate's device address names
+            # (issue #571).
+            _battery_level_entity_ids(self._hass, snapshot),
+        )
+        filtered_candidates = [*unknown_network, *filtered_candidates]
+        self._discovery_cycle_stats["candidates_novel"] = len(filtered)
+        self._discovery_cycle_stats["candidates_deduplicated"] = len(
+            filtered_candidates
+        )
+        validated["candidates"] = filtered
+        validated["filtered_candidates"] = filtered_candidates
+        await self._store.async_append(validated)
+        LOGGER.info(
+            "Discovery cycle complete: %d generated, %d novel, %d deduplicated.",
+            len(candidates),
+            len(filtered),
+            len(filtered_candidates),
+        )
+
+    async def _existing_semantic_context(  # noqa: PLR0912
+        self,
+    ) -> tuple[set[str], set[str], set[str]]:
+        """
+        Return (active_rule_ids, hint_keys, filter_keys).
+
+        hint_keys — active rules + pending proposals.  Sent to the LLM so it
+        avoids re-proposing what is genuinely monitored or already in the
+        approval queue.  History record keys are excluded because past
+        multi-entity bundles would mislead the LLM into suppressing individual
+        entity proposals that were never actually activated.
+
+        filter_keys — full superset including discovery history.  Used only by
+        the post-hoc dedup filter so identical candidates do not re-appear.
+        """
+        # Bug 4 fix: seed with static built-in rule IDs so the LLM is told
+        # those topics are already covered and stops re-suggesting them.
+        active_rule_ids: set[str] = set(_STATIC_RULE_IDS)
+        hint_keys: set[str] = set()
+        filter_keys: set[str] = set()
+        # Secondary identity keys for pending null-key proposals. Kept OUT
+        # of hint_keys on purpose: hint_keys is truncated to
+        # _MAX_SEMANTIC_KEYS_IN_PROMPT and sorted, and "ident|" sorts ahead
+        # of "v1|", so a second opaque hash per candidate would evict real
+        # semantic keys from the prompt to no benefit — the LLM cannot
+        # compute either hash. The dedup filter is where they matter.
+        extra_identity_keys: set[str] = set()
+
+        if self._rule_registry is not None:
+            for rule in self._rule_registry.list_rules():
+                rule_id = str(rule.get("rule_id", ""))
+                if rule_id:
+                    active_rule_ids.add(rule_id)
+                key = rule_semantic_key(rule)
+                if key:
+                    hint_keys.add(key)
+
+        if self._proposal_store is not None:
+            proposals = await self._proposal_store.async_get_latest(200)
+            for proposal in proposals:
+                # Bug 1 fix: rejected proposals must still block re-suggestion.
+                # The old `continue` meant rejected candidates' keys were never
+                # added to the exclusion set, letting identical proposals recur.
+                #
+                # Accepted proposals are excluded from hint_keys: their coverage
+                # is tracked by the live rule via rule_semantic_key (if enabled).
+                # If the user later disables the rule, the topic becomes
+                # re-proposable — the accepted proposal must not silently suppress
+                # it forever.
+                status = str(proposal.get("status", "pending"))
+                if status == "approved":
+                    continue
+                candidate = proposal.get("candidate")
+                if isinstance(candidate, dict):
+                    key = candidate_semantic_key(candidate)
+                    if key:
+                        hint_keys.add(key)
+                    else:
+                        # Bug 2 fix: null-key candidates (e.g. "stale tracking"
+                        # patterns that don't resolve to a known subject/predicate)
+                        # use a title+summary hash so they are still excluded.
+                        hint_keys.add(_candidate_identity_hash(candidate))
+                        extra_identity_keys |= _candidate_identity_keys(candidate)
+
+        # filter_keys starts as a copy of hint_keys, then adds history records.
+        filter_keys = set(hint_keys) | extra_identity_keys
+        discovery_records = await self._store.async_get_latest(200)
+        for payload in discovery_records:
+            for candidate in payload.get("candidates", []):
+                if not isinstance(candidate, dict):
+                    continue
+                # ALWAYS recompute; never trust a record's stored
+                # "semantic_key". DISCOVERY_OUTPUT_SCHEMA lets the model
+                # supply that field, and preferring it (as this did) let a
+                # null-key candidate's model-chosen string suppress the
+                # unrelated real proposal it names for the life of the
+                # 200-record window — the #572 adversarial finding. #573
+                # stops new records carrying one; recomputing closes the
+                # records already stored, and the second Codex pass showed
+                # a version-gated variant still leaks whenever the key
+                # chain later learns to key that shape.
+                #
+                # This is TODOS.md's own prescription for the paired
+                # migration gap ("drop stored-key preference entirely and
+                # always recompute … cheap: it is a pure function over a
+                # dict"): the stored value came from an older key chain,
+                # so it matches nothing computed today anyway, and keeping
+                # it only desynchronizes history from fresh candidates.
+                key = candidate_semantic_key(candidate)
+                if key:
+                    filter_keys.add(key)
+                else:
+                    # Bug 2 fix: same null-key hash fallback for past records.
+                    filter_keys |= _candidate_identity_keys(candidate)
+
+        return active_rule_ids, hint_keys, filter_keys
+
+    def _filter_novel_candidates(  # noqa: PLR0912
+        self,
+        candidates: list[dict[str, Any]],
+        existing_keys: set[str],
+        known_entity_ids: list[str] | None = None,
+        battery_entity_ids: list[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        seen_batch: set[str] = set()
+        filtered: list[dict[str, Any]] = []
+        dropped: list[dict[str, str]] = []
+        entity_descriptor_index = _build_entity_descriptor_index(known_entity_ids or [])
+        for candidate in candidates:
+            # Hard filter: candidates whose every evidence_path is a
+            # 'derived.*' context path have no concrete entity evidence and
+            # can never be promoted to a rule.  Gate BEFORE the dedup check
+            # so these do not pollute the dedup exclusion set. Negated
+            # spellings count too — a lone "not derived.anyone_home" is just
+            # as unpromotable (issue #524).
+            # Non-string junk elements are not concrete evidence: the gate
+            # passes only when at least one STRING path resolves outside
+            # derived.* (adversarial review — a junk element must not count
+            # as the concrete entity path).
+            evidence_paths = candidate.get("evidence_paths")
+            if (
+                isinstance(evidence_paths, list)
+                and len(evidence_paths) > 0
+                and not any(
+                    isinstance(p, str) and not is_derived_path(p)
+                    for p in evidence_paths
+                )
+            ):
+                dropped.append(
+                    {
+                        "candidate_id": str(candidate.get("candidate_id", "")),
+                        "dedupe_reason": "derived_only_paths",
+                    }
+                )
+                continue
+
+            evidence_entity_ids = _entity_ids_from_evidence_paths(evidence_paths)
+            mismatch_entities = _candidate_text_entity_mismatches(
+                candidate,
+                evidence_entity_ids,
+                entity_descriptor_index,
+            )
+            if mismatch_entities:
+                dropped.append(
+                    {
+                        "candidate_id": str(candidate.get("candidate_id", "")),
+                        "dedupe_reason": "entity_text_mismatch",
+                        "mismatch_entities": ",".join(sorted(mismatch_entities)),
+                    }
+                )
+                continue
+
+            # Deterministic enforcement of the prompt's ENVIRONMENTAL SENSOR
+            # RULE (issue #541): the LLM keeps decorating environmental
+            # statistical candidates with occupancy/night context the
+            # activated rule never has, so strip it before keying/storage —
+            # the approval card must describe the rule that Approve creates.
+            # Runs AFTER the derived-only and entity-text-mismatch guards so
+            # those judge the LLM's actual output, not the rewritten copy
+            # (red-team review: a hallucinated entity named only inside a
+            # stripped clause must still drop the candidate).
+            sanitized = sanitize_environmental_candidate(candidate)
+            if sanitized is not None:
+                candidate = sanitized  # noqa: PLW2901
+            # Issue #571: a low-battery candidate that names a device address
+            # but cites no entity keys None and can never dedup against the
+            # properly-evidenced proposal about that same sensor. Resolve the
+            # address and cite it. Runs AFTER the derived-only and
+            # entity-text-mismatch guards for the same reason the
+            # environmental sanitizer does: those guards must judge the LLM's
+            # actual output, not a copy this code wrote.
+            candidate, key = _backfill_battery_evidence(  # noqa: PLW2901
+                candidate,
+                candidate_semantic_key(candidate),
+                battery_entity_ids,
+            )
+            # Bug 2 fix: null-key candidates (unknown subject/predicate) fall
+            # back to identity hashes so they are still deduplicated. A
+            # null-key candidate carries MORE THAN ONE identity key (prose
+            # and, for low-battery slugs, device token) and matches on
+            # intersection: the two surfaces drift independently, so
+            # matching on either one alone loses the re-proposals that
+            # kept the other stable (review of #573).
+            identity_keys = {key} if key else _candidate_identity_keys(candidate)
+
+            # Runs after the sanitizer and backfill (it judges the candidate
+            # promote would normalize) and before dedup (a dropped candidate
+            # must not claim a batch key).
+            if _is_unpromotable_cumulative_energy(candidate):
+                dropped.append(
+                    {
+                        "candidate_id": str(candidate.get("candidate_id", "")),
+                        "dedupe_reason": "cumulative_energy_sensor",
+                    }
+                )
+                continue
+
+            dedupe_reason: str | None = None
+            matched = identity_keys & existing_keys
+            if matched:
+                dedupe_reason = (
+                    "existing_semantic_key" if key else "existing_identity_hash"
+                )
+            else:
+                matched = identity_keys & seen_batch
+                if matched:
+                    dedupe_reason = "batch_duplicate"
+            if dedupe_reason is not None:
+                dropped_entry: dict[str, str] = {
+                    "candidate_id": str(candidate.get("candidate_id", "")),
+                    "dedupe_reason": dedupe_reason,
+                }
+                if key:
+                    dropped_entry["semantic_key"] = key
+                else:
+                    # Report the canonical (prose) hash when it is what
+                    # matched, so the debug field stays comparable across
+                    # records; otherwise report the key that actually hit.
+                    canonical = _candidate_identity_hash(candidate)
+                    dropped_entry["identity_hash"] = (
+                        canonical if canonical in matched else min(matched)
+                    )
+                dropped.append(dropped_entry)
+                # A dropped duplicate deliberately does NOT contribute its
+                # keys to seen_batch. Prose equality and device-token
+                # equality are two heuristics, and the union of two
+                # heuristic equivalences is not transitive: propagating a
+                # dropped candidate's surfaces lets A link B to C even
+                # though B and C share no key, silently hiding a genuinely
+                # distinct low-battery card. Forcing transitivity was
+                # tried and reverted (third Codex pass on the #573
+                # hardening). The residue is that batch ORDER can change
+                # how many cards survive, but only among candidates with
+                # identical prose — indistinguishable on the card anyway,
+                # and base main merged those unconditionally.
+                continue
+            enriched = dict(candidate)
+            if key:
+                enriched["semantic_key"] = key
+            else:
+                # Adversarial finding on the #572 review (2026-08-25): when
+                # the computed key is falsy, the model's own optional
+                # "semantic_key" field (DISCOVERY_OUTPUT_SCHEMA) was left
+                # untouched in `enriched` and persisted into the discovery
+                # record. _collect_existing_keys prefers a stored
+                # semantic_key over recomputation, so an LLM-declared string
+                # on a null-key candidate could suppress an unrelated,
+                # differently-keyed real proposal as "existing_semantic_key"
+                # for as long as it stays in the 200-record window. Drop it
+                # explicitly so a null-key candidate can only ever be
+                # recalled via its identity keys, matching what
+                # _collect_existing_keys actually falls back to for it.
+                enriched.pop("semantic_key", None)
+            seen_batch |= identity_keys
+            enriched["dedupe_reason"] = "novel"
+            filtered.append(enriched)
+        return filtered, dropped
+
+
+def _candidate_identity_hash(candidate: dict[str, Any]) -> str:
+    """
+    Return a stable identity key for candidates that have no semantic key.
+
+    Uses the first 16 hex digits of SHA-256(title + NUL + summary) so that
+    two candidates with identical wording collide even if their other fields
+    differ (e.g. different confidence_hint or candidate_id).
+
+    This is the *canonical* key, reported as `identity_hash` on dropped
+    entries. Dedup itself matches on the full set from
+    _candidate_identity_keys, which adds the battery device-token key —
+    see that function for why one key alone is not enough.
+    """
+    title = str(candidate.get("title", "")).strip().lower()
+    summary = str(candidate.get("summary", "")).strip().lower()
+    blob = f"{title}\x00{summary}".encode()
+    return "ident|sha256=" + hashlib.sha256(blob).hexdigest()[:16]
+
+
+def _candidate_identity_keys(candidate: dict[str, Any]) -> set[str]:
+    """
+    Return every identity key a null-key candidate may be recalled by.
+
+    Two surfaces drift independently, so keying on either one alone loses
+    re-proposals that key on the other (issue #571 follow-ups):
+
+    * The prose (title+summary) is regenerated every discovery cycle and
+      routinely embeds the live reading ("Baterie klesla na 12 %" then
+      "11 %" the next cycle), so the same topic re-proposes as a new card.
+    * The candidate_id slug is comparatively stable for the same device,
+      but the model also decorates it freely ("..._again", an extra word),
+      and it is absent or ambiguous for most non-hardware-addressed
+      candidates.
+
+    Returning BOTH and matching on set intersection is strictly additive:
+    it can only merge candidates that already shared a surface, never
+    split ones that used to collide. Choosing one key per candidate does
+    split them — it regressed
+    test_filter_zero_evidence_low_battery_dedups_on_identity_hash, where a
+    twin differing only in candidate_id stopped deduping (review of #573).
+    """
+    keys = {_candidate_identity_hash(candidate)}
+    device_token = battery_slug_device_token(candidate)
+    if device_token is not None:
+        blob = f"battery-device\x00{device_token}".encode()
+        keys.add("ident|sha256=" + hashlib.sha256(blob).hexdigest()[:16])
+    return keys
+
+
+def _drop_unknown_network_citations(
+    candidates: list[dict[str, Any]], reduced_snapshot: Mapping[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Drop candidates citing a client key or setting the model was not shown.
+
+    A hallucinated key would become a rule that never fires (or, for the
+    absent template, one that could fire on nothing); the reduced snapshot
+    is the only source of keys the model had, so a citation outside it is
+    refused at ingestion with its own reason.
+    """
+    network = reduced_snapshot.get("network") or {}
+    known_keys = {
+        str(c.get("key"))
+        for c in network.get("clients") or []
+        if isinstance(c, Mapping) and c.get("key")
+    }
+    known_posture = set((network.get("posture") or {}).keys())
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for candidate in candidates:
+        paths = candidate.get("evidence_paths")
+        unknown = [k for k in network_client_keys(paths) if k not in known_keys]
+        unknown += [k for k in network_posture_keys(paths) if k not in known_posture]
+        if unknown:
+            dropped.append(
+                {
+                    "candidate_id": str(candidate.get("candidate_id", "")),
+                    "dedupe_reason": "unknown_network_key",
+                }
+            )
+            continue
+        kept.append(candidate)
+    return kept, dropped
+
+
+def _entity_ids_from_evidence_paths(evidence_paths: object) -> set[str]:
+    """Extract concrete entity IDs from LLM evidence path strings."""
+    if not isinstance(evidence_paths, list):
+        return set()
+    entity_ids: set[str] = set()
+    for path in evidence_paths:
+        if not isinstance(path, str):
+            continue
+        for match in _EVIDENCE_ENTITY_RE.finditer(path.lower()):
+            entity_id = match.group(1) or match.group(2) or match.group(3)
+            if entity_id:
+                entity_ids.add(entity_id)
+    return entity_ids
+
+
+def _build_entity_descriptor_index(
+    entity_ids: list[str],
+) -> dict[str, frozenset[str]]:
+    """Map entity IDs to distinctive text tokens usable in LLM output checks."""
+    index: dict[str, frozenset[str]] = {}
+    for entity_id in entity_ids:
+        if not isinstance(entity_id, str) or "." not in entity_id:
+            continue
+        normalized = entity_id.lower()
+        _domain, _dot, object_id = normalized.partition(".")
+        tokens = _normalized_descriptor_tokens(object_id)
+        if tokens:
+            index[normalized] = frozenset(tokens)
+    return index
+
+
+def _candidate_text_entity_mismatches(
+    candidate: dict[str, Any],
+    evidence_entity_ids: set[str],
+    entity_descriptor_index: dict[str, frozenset[str]],
+) -> set[str]:
+    """
+    Return known non-evidence entities named by candidate text.
+
+    English-only by construction: descriptor tokens come from entity
+    object-ids, so the subset match silently never fires against
+    non-English prose. Fine while discovery prose stays English — the
+    translation follow-up to issue #524 must revisit this guard.
+    """
+    if not evidence_entity_ids or not entity_descriptor_index:
+        return set()
+    text = " ".join(
+        str(candidate.get(field, ""))
+        for field in ("candidate_id", "title", "summary", "pattern")
+    ).lower()
+    text_tokens = _normalized_descriptor_tokens(text)
+    if not text_tokens:
+        return set()
+
+    evidence_entity_ids = {entity_id.lower() for entity_id in evidence_entity_ids}
+    mismatches: set[str] = set()
+    for entity_id, descriptor_tokens in entity_descriptor_index.items():
+        if entity_id in evidence_entity_ids:
+            continue
+        if descriptor_tokens and descriptor_tokens.issubset(text_tokens):
+            mismatches.add(entity_id)
+    return mismatches
+
+
+def _normalized_descriptor_tokens(value: str) -> frozenset[str]:
+    """Return normalized entity-description tokens for text comparison."""
+    return frozenset(
+        _singularize_token(token)
+        for token in _TEXT_TOKEN_RE.findall(value)
+        if len(token) > 1
+        and not token.isdigit()
+        and token not in _ENTITY_DESCRIPTOR_STOPWORDS
+    )
+
+
+def _singularize_token(token: str) -> str:
+    """Normalize simple English plurals that appear in LLM summaries."""
+    if len(token) > _MIN_PLURAL_TOKEN_LENGTH and token.endswith("ies"):
+        return token[: -len("ies")] + "y"
+    if len(token) > _MIN_PLURAL_TOKEN_LENGTH and token.endswith("s"):
+        return token[:-1]
+    return token
+
+
+def _resolved_model_name(model: Any) -> str:
+    """
+    Best-effort name of the model a runnable will actually invoke.
+
+    Models arrive here as bound runnables (``.with_config(...)``) whose
+    effective model lives in the binding's configurable section; fallback
+    wrappers (``FallbackChatModel``) carry an empty wrapper config and expose
+    the bound per-provider models via ``chain``, whose first member is the
+    primary selected at setup; raw chat models expose a ``model`` attribute.
+    Recording the resolved name in discovery payloads makes model
+    misconfiguration diagnosable from the audit trail (issue #465).
+    """
+    config = getattr(model, "config", None)
+    if isinstance(config, Mapping):
+        configurable = config.get("configurable")
+        if isinstance(configurable, Mapping):
+            for key in ("model", "model_name"):
+                name = configurable.get(key)
+                if name:
+                    return str(name)
+    chain = getattr(model, "chain", None)
+    if isinstance(chain, list) and chain:
+        first = chain[0]
+        if isinstance(first, tuple) and first:
+            return _resolved_model_name(first[0])
+    name = getattr(model, "model", None)
+    return str(name) if name else "unknown"
+
+
+def _coerce_int(value: object | None, default: int) -> int:
+    """Coerce option values to int with a deterministic fallback."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default

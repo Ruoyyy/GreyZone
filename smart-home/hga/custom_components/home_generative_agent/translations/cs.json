@@ -1,0 +1,545 @@
+{
+  "common": {
+    "feature_overwrite_warning": "⚠️ Funkce jsou již nakonfigurovány. Výběr **základního nastavení** přepíše vaše stávající přiřazení poskytovatelů doporučenými výchozími hodnotami.",
+    "sentinel_overwrite_warning": "⚠️ Sentinel je již nakonfigurován. Výběr **základního nastavení** přepíše vaše stávající nastavení doporučenými výchozími hodnotami. Vaše výjimky entit a propojení kamer se záznamy zůstanou zachovány.",
+    "no_model_provider_notice": "Není nakonfigurován žádný poskytovatel modelů. Jakmile bude k dispozici, přiřadí se výchozí model.",
+    "no_capable_model_provider_notice": "Žádný z vašich poskytovatelů modelů tuto funkci nepodporuje. Přidejte dalšího poskytovatele modelů podporovaného typu - poskytovatele lze přidat pro každou službu, kterou používáte, a každá funkce může používat jiného.",
+    "supported_provider_types_label": "Zde podporováno:"
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Home Generative Agent",
+        "description": "Vytvářejí se výchozí funkce. Poté spusťte **Nastavení** pro povolení/konfiguraci funkcí a databáze a následně přidejte **Poskytovatele modelu**."
+      }
+    },
+    "error": {
+      "cannot_connect": "Ke službě se nelze připojit. Zkontrolujte klíče/URL a zkuste to znovu.",
+      "invalid_auth": "Neplatný API klíč.",
+      "invalid_pin": "PIN musí mít 4-10 číslic.",
+      "tool_excluded_and_included": "Nástroj nemůže být zároveň vyloučený a vždy zahrnutý. Odeberte jej z jednoho ze dvou seznamů.",
+      "unknown": "Neočekávaná chyba."
+    }
+  },
+  "config_subentries": {
+    "database": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "Konfigurace databáze byla úspěšně aktualizována."
+      },
+      "initiate_flow": {
+        "reconfigure": "Přenastavit databázi",
+        "user": "Nastavit databázi"
+      },
+      "step": {
+        "set_options": {
+          "title": "Nastavení databáze",
+          "description": "Zadejte potřebné parametry pro databázi",
+          "data": {
+            "username": "Uživatelské jméno databáze",
+            "password": "Heslo databáze",
+            "host": "Hostitel databáze",
+            "port": "Port databáze (volitelné)",
+            "db_name": "Název databáze",
+            "db_params": "Parametry připojení databáze (volitelné)"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Nelze se připojit k databázi. Zkontrolujte nastavení databáze a zkuste to znovu.",
+        "invalid_auth": "Neplatná autorizace.",
+        "invalid_uri": "URI se nepodařilo vygenerovat.",
+        "unknown": "Neočekávaná chyba."
+      }
+    },
+    "model_provider": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "Poskytovatel modelu byl aktualizován."
+      },
+      "initiate_flow": {
+        "reconfigure": "Přenastavit poskytovatele modelu",
+        "user": "Přidat poskytovatele modelu"
+      },
+      "step": {
+        "deployment": {
+          "title": "Nasazení",
+          "description": "Vyberte, kde tento poskytovatel běží. **Edge** znamená provoz ve vaší vlastní síti (Ollama, OpenAI Compatible). **Cloud** znamená hostovanou službu (OpenAI, Gemini, Anthropic). Tato volba pouze určuje, jaké typy poskytovatelů nabídne další krok - můžete přidat libovolný počet poskytovatelů obou druhů a každé funkci přiřadit jiného.",
+          "data": {
+            "deployment": "Nasazení"
+          }
+        },
+        "provider": {
+          "title": "Poskytovatel",
+          "description": "Vyberte typ a název poskytovatele. Pro každou službu, kterou chcete používat, přidejte samostatného poskytovatele - například Anthropic pro konverzaci a Gemini pro embeddingy, protože Anthropic žádný endpoint pro embeddingy nemá.",
+          "data": {
+            "provider_type": "Poskytovatel",
+            "name": "Název poskytovatele"
+          },
+          "data_description": {
+            "name": "Ponechte název prázdný a bude pojmenován podle zvoleného typu poskytovatele."
+          }
+        },
+        "settings": {
+          "title": "Nastavení poskytovatele",
+          "description": "Konfigurujte koncový bod nebo přihlašovací údaje poskytovatele.",
+          "data": {
+            "base_url": "Základní URL",
+            "api_key": "API klíč",
+            "gemini_api_key": "Gemini API klíč",
+            "anthropic_api_key": "Anthropic API klíč"
+          },
+          "data_description": {
+            "api_key": "Vyžadováno pro OpenAI. Pro poskytovatele kompatibilní s OpenAI ponechte prázdné nebo zadejte 'none', pokud koncový bod nevyžaduje autentizaci."
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "K poskytovateli se nelze připojit.",
+        "invalid_auth": "Neplatné přihlašovací údaje.",
+        "unknown": "Neočekávaná chyba."
+      }
+    },
+    "stt_provider": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "Poskytovatel STT byl aktualizován."
+      },
+      "initiate_flow": {
+        "reconfigure": "Přenastavit poskytovatele STT",
+        "user": "Přidat poskytovatele STT"
+      },
+      "step": {
+        "provider": {
+          "title": "Poskytovatel převodu řeči na text (STT)",
+          "description": "Vyberte typ a název poskytovatele.",
+          "data": {
+            "provider_type": "Poskytovatel",
+            "name": "Název poskytovatele"
+          }
+        },
+        "credentials": {
+          "title": "Přihlašovací údaje",
+          "description": "Vyberte způsob autentizace poskytovatele STT. Lokální poskytovatelé se místo toho připojují přes URL serveru kompatibilního s OpenAI.",
+          "data": {
+            "openai_provider_subentry_id": "Znovu použít poskytovatele OpenAI",
+            "api_key": "API klíč",
+            "base_url": "URL serveru"
+          },
+          "data_description": {
+            "api_key": "Vyžadováno pro OpenAI. Volitelné pro lokální servery bez autentizace.",
+            "base_url": "OpenAI-kompatibilní koncový bod lokálního STT serveru, např. instance Speaches. Chybějící přípona /v1 se doplní automaticky."
+          }
+        },
+        "model": {
+          "title": "Model a pokročilé možnosti",
+          "description": "Vyberte model a volitelná pokročilá nastavení.",
+          "data": {
+            "model_name": "Model",
+            "language": "Jazyk (volitelné)",
+            "prompt": "Prompt (volitelné)",
+            "temperature": "Teplota (volitelné)",
+            "translate": "Přeložit do angličtiny",
+            "response_format": "Formát odpovědi",
+            "request_format": "Formát požadavku",
+            "extra_body": "Další tělo požadavku (JSON, volitelné)"
+          },
+          "data_description": {
+            "request_format": "Jak se odesílá zvuk. Nahrání multipart je vlastní formát OpenAI a funguje všude. JSON se zvukem v base64 je nativní formát přepisu služby OpenRouter - zvolte jej jen tehdy, pokud jej váš server dokumentuje. Nemá koncový bod pro překlad a ignoruje pole Pokyn výše.",
+            "extra_body": "Objekt JSON vložený do těla požadavku pro pole, která HGA nenabízí. U služby OpenRouter sem patří volby poskytovatele, například upřednostnění klíčových slov, a ty vyžadují formát požadavku JSON. Ukázku najdete v části STT v dokumentaci. Pokud si nejste jisti, nechte prázdné."
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "K poskytovateli se nelze připojit.",
+        "invalid_auth": "Neplatné přihlašovací údaje.",
+        "invalid_model": "Vyberte platný model.",
+        "not_supported": "Poskytovatel zatím není podporován.",
+        "unknown": "Neočekávaná chyba.",
+        "invalid_extra_body": "Další tělo požadavku musí být objekt JSON.",
+        "reserved_extra_body_key": "Další tělo požadavku nesmí nastavovat stream, file ani input_audio - ty řídí Home Generative Agent."
+      }
+    },
+    "tts_provider": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "Poskytovatel TTS byl aktualizován."
+      },
+      "initiate_flow": {
+        "reconfigure": "Přenastavit poskytovatele TTS",
+        "user": "Přidat poskytovatele TTS"
+      },
+      "step": {
+        "provider": {
+          "title": "Poskytovatel převodu textu na řeč (TTS)",
+          "description": "Vyberte typ a název poskytovatele.",
+          "data": {
+            "provider_type": "Poskytovatel",
+            "name": "Název poskytovatele"
+          }
+        },
+        "credentials": {
+          "title": "Přihlašovací údaje",
+          "description": "Vyberte způsob autentizace poskytovatele TTS. Lokální poskytovatelé se místo toho připojují přes URL serveru kompatibilního s OpenAI.",
+          "data": {
+            "openai_provider_subentry_id": "Znovu použít poskytovatele OpenAI",
+            "api_key": "API klíč",
+            "base_url": "URL serveru"
+          },
+          "data_description": {
+            "api_key": "Vyžadováno pro OpenAI. Volitelné pro lokální servery bez autentizace.",
+            "base_url": "OpenAI-kompatibilní koncový bod lokálního TTS serveru, např. instance Speaches. Chybějící přípona /v1 se doplní automaticky."
+          }
+        },
+        "model": {
+          "title": "Model, hlas a pokročilé možnosti",
+          "description": "Vyberte model a hlas a volitelná pokročilá nastavení.",
+          "data": {
+            "model_name": "Model",
+            "voice": "Hlas",
+            "speed": "Rychlost",
+            "instructions": "Pokyny pro hlas (volitelné)"
+          },
+          "data_description": {
+            "voice": "OpenAI: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova, onyx, sage, shimmer nebo verse. Lokální: identifikátor hlasu, který poskytuje model serveru, např. af_heart pro Kokoro.",
+            "speed": "Násobek rychlosti přehrávání, 0,25 až 4,0. 1,0 je normální rychlost.",
+            "instructions": "Jak má hlas znít, např. tón nebo tempo. Používají pouze modely OpenAI gpt-4o-mini-tts; jinde se ignoruje."
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "K poskytovateli se nelze připojit.",
+        "invalid_auth": "Neplatné přihlašovací údaje.",
+        "invalid_model": "Vyberte platný model.",
+        "not_supported": "Poskytovatel zatím není podporován.",
+        "unknown": "Neočekávaná chyba."
+      }
+    },
+    "sentinel": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "Konfigurace Sentinel byla aktualizována."
+      },
+      "error": {
+        "invalid_camera_entry_links": "Musí se jednat o objekt JSON mapující ID entit kamer na seznamy ID entit vstupů, např. klíč \"camera.driveway\" s hodnotou [\"lock.front_door\"].",
+        "invalid_pin": "PIN musí mít 4-10 číslic.",
+        "pin_required": "Zadejte PIN, nebo zrušte zaškrtnutí \"Vyžadovat PIN pro zvýšení úrovně autonomie\". Žádný PIN není uložen, takže každé zvýšení úrovně by bylo odmítnuto.",
+        "quiet_hours_incomplete": "Nastavte čas začátku i konce nočního klidu (nebo obojí nastavte na Zakázáno).",
+        "invalid_quiet_hours": "Časy nočního klidu musí být v místních hodinách mezi 0 a 23.",
+        "invalid_rule_entity_exclusions": "Musí se jednat o objekt JSON mapující typ anomálie (nebo \"*\" pro všechny typy) na seznamy ID entit nebo vzory glob (pouze zástupné znaky * a ?, malá písmena ID entit), každý musí obsahovat tečku a alespoň jeden doslovný znak, např. klíč \"appliance_power_duration\" s hodnotou [\"sensor.ac_power\"] nebo klíč \"camera_entry_unsecured\" s hodnotou [\"camera.map_*\"]. Položky odpovídající všemu, jako například \"*\" nebo \"*.*\", nejsou povoleny — místo toho použijte klíč typu \"*\"."
+      },
+      "initiate_flow": {
+        "reconfigure": "Přenastavit Sentinel",
+        "user": "Konfigurovat Sentinel"
+      },
+      "step": {
+        "setup_mode": {
+          "title": "Nastavení Sentinel",
+          "description": "Vyberte, jak chcete Sentinel monitorování nakonfigurovat.{overwrite_warning}",
+          "data": {
+            "setup_mode": "Typ nastavení"
+          }
+        },
+        "basic_settings": {
+          "title": "Sentinel",
+          "description": "Konfigurujte základní nastavení Sentinel. Všechny ostatní možnosti využívají doporučené výchozí hodnoty.",
+          "data": {
+            "sentinel_enabled": "Povolit upozornění na anomálie",
+            "sentinel_daily_digest_enabled": "Povolit denní souhrn oznámení",
+            "sentinel_daily_digest_time": "Čas denního souhrnu (HH:MM:SS)",
+            "critical_action_pin": "PIN pro zvýšení úrovně (volitelné, 4-10 číslic)",
+            "notify_service": "Oznamovací služba (volitelné)"
+          }
+        },
+        "settings": {
+          "title": "Sentinel",
+          "description": "Konfigurujte proaktivní monitorování a zjišťování Sentinel.",
+          "data": {
+            "sentinel_enabled": "Povolit upozornění na anomálie",
+            "sentinel_interval_seconds": "Interval Sentinel (sekundy)",
+            "sentinel_cooldown_minutes": "Doba vychladnutí Sentinel podle typu (minuty)",
+            "sentinel_entity_cooldown_minutes": "Doba vychladnutí Sentinel podle entity (minuty)",
+            "sentinel_pending_prompt_ttl_minutes": "TTL čekajícího promptu (minuty)",
+            "sentinel_discovery_enabled": "Povolit zjišťování (vyžaduje upozornění na anomálie)",
+            "sentinel_discovery_interval_seconds": "Interval zjišťování (sekundy)",
+            "sentinel_discovery_max_records": "Max. počet uchovávaných záznamů zjišťování",
+            "sentinel_triage_enabled": "Povolit LLM triáž nálezů",
+            "sentinel_triage_timeout_seconds": "Časový limit triáže (sekundy)",
+            "sentinel_response_language": "Jazyk vysvětlení nálezu (volitelné)",
+            "sentinel_baseline_enabled": "Povolit sběr základní úrovně (vyžaduje upozornění na anomálie)",
+            "sentinel_baseline_update_interval_minutes": "Interval aktualizace základní úrovně (minuty)",
+            "sentinel_baseline_freshness_threshold_seconds": "Práh aktuálnosti základní úrovně (sekundy)",
+            "sentinel_baseline_weekly_patterns": "Povolit základní úrovně podle dnů v týdnu (snižuje falešná pozitiva o víkendech)",
+            "sentinel_baseline_dow_min_samples": "Minimální počet vzorků pro den v týdnu (týdny dat na slot)",
+            "sentinel_baseline_min_samples": "Minimální počet vzorků před spuštěním upozornění na odchylku",
+            "sentinel_baseline_sustained_minutes": "Filtr cyklické zátěže: minuty nad prahem před upozorněním (0 = vypnuto)",
+            "sentinel_appliance_power_threshold_w": "Pravidlo výkonu spotřebiče: práh výkonu (W)",
+            "sentinel_appliance_duration_min": "Pravidlo výkonu spotřebiče: doba trvání před upozorněním (minuty)",
+            "sentinel_network_enabled": "Povolit audit zabezpečení sítě a Home Assistantu",
+            "sentinel_network_offline_device_min": "Práh nedostupnosti bezpečnostního zařízení (minuty)",
+            "sentinel_network_unknown_device_grace_min": "Ochranná lhůta nového zařízení v síti (minuty)",
+            "sentinel_network_guest_idle_days": "Práh nevyužité hostovské Wi-Fi (dny)",
+            "sentinel_network_audit_share_details": "Sdílet podrobnosti bezpečnostního auditu s chatovacím modelem",
+            "sentinel_ha_token_stale_days": "Práh nepoužívaného dlouhodobého tokenu (dny)",
+            "sentinel_auth_ip_retention_days": "Doba uchování adres v inventáři přihlášení (dny)",
+            "explain_enabled": "Povolit LLM vysvětlení pro nálezy Sentinel",
+            "sentinel_require_pin_for_level_increase": "Vyžadovat PIN pro zvýšení úrovně autonomie",
+            "sentinel_daily_digest_enabled": "Povolit denní souhrn oznámení",
+            "sentinel_daily_digest_time": "Čas denního souhrnu (HH:MM:SS)",
+            "sentinel_quiet_hours_start": "Začátek nočního klidu (potlačí vybrané závažnosti)",
+            "sentinel_quiet_hours_end": "Konec nočního klidu",
+            "sentinel_quiet_hours_severities": "Závažnosti potlačené během nočního klidu",
+            "sentinel_camera_entry_links": "Odkazy na vstupy kamer (JSON, volitelné)",
+            "sentinel_rule_entity_exclusions_all": "Vyloučit entity ze všech pravidel Sentinelu (volitelné)",
+            "sentinel_rule_entity_exclusions": "Pokročilé: vyloučení entit po jednotlivých pravidlech (JSON, volitelné)",
+            "critical_action_pin": "Sentinel PIN pro zvýšení úrovně (volitelné)",
+            "notify_service": "Sentinel oznamovací služba (volitelné)"
+          },
+          "data_description": {
+            "explain_enabled": "Nechá model formulovat znění každého upozornění místo pevného shrnutí daného pravidla. Mění to pouze to, jak se upozornění čte -- nikdy to, zda ho dostanete; o tom rozhoduje LLM triáž výše. Stojí to jedno volání modelu na každé skutečně odeslané upozornění a probíhá až po triáži, takže potlačený nález se sem nikdy nedostane. Upozornění na zabezpečení Home Assistant a sítě a upozornění na vypnutí alarmu si vždy ponechají své přesné znění a nejsou tím ovlivněna. Chcete-li toto znění v jiném jazyce, nastavte níže jazyk vysvětlení nálezu. Ve výchozím stavu vypnuto.",
+            "sentinel_response_language": "Jazyk, ve kterém LLM generuje vysvětlení nálezu zobrazované v oznámeních, např. „Czech“. Ponechte prázdné pro angličtinu. Název/shrnutí discovery kandidátů a rozhodnutí/reason_code/shrnutí triáže tím nejsou ovlivněny -- ta jsou strojově zpracovávána a vždy zůstávají v angličtině.",
+            "sentinel_rule_entity_exclusions_all": "Vyberte entity, které má Sentinel všude ignorovat -- např. šablonový zámek na dotykovém panelu, který jen zrcadlí stav jiné entity. Vyloučené entity se vyřadí z nálezů všech pravidel a už Sentinel neprobouzejí, takže skutečná anomálie, která se jich týká, se zachytí až při dalším cyklu (výchozí 5 minut). Nevylučujte kameru, zámek ani alarm, u kterých chcete okamžitá upozornění.",
+            "sentinel_rule_entity_exclusions": "Pro vyloučení entity jen z jednoho konkrétního pravidla (ne ze všech) a pro vzory se zástupnými znaky, např. camera.map_*, které výběr entit výše neumí uložit. Očekává objekt JSON, jehož klíče jsou typy anomálií a hodnoty seznamy ID entit; klíč \"*\" znamená všechna pravidla. Příklady najdete v dokumentaci Sentinelu. Většina lidí tohle nepotřebuje -- použijte výběr entit výše.",
+            "sentinel_triage_enabled": "Provede jedno volání LLM navíc pro každý nález, které může potlačit málo hodnotná upozornění. Vyžaduje nakonfigurovaný chat model a úroveň autonomie Sentinelu 1 nebo vyšší -- při úrovni 0 nemá přepínač žádný účinek. Model může nález pouze potlačit nebo propustit -- nikdy jej nemění, nevytváří ani podle něj nejedná a při jakékoli chybě nebo vypršení limitu nález projde. Ve výchozím stavu vypnuto.",
+            "sentinel_triage_timeout_seconds": "Jak dlouho čekat na volání triáže, než nález projde beze změny.",
+            "sentinel_network_enabled": "Spouští pravidla zabezpečení Home Assistantu a sítě v každém cyklu Sentinelu a umožňuje chatovacímu agentovi spustit je na vyžádání: účty správců a přístupové tokeny, entity zpřístupněné hlasovým asistentům, porty doplňků, párování rádiových zařízení, UPnP na routeru a s integrací routeru i zařízení ve vaší síti. Nic síť neskenuje -- každý údaj pochází z toho, co Home Assistant už ví. Při vypnutí se tato pravidla na senzoru stavu zobrazují jako neaktivní a nástroj auditu hlásí, že jsou vypnuta. Ve výchozím stavu zapnuto.",
+            "sentinel_network_offline_device_min": "Jak dlouho může být zámek, alarm nebo kamera nedostupná, než to Sentinel nahlásí. Výchozí 30 minut.",
+            "sentinel_network_unknown_device_grace_min": "Kolik minut počkat od prvního spatření zařízení nového ve vaší síti, než ho Sentinel nahlásí, takže zařízení, které se připojí a zase odpojí, je stále nahlášeno, ale nikdy hned v okamžiku, kdy se objeví. Vyžaduje integraci routeru. Výchozí 5; 0 hlásí při prvním spatření.",
+            "sentinel_network_guest_idle_days": "Kolik dní může zůstat hostovská Wi-Fi zapnutá bez připojeného hosta, než Sentinel navrhne ji vypnout. Vyžaduje integraci routeru, která hlásí hostovskou síť (dnes eero). Výchozí 7.",
+            "sentinel_network_audit_share_details": "Při zapnutí předá bezpečnostní audit chatovacího agenta chatovacímu modelu podrobnosti nálezů (názvy zařízení, porty, názvy tokenů), aby je mohl vysvětlit. Při vypnutí dostane model jen počty, závažnosti a pevné názvy a úplná zpráva se odešle jako trvalé oznámení Home Assistantu, pokud se ptal správce (hlasový satelit nebo účet bez práv správce dostane jen souhrn). Síťové adresy jsou v obou případech redigovány. Ve výchozím stavu zapnuto.",
+            "sentinel_ha_token_stale_days": "Stáří ve dnech, po jehož překročení je dlouhodobý přístupový token nahlášen. Home Assistant nezaznamenává, kdy je dlouhodobý token použit, takže stáří je jediný dostupný údaj a upozornění doporučuje staré tokeny obměnit. Výchozí 90.",
+            "sentinel_auth_ip_retention_days": "Jak dlouho zůstává adresa, ze které byl použit přístupový token, v inventáři bezpečnostního auditu. Adresy se ukládají jako jednosměrné haše, nikdy v čitelné podobě, a na token se jich uchovává nejvýše 20. Výchozí 90 dní."
+          }
+        }
+      }
+    },
+    "feature": {
+      "entry_type": "service",
+      "abort": {
+        "reconfigure_successful": "Funkce byla aktualizována.",
+        "setup_complete": "Nastavení dokončeno.",
+        "no_provider_for_basic_setup": "Není nakonfigurován žádný poskytovatel modelu. Nejprve přidejte **Poskytovatele modelu** a poté zkuste nastavení znovu."
+      },
+      "error": {
+        "no_providers": "Nejsou nakonfigurováni žádní poskytovatelé modelů.",
+        "cannot_connect": "Nelze se připojit k databázi. Zkontrolujte nastavení a zkuste to znovu.",
+        "invalid_auth": "Neplatná autorizace.",
+        "invalid_uri": "URI se nepodařilo vygenerovat.",
+        "unknown": "Neočekávaná chyba.",
+        "ollama_model_not_installed": "Model {model} není nainstalován v Ollama na adrese {url}. Spusťte tam `ollama pull {model}` nebo zvolte nainstalovaný model. Pokud jej server má pod jiným názvem nebo se jej chystáte stáhnout, odešlete formulář znovu a model se přesto uloží.",
+        "ollama_embedding_dims_mismatch": "Model {model} vytváří v Ollama na adrese {url} embeddingy o {dims} dimenzích, ale paměťové úložiště uchovává vektory o {expected} dimenzích, takže by se jeho embeddingy nepodařilo uložit. Zvolte embeddingový model, který vytváří vektory o {expected} dimenzích (běžné modely uvádí dokumentace konfigurace). Pokud jste si jisti, že server velikost hlásí chybně, odešlete formulář znovu a model se přesto uloží.",
+        "ollama_fallback_embedding_dims_mismatch": "Ollama na adrese {url} vytváří s modelem {model} embeddingy o {dims} dimenzích, ale paměťové úložiště uchovává vektory o {expected} dimenzích, takže by se embeddingy této zálohy nepodařilo uložit. Pokud má kopie modelu {model} u hlavního poskytovatele správnou velikost, má tento server jiné sestavení modelu: spusťte tam `ollama pull {model}`. Jinak tento server odeberte ze záložních poskytovatelů. Pokud jste si jisti, že server velikost hlásí chybně, odešlete formulář znovu a model se přesto uloží."
+      },
+      "initiate_flow": {
+        "reconfigure": "Přenastavit funkci",
+        "user": "Nastavení"
+      },
+      "step": {
+        "setup_mode": {
+          "title": "Nastavení",
+          "description": "Vyberte typ nastavení. Základní nastavení povolí všechny funkce s doporučenými výchozími hodnotami. Pokročilé nastavení vám dává plnou kontrolu nad každou funkcí.{overwrite_warning}",
+          "data": {
+            "setup_mode": "Typ nastavení"
+          }
+        },
+        "setup_status": {
+          "title": "Nastavení dokončeno",
+          "description": "Nastavení je hotovo.\n\n**Povolené funkce:** {features_enabled}{skipped_section}\n\n**Databáze:** {database_status}\n\n**Další kroky:**\n- Spusťte **Konfigurovat Sentinel** pro povolení monitorování anomálií.\n- Přidejte **Poskytovatele STT** pro hlasový vstup.\n- Přejděte do **Nastavení → Hlasoví asistenti** a přidejte Home Generative Agent jako svého hlasového asistenta."
+        },
+        "feature_enable": {
+          "title": "Nastavení funkcí",
+          "description": "**Konverzace** je vždy povolena. Níže povolte nebo zakažte volitelné funkce.",
+          "data": {
+            "camera_image_analysis": "Analýza obrazu z kamery",
+            "conversation_summary": "Souhrn konverzace",
+            "embedding": "Embeddings"
+          },
+          "data_description": {
+            "embedding": "Embedding model pro sémantickou paměť a vyhledávání nástrojů. Pokud je vypnuto, poskytovatel je vybrán automaticky (poskytovatel konverzace, pokud podporuje embeddings)."
+          }
+        },
+        "feature_provider": {
+          "title": "Vyberte poskytovatele modelu",
+          "description": "Vyberte poskytovatele modelu pro {feature_name}.",
+          "data": {
+            "model_provider_id": "Poskytovatel modelu"
+          }
+        },
+        "feature_model": {
+          "title": "{feature_name}",
+          "description": "Konfigurujte nastavení modelu pro tuto funkci. {provider_notice}",
+          "data": {
+            "model_name": "Model",
+            "fallback_provider_ids": "Záložní poskytovatelé",
+            "temperature": "Teplota",
+            "keepalive_s": "Ollama keepalive (sekundy nebo Nikdy neuvolňovat (-1))",
+            "context_size": "Ollama velikost kontextu (tokeny)",
+            "reasoning": "Přemýšlení / uvažování (thinking)",
+            "reasoning_budget": "Rozpočet přemýšlení (tokeny)"
+          },
+          "data_description": {
+            "fallback_provider_ids": "Seřazený seznam záložních poskytovatelů. První dostupný poskytovatel se použije, pokud primární selže.",
+            "reasoning": "Řídí přemýšlení vybraného chat modelu. Výchozí nastavení poskytovatele ponechá chování serveru/modelu beze změny; Vypnuto a Zapnuto jej nastaví explicitně; úrovně úsilí se předají poskytovatelům, kteří je podporují. Nastavení se pamatuje pro každý název modelu, takže přepnutí modelu obnoví jeho konfiguraci.",
+            "reasoning_budget": "Volitelný rozpočet tokenů pro přemýšlení u poskytovatelů, kteří jej podporují (OpenAI-kompatibilní servery jako llama.cpp, Gemini, Anthropic). Ponechte prázdné pro výchozí nastavení poskytovatele."
+          }
+        },
+        "database": {
+          "title": "Nastavení databáze",
+          "description": "Zadejte potřebné parametry pro databázi.",
+          "data": {
+            "username": "Uživatelské jméno databáze",
+            "password": "Heslo databáze",
+            "host": "Hostitel databáze",
+            "port": "Port databáze (volitelné)",
+            "db_name": "Název databáze",
+            "db_params": "Parametry připojení databáze (volitelné)"
+          }
+        },
+        "instructions": {
+          "title": "Přidat poskytovatele modelu",
+          "description": "Zatím není nakonfigurován žádný poskytovatel modelu. Přidejte jej v sekci **Poskytovatel modelu**."
+        }
+      }
+    }
+  },
+  "selector": {
+    "db_params": {
+      "fields": {
+        "key": {
+          "name": "Klíč",
+          "description": "Název parametru připojení (například: sslmode, connect_timeout)"
+        },
+        "value": {
+          "name": "Hodnota",
+          "description": "Hodnota parametru připojení (například: disable, 30)"
+        }
+      }
+    },
+    "setup_mode": {
+      "options": {
+        "basic": "Základní nastavení",
+        "advanced": "Pokročilé nastavení"
+      }
+    },
+    "stt_request_format": {
+      "options": {
+        "multipart": "Nahrání multipart (výchozí)",
+        "json_base64": "JSON se zvukem v base64"
+      }
+    },
+    "voice_ack_timing": {
+      "options": {
+        "turn_start": "Hned po spuštění agenta",
+        "tool_call": "Před prvním voláním nástroje"
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_config_entry": {
+      "message": "Byla poskytnuta neplatná konfigurační položka. Získáno: {config_entry}"
+    },
+    "pgvector_not_permitted": {
+      "message": "Rozšíření pgvector není v databázi PostgreSQL {database} povoleno a uživatel {user} ho nemá oprávnění povolit. Povolte ho jednou jako superuživatel připojený k databázi {database}: CREATE EXTENSION IF NOT EXISTS vector; a poté integraci znovu načtěte. Uživatel {user} sám superuživatelem být nemusí. Pokud jste pgvector už povolili, ověřte, že to bylo v databázi {database}: rozšíření platí jen pro databázi, ve které bylo vytvořeno."
+    },
+    "pgvector_not_available": {
+      "message": "Server PostgreSQL s databází {database} nemá nainstalované rozšíření pgvector. Použijte PostgreSQL s pgvector (aplikaci PostgreSQL with pgvector nebo obraz jako pgvector/pgvector) a poté integraci znovu načtěte."
+    },
+    "database_unreachable": {
+      "message": "Databáze PostgreSQL zatím není dostupná: {error}. Home Assistant to bude zkoušet znovu; zkontrolujte, že databáze běží a že nastavení databáze (hostitel, port, uživatel, heslo, název databáze) je správné."
+    },
+    "database_invalid_settings": {
+      "message": "Nastavení databáze bylo odmítnuto ještě před připojením: {error}. Opravte dodatečné parametry připojení (nebo jiná nastavení) v podpoložce Databáze; integrace se po uložení znovu načte."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Možnosti Home Generative Agent",
+        "description": "Konfigurujte globální chování a prompty.",
+        "data": {
+          "face_api_url": "URL API pro rozpoznávání obličejů (volitelné)",
+          "prompt": "Instrukce",
+          "vlm_response_language": "Jazyk popisů z kamer (volitelné)",
+          "vlm_prompt_extra": "Další pokyny pro analýzu obrazu z kamer (volitelné)",
+          "llm_hass_api": "Ovládat Home Assistant",
+          "video_analyzer_mode": "Režim video analyzátoru",
+          "video_analyzer_uniqueness_enabled": "Povolit filtr snímků dHash (perceptuální hash)",
+          "video_analyzer_event_recording_enabled": "Analyzovat nahrávky událostí Ring (ring-mqtt, Ring Protect)",
+          "video_analyzer_motion_camera_map": "Pohybový senzor → přepsání kamery (volitelné)",
+          "notify_service": "Oznamovací služba video analyzátoru (volitelné)",
+          "video_analyzer_notification_cooldown_s": "Prodleva oznámení z kamer (sekundy)",
+          "video_analyzer_house_notification_cooldown_s": "Společná prodleva oznámení z kamer (sekundy)",
+          "face_recognition": "Povolit rozpoznávání obličejů",
+          "manage_context_with_tokens": "Metoda správy kontextu",
+          "max_tokens_in_context": "Max. tokenů v kontextu chatu",
+          "max_messages_in_context": "Max. zpráv v kontextu chatu",
+          "critical_action_pin_enabled": "Vyžadovat PIN pro kritické akce",
+          "critical_action_pin": "PIN pro kritické akce (vyžadován pro odemknutí/zabezpečení/otevření citlivých zařízení)",
+          "schema_first_yaml": "JSON podle schématu pro požadavky YAML",
+          "stt_filters_section": "Filtry řečového vstupu",
+          "stt_hallucination_patterns": "Ignorované podřetězce STT",
+          "stt_hallucination_exact_patterns": "Ignorované přesné fráze STT",
+          "voice_tool_acknowledgement": "Hlasové potvrzení (pouze hlas)",
+          "voice_tool_acknowledgement_timing": "Kdy říct potvrzení",
+          "tool_retrieval_limit": "Limit načítání nástrojů",
+          "tool_relevance_threshold": "Práh relevance nástrojů",
+          "tool_exclusions": "Vyloučené nástroje",
+          "tool_inclusions": "Vždy zahrnuté nástroje"
+        },
+        "data_description": {
+          "prompt": "Instruujte LLM, jak má odpovídat. Může to být šablona.",
+          "vlm_response_language": "Jazyk, ve kterém VLM popisuje snímky z kamer, např. „Czech“. Ponechte prázdné pro angličtinu. Interní odpověď „Scene unchanged.“ zůstává vždy v angličtině.",
+          "vlm_prompt_extra": "Další pokyny připojené k promptu VLM pro analýzu snímků z kamer, např. „Ignoruj auta na příjezdové cestě“. Nikdy nenahrazují vestavěná pravidla.",
+          "video_analyzer_notification_cooldown_s": "0 funkci vypne. Poté, co oznámení z kamery zazní, další oznámení z téže kamery během tohoto počtu sekund (nejvýše 600) tiše nahradí stejné oznámení nejnovějším popisem a snímkem, místo aby zazněla znovu. Je-li zapnuto rozpoznávání obličejů, první neznámá osoba v tomto období přesto zazní. Funguje pouze s jedinou oznamovací službou mobilní aplikace (notify.mobile_app_...).",
+          "video_analyzer_house_notification_cooldown_s": "0 funkci vypne. Jednu událost zachycenou několika kamerami oznámí každá kamera zvlášť. Poté, co oznámení z kamery zazní, oznámení z kterékoli kamery během tohoto počtu sekund (nejvýše 60) přesto zobrazí vlastní kartu, ale potichu, a tato kamera pak zůstane potichu po dobu své prodlevy oznámení, nebo tento počet sekund, je-li delší, počítáno od onoho zaznění. Je-li prodleva oznámení z kamer vypnutá, zůstane každá kamera, včetně té, která zazněla, potichu tento počet sekund. Je-li zapnuto rozpoznávání obličejů, první neznámá osoba v tomto období přesto zazní. Začněte zhruba na 15 sekundách: video každé kamery se analyzuje zvlášť, takže jedna událost může z kamer dorazit s odstupem 10 až 30 sekund. Funguje pouze s jedinou oznamovací službou mobilní aplikace (notify.mobile_app_...); ověřeno pouze na iOS.",
+          "schema_first_yaml": "Pokud je povoleno, požadavky YAML jsou zodpovídány striktním JSON, který je následně převeden na YAML.",
+          "stt_hallucination_patterns": "Jeden podřetězec na řádek. Pokud přepis STT obsahuje jakoukoli položku, je ignorován před spuštěním LLM. Shoda nerozlišuje malá a velká písmena.",
+          "stt_hallucination_exact_patterns": "Jedna fráze na řádek. Pokud se celý přepis STT rovná jakékoli položce, je ignorován před spuštěním LLM. Shoda nerozlišuje malá a velká písmena.",
+          "voice_tool_acknowledgement": "Hlasový satelit ho řekne, zatímco agent na dotazu pracuje, aby pomalou otázku nenásledovalo ticho (například „Moment.“). Pouze u hlasových dotazů, nejvýše jednou za odpověď; kdy zazní, určuje další volba. Vyžaduje převod textu na řeč z HGA nebo jiný streamovací. Napište ho v jazyce svého asistenta. Ponechte prázdné pro vypnutí.",
+          "voice_tool_acknowledgement_timing": "Hned po spuštění agenta pokryje celé čekání včetně doby, než lokální model řekne první slovo, ale zazní i před odpovědí, která nástroje nepotřebuje (proto volte neutrální znění, např. „Moment.“). Před prvním voláním nástroje zazní jen u dotazů, které nástroje používají, až poté, co model začne.",
+          "tool_retrieval_limit": "Maximální počet nástrojů k načtení na základě sémantické podobnosti s dotazem uživatele.",
+          "tool_relevance_threshold": "Minimální skóre sémantické podobnosti (0.0 až 1.0) vyžadované pro načtení nástroje.",
+          "tool_exclusions": "Nástroje označené zde se modelu nikdy nenabídnou a nikdy se nespustí, ani když si o ně model výslovně řekne. Ponechte prázdné, aby byly dostupné všechny nástroje všech vybraných API. Nástroje, které server přidá později, jsou ve výchozím stavu dostupné.",
+          "tool_inclusions": "Nástroje označené zde se modelu nabídnou vždy: přidávají se po vektorovém vyhledávání nástrojů, nad rámec limitu vyhledávání. Hodí se pro univerzální nástroje, například webové vyhledávání, které sémantické vyhledávání nemusí vybrat. Model sám rozhodne, zda je použije. Nástroj nemůže být zároveň vyloučený a vždy zahrnutý.",
+          "video_analyzer_uniqueness_enabled": "Přeskočit vizuálně téměř identické snímky před analýzou VLM. Varování: povolení této funkce odstraní kontext pohybu mezi snímky, který souhrnný model používá k popisu pohybu. Povolte pouze v případě, že statická scéna generuje nadměrné duplikáty a akceptujete ztrátu kontinuity pohybu.",
+          "video_analyzer_event_recording_enabled": "Když entita event_select z ring-mqtt zveřejní podepsanou recordingUrl s novým eventId, stáhne se MP4 dané události, pomocí ffmpeg se z něj vyberou až 8 snímků a analyzují se místo uchovaného intervalového snímku, který u bateriových kamer může být až 10 minut starší než událost. Vyžaduje předplatné Ring Protect (kamery bez recordingUrl dál používají snímky) a binárku ffmpeg, kterou oficiální obraz Home Assistant obsahuje.",
+          "video_analyzer_motion_camera_map": "Jedno přepsání na řádek: binary_sensor.X_motion: camera.Y — použijte, když automatické rozpoznávání vybere špatnou kameru. Ponechte prázdné pro spoléhání na rozpoznávání založené na zařízení a názvu."
+        }
+      }
+    }
+  },
+  "issues": {
+    "database_not_configured": {
+      "title": "Home Generative Agent běží bez databáze",
+      "description": "Tato položka nemá podpoložku Databáze, takže běží pouze s úložištěm v paměti. Historie konverzací se ztrácí při každém znovunačtení nebo restartu, dlouhodobá paměť (shrnutí konverzací, vybavování aktivity kamer, souhlas s aktivací alarmu) a rozpoznávání obličejů (galerie osob) nejsou k dispozici a detektor anomálií Sentinel podle základní linie (baseline) je vypnutý. Pravidla Sentinelu, oznámení a auditní stopa fungují dál.\n\nPodpoložku Databáze vytváří **+ Nastavení** (*+ Setup*) na stránce integrace: režim **Základní** ji vytvoří s doporučenými výchozími hodnotami a režim **Pokročilý** končí krokem **Nastavení databáze**, který před uložením otestuje připojení. Do tohoto stavu se dostanete buď tím, že po přidání integrace nespustíte **+ Nastavení**, nebo zavřením pokročilého průvodce v tomto posledním kroku (funkce se ukládají před ním, takže se položka stále načte).\n\nOpravíte to v **Nastavení → Zařízení a služby → Home Generative Agent**: klikněte na **+ Nastavení**, zvolte **Pokročilý**, projděte funkce a vyplňte formulář **Nastavení databáze**. S přibaleným doplňkem PostgreSQL with pgvector jsou výchozí hodnoty (`localhost`, port `5432`, databáze `ha_db`, uživatel `ha_user`) správné. Tento problém zmizí, jakmile se položka načte s podpoložkou Databáze."
+    },
+    "pin_bypassed_by_local_intents": {
+      "title": "PIN pro kritické akce nechrání hlasové příkazy",
+      "description": "Dotčení hlasoví asistenti: {pipelines}.\n\nTito asistenti používají Home Generative Agent jako konverzačního agenta a mají zapnutou možnost **Preferovat místní zpracování příkazů** (v angličtině *Prefer handling commands locally*). Home Assistant pak jednoduché příkazy porovná s vlastními vestavěnými větami a provede je sám, včetně odemknutí zámku, dříve než je agent vůbec zavolán. Agent příkaz nikdy neuvidí, takže jej PIN pro kritické akce nemůže pozdržet k potvrzení.\n\nOpravíte to v **Nastavení → Hlasoví asistenti** (*Settings → Voice assistants*): upravte každého výše uvedeného asistenta a tuto možnost vypněte.\n\nPokud zámek nebo kryt nemá být hlasem ovladatelný vůbec, přestaňte jej také zpřístupňovat asistentovi (*Expose*). To je jediné nastavení, které pokrývá i větné spouštěče a cesty mimo agenta."
+    },
+    "unknown_person_rules_inert_no_face": {
+      "title": "Pravidla Sentinelu pro neznámé osoby se nemohou spustit",
+      "description": "Dotčená pravidla:\n\n{rules}\n\n**Proč se toto zobrazuje:** rozpoznávání tváří je vypnuté, takže nic nevytváří výsledek, který tato pravidla potřebují.\n\n**Jak je zapnout:** nastavte URL služby pro tváře a zapněte rozpoznávání tváří v možnostech integrace, ujistěte se, že položka má podpoložku Databáze (galerie osob je uložena tam), a nastavte režim analyzátoru videa — tváře se rozpoznávají pouze tehdy, když analyzátor zpracovává snímky. Hlášení zmizí při dalším načtení, jakmile bude funkční.\n\nTato pravidla se spouštějí pouze na základě výsledku rozpoznávání tváří, který říká, že byla spatřena osoba, ale nebyla rozpoznána, a tento výsledek vytváří pouze pipeline rozpoznávání tváří. Když chybí, nic nezhavaruje a nic se nezaloguje a pravidla se na senzoru `sentinel_health` stále počítají jako aktivní, protože ze strany Sentinelu prostě nikdy nenastane shoda.\n\nOstatní pravidla Sentinelu tím nejsou ovlivněna: odemčené zámky, otevřené vstupy, kontroly spotřebičů a baterií a audit zabezpečení Home Assistant a sítě.\n\n**Pro pokrytí kamerami bez rozpoznávání tváří** schvalte pravidlo `motion_detected_*` ze zjišťování pravidel Sentinelu — ta upozorňují na pohyb, když nikdo není doma nebo v noci, a žádnou službu pro tváře nepotřebují.\n\nPokud jste chtěli běžet bez těchto pravidel, hlášení ignorujte — jde o konstatování o pokrytí, nikoli o závadu."
+    },
+    "unknown_person_rules_inert_no_gallery": {
+      "title": "Pravidla Sentinelu pro neznámé osoby se nemohou spustit",
+      "description": "Dotčená pravidla:\n\n{rules}\n\n**Proč se toto zobrazuje:** rozpoznávání tváří je zapnuté, ale tato položka nemá databázi, takže neexistuje galerie osob, podle které by bylo možné někoho rozpoznat. Rozpoznávání tváří je proto při spuštění vypnuto.\n\n**Jak to opravit:** přidejte podpoložku Databáze pomocí **+ Nastavit** na stránce integrace. Ze stejného důvodu je vypnutá i detekce anomálií vůči základní úrovni a ta začne fungovat také. Hlášení zmizí při dalším načtení.\n\nTato pravidla se spouštějí pouze na základě výsledku rozpoznávání tváří, který říká, že byla spatřena osoba, ale nebyla rozpoznána, a tento výsledek vytváří pouze pipeline rozpoznávání tváří. Když chybí, nic nezhavaruje a nic se nezaloguje a pravidla se na senzoru `sentinel_health` stále počítají jako aktivní, protože ze strany Sentinelu prostě nikdy nenastane shoda.\n\nOstatní pravidla Sentinelu tím nejsou ovlivněna: odemčené zámky, otevřené vstupy, kontroly spotřebičů a baterií a audit zabezpečení Home Assistant a sítě.\n\n**Pro pokrytí kamerami bez rozpoznávání tváří** schvalte pravidlo `motion_detected_*` ze zjišťování pravidel Sentinelu — ta upozorňují na pohyb, když nikdo není doma nebo v noci, a žádnou službu pro tváře nepotřebují.\n\nPokud jste chtěli běžet bez těchto pravidel, hlášení ignorujte — jde o konstatování o pokrytí, nikoli o závadu."
+    },
+    "unknown_person_rules_inert_no_analyzer": {
+      "title": "Pravidla Sentinelu pro neznámé osoby se nemohou spustit",
+      "description": "Dotčená pravidla:\n\n{rules}\n\n**Proč se toto zobrazuje:** rozpoznávání tváří je zapnuté a databáze je k dispozici, ale analyzátor videa je vypnutý. Tváře se rozpoznávají pouze tehdy, když analyzátor zpracovává snímky z kamer, takže výsledek nikdy nevznikne.\n\n**Jak to opravit:** nastavte v možnostech integrace jiný režim analyzátoru videa než *disable*. Hlášení zmizí při dalším načtení.\n\nTato pravidla se spouštějí pouze na základě výsledku rozpoznávání tváří, který říká, že byla spatřena osoba, ale nebyla rozpoznána, a tento výsledek vytváří pouze pipeline rozpoznávání tváří. Když chybí, nic nezhavaruje a nic se nezaloguje a pravidla se na senzoru `sentinel_health` stále počítají jako aktivní, protože ze strany Sentinelu prostě nikdy nenastane shoda.\n\nOstatní pravidla Sentinelu tím nejsou ovlivněna: odemčené zámky, otevřené vstupy, kontroly spotřebičů a baterií a audit zabezpečení Home Assistant a sítě.\n\n**Pro pokrytí kamerami bez rozpoznávání tváří** schvalte pravidlo `motion_detected_*` ze zjišťování pravidel Sentinelu — ta upozorňují na pohyb, když nikdo není doma nebo v noci, a žádnou službu pro tváře nepotřebují.\n\nPokud jste chtěli běžet bez těchto pravidel, hlášení ignorujte — jde o konstatování o pokrytí, nikoli o závadu."
+    },
+    "ollama_embedding_model_missing": {
+      "title": "Embedding model Ollama {model} není nainstalován",
+      "description": "Home Generative Agent vytváří embeddingy v Ollama modelem **{model}**, ale Ollama na adrese {url} tento model nemá, takže požadavky na embeddingy tam selhávají. Každý požadavek pak přejde na dalšího poskytovatele embeddingů v záložním řetězci, pokud je nastaven; záloha s jiným modelem embeddingů zhorší přesnost vyhledávání v paměti. Pokud jde o hlavní server a žádný jiný poskytovatel embeddingy vytvořit nedokáže, nevrací vyhledávání v dlouhodobé paměti nic a výběr nástrojů přechází na porovnávání klíčových slov, takže agent může tvrdit, že nevidí nástroje nebo skripty, které jste mu zpřístupnili. Záložní server řetězec přeskočí, takže při výpadku hlavního poskytovatele nepomůže.\n\nOpravíte to spuštěním `ollama pull {model}` na každém uvedeném serveru. Pokud je Ollama poskytovatelem funkce **Embeddings** (**Nastavení → Zařízení a služby → Home Generative Agent**), můžete tam místo toho zvolit nainstalovaný model. Poté integraci znovu načtěte; tento problém zmizí při prvním znovunačtení po instalaci modelu."
+    },
+    "ollama_embedding_dims_mismatch": {
+      "title": "Embeddingový model Ollama {model} má nesprávnou velikost vektoru",
+      "description": "Home Generative Agent vytváří embeddingy v Ollama modelem **{model}**, který na {url} vytváří vektory o {dims} dimenzích. Paměťové úložiště bylo vytvořeno pro vektory o {expected} dimenzích a tuto velikost si ponechává, takže každý zápis embeddingu selže. Vyhledávání v dlouhodobé paměti nevrací nic a výběr nástrojů přechází na porovnávání klíčových slov, takže agent může tvrdit, že nevidí nástroje nebo skripty, které jste mu zpřístupnili.\n\nOpravíte to tak, že ve funkci **Embeddings** (**Nastavení → Zařízení a služby → Home Generative Agent**) zvolíte embeddingový model, který vytváří vektory o {expected} dimenzích, a stáhnete jej na server; běžné embeddingové modely Ollama podle velikosti uvádí dokumentace konfigurace. Poté integraci znovu načtěte; tento problém zmizí při prvním opětovném načtení po změně."
+    },
+    "ollama_fallback_embedding_dims_mismatch": {
+      "title": "Záložní embeddingový model Ollama {model} má nesprávnou velikost vektoru",
+      "description": "Funkce **Embeddings** přechází v záloze na Ollama na adrese {url}, která vytváří embeddingy modelem **{model}** a tam produkuje vektory o {dims} dimenzích. Paměťové úložiště bylo vytvořeno pro vektory o {expected} dimenzích a tuto velikost si ponechává, takže pokud tato záloha převezme práci, její zápisy embeddingů selžou a vyhledávání v dlouhodobé paměti i výběr nástrojů přestanou fungovat, dokud se hlavní poskytovatel nevrátí.\n\nPokud je Ollama i hlavním poskytovatelem, kopie modelu **{model}** u hlavního poskytovatele má správnou velikost, takže tento server má jiné sestavení modelu: spusťte tam `ollama pull {model}`, aby se shodovala. Jinak tento server odeberte ze záložních poskytovatelů funkce **Embeddings** (**Nastavení → Zařízení a služby → Home Generative Agent**), protože za jiným hlavním poskytovatelem se jeho model v tomto formuláři nenastavuje. Poté integraci znovu načtěte; tento problém zmizí při prvním opětovném načtení po změně."
+    }
+  }
+}

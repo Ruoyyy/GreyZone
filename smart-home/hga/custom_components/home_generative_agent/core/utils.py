@@ -1,0 +1,1571 @@
+"""Utility functions for Home Generative Agent integration."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import hashlib
+import hmac
+import logging
+import re
+import secrets
+import time
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any, Literal, cast
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
+
+import httpx
+import psycopg
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.httpx_client import get_async_client
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+from ..const import (  # noqa: TID252
+    ANTHROPIC_THINKING_MAX_BUDGET,
+    ANTHROPIC_THINKING_MIN_BUDGET,
+    ANTHROPIC_THINKING_RESPONSE_TOKENS,
+    CONF_OLLAMA_URL,
+    EMBEDDING_MODEL_DIMS,
+    GEMINI_3_RECOMMENDED_TEMPERATURE,
+    HTTP_STATUS_BAD_REQUEST,
+    HTTP_STATUS_FORBIDDEN,
+    HTTP_STATUS_METHOD_NOT_ALLOWED,
+    HTTP_STATUS_NOT_IMPLEMENTED,
+    HTTP_STATUS_UNAUTHORIZED,
+    HTTP_STATUS_WEBPAGE_NOT_FOUND,
+    OLLAMA_BOOL_HINT_TAGS,
+    OLLAMA_CATEGORY_URL_KEYS,
+    OLLAMA_GPT_EFFORT,
+    OLLAMA_OSS_TAG,
+    OPENAI_CHAT_COMPLETIONS_PATH,
+    RECOMMENDED_OLLAMA_URL,
+)
+from .fallback import (
+    ainvoke_dropping_unsupported_params,
+    invoke_dropping_unsupported_params,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import (
+        AsyncIterator,
+        Callable,
+        Coroutine,
+        Mapping,
+        MutableMapping,
+        Sequence,
+    )
+
+    from homeassistant.core import HomeAssistant
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|$)", re.IGNORECASE | re.DOTALL)
+
+# The last whitespace character of a string: the word boundary extract_final
+# truncates on. A plain rfind(" ") misses it when newlines are preserved.
+_LAST_WHITESPACE = re.compile(r"\s(?=\S*\Z)")
+
+# Trailing whitespace and dangling punctuation left by a max_chars cut. A
+# plain rstrip(" ,;") leaves a newline or tab behind when whitespace is
+# preserved, and cannot strip a space that sits behind a comma.
+_TRAILING_PUNCT_OR_SPACE = re.compile(r"[\s,;]+\Z")
+
+# ---------------------------
+# Exceptions
+# ---------------------------
+
+
+class CannotConnectError(Exception):
+    """Network/resource unreachable or bad response."""
+
+
+class InvalidAuthError(Exception):
+    """Credentials present but rejected."""
+
+
+# ---------------------------
+# Helpers
+# ---------------------------
+
+
+def dispatch_on_loop(hass: HomeAssistant, signal: str, *args: Any) -> None:
+    """Thread-safe dispatcher send; always run on HA's loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # not in any loop
+        loop = None
+    if loop is hass.loop:
+        async_dispatcher_send(hass, signal, *args)
+    else:
+        hass.loop.call_soon_threadsafe(async_dispatcher_send, hass, signal, *args)
+
+
+def ensure_http_url(url: str) -> str:
+    """Ensure a URL has an explicit scheme."""
+    if url.startswith(("http://", "https://")):
+        return url
+    return f"http://{url}"
+
+
+def normalized_ollama_url(value: Any) -> str | None:
+    """
+    Return an Ollama URL in the one form setup keys clients by, or None.
+
+    Every URL setup checks, builds and looks up goes through here, so one server
+    written with and without a trailing slash is one server, not two.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return ensure_http_url(text).rstrip("/")
+
+
+_OLLAMA_PROVIDER_URL_KEYS = ("base_url", "chat_url", "vlm_url", "summarization_url")
+
+
+def ollama_provider_settings_url(settings: Mapping[str, Any]) -> str:
+    """
+    Return the Ollama URL a provider's models use, as setup keys it.
+
+    Legacy providers may carry only a per-category URL; one with none uses
+    the recommended default, like setup does.
+    """
+    for key in _OLLAMA_PROVIDER_URL_KEYS:
+        if url := normalized_ollama_url(settings.get(key)):
+            return url
+    return RECOMMENDED_OLLAMA_URL
+
+
+def normalize_openai_compatible_base_url(url: str) -> str:
+    """
+    Return an OpenAI-compatible base URL that ends with /v1.
+
+    The OpenAI SDK appends bare paths (/chat/completions, /embeddings) to the
+    base URL, and servers such as llama.cpp only guarantee OpenAI-format
+    responses under the /v1 prefix — its bare /embeddings route returns a raw
+    JSON list that crashes the SDK parser. Accepts URLs entered with or
+    without a trailing /v1.
+    """
+    base = ensure_http_url(url.strip()).rstrip("/")
+    if base.endswith("/v1"):
+        return base
+    return f"{base}/v1"
+
+
+def ollama_url_for_category(
+    options: Mapping[str, Any],
+    category: str,
+    *,
+    fallback: str | None = None,
+) -> str | None:
+    """Pick the Ollama URL for a model category, falling back to the global URL."""
+    specific_key = OLLAMA_CATEGORY_URL_KEYS.get(category)
+    if specific_key:
+        url = normalized_ollama_url(options.get(specific_key))
+        if url:
+            return url
+
+    if fallback:
+        return normalized_ollama_url(fallback)
+
+    return normalized_ollama_url(options.get(CONF_OLLAMA_URL))
+
+
+def configured_ollama_urls(
+    options: Mapping[str, Any], *, fallback: str | None = None
+) -> list[str]:
+    """Return a de-duplicated list of configured Ollama URLs."""
+    urls: list[str] = []
+
+    base_url = normalized_ollama_url(
+        options.get(CONF_OLLAMA_URL)
+    ) or normalized_ollama_url(fallback)
+    if base_url:
+        urls.append(base_url)
+
+    for cat in OLLAMA_CATEGORY_URL_KEYS:
+        url = ollama_url_for_category(options, cat, fallback=base_url)
+        if url:
+            urls.append(url)
+
+    seen: set[str] = set()
+    deduped = []
+    for url in urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        deduped.append(url)
+    return deduped
+
+
+# ---------------------------------------------------------------------------
+# Deployment-aware admission control
+# ---------------------------------------------------------------------------
+# Priority order (highest to lowest):
+#   1. Chat (edge)      — marks the full turn active via local_chat_session.
+#                         Cancels in-flight Sentinel LLM tasks on entry.
+#   2. Video (edge)     — marks video model calls active via local_video_session.
+#                         Defers Sentinel LLM tasks for the entire duration:
+#                         chat-wait + semaphore-wait + model-call.  This is
+#                         intentional — video reserves its slot from entry so
+#                         Sentinel cannot interleave with a pending video turn.
+#   3. Sentinel (edge)  — calls sentinel_admission before every LLM invocation;
+#                         defers if chat OR video is active.
+#   Cloud providers     — bypass all local gates.
+# ---------------------------------------------------------------------------
+
+_chat_idle = asyncio.Event()
+_chat_idle.set()  # "no chat active" by default
+_chat_active_count: int = 0
+
+_video_idle = asyncio.Event()
+_video_idle.set()  # "no video active" by default
+_video_active_count: int = 0
+
+_sentinel_last_run: float = 0.0  # monotonic timestamp of last admitted run
+_sentinel_first_defer: float = 0.0
+_sentinel_defer_count: int = 0
+_sentinel_admissions_deferred_chat: int = 0
+_sentinel_admissions_deferred_video: int = 0
+_SENTINEL_STARVATION_WARN_S: float = 300.0
+_SENTINEL_CANCEL_WAIT_S: float = 2.0
+_sentinel_llm_tasks: set[asyncio.Future[Any]] = set()
+
+# Public constant: maximum seconds a Sentinel LLM call waits for chat or video
+# to become idle before deferring.  All callers (triage, discovery, explain)
+# use the same value so policy changes need only one edit.
+SENTINEL_ADMISSION_TIMEOUT_S: float = 2.0
+
+
+class SentinelLLMDeferredError(Exception):
+    """Raised when a background Sentinel LLM call is deferred or interrupted."""
+
+    def __init__(self, category: str, reason: str) -> None:
+        """Initialize with the Sentinel LLM category and deferral reason."""
+        super().__init__(f"Sentinel {category} {reason}.")
+
+
+def is_edge_deployment(deployment: str | None) -> bool:
+    """Return True for edge (local) deployments subject to resource gating."""
+    return deployment == "edge"
+
+
+@contextlib.asynccontextmanager
+async def local_chat_session(
+    deployment: str, *, category: str = "chat"
+) -> AsyncIterator[None]:
+    """
+    Mark a local chat turn active for its full duration.
+
+    Clears _chat_idle for the entire turn so Sentinel LLM invocations can
+    check for active chat and defer.  No-op for cloud deployments.
+    The try/finally guarantees the counter resets on cancellation or exception.
+    """
+    if not is_edge_deployment(deployment):
+        yield
+        return
+    global _chat_active_count  # noqa: PLW0603
+    _chat_active_count += 1
+    _chat_idle.clear()
+    try:
+        await _cancel_active_sentinel_llm_tasks(category)
+        LOGGER.debug(
+            "Local chat resource gate active (configured_deployment=%s, category=%s).",
+            deployment,
+            category,
+        )
+        yield
+    finally:
+        _chat_active_count -= 1
+        if _chat_active_count == 0:
+            _chat_idle.set()
+        LOGGER.debug(
+            "Local chat resource gate ended (configured_deployment=%s, category=%s).",
+            deployment,
+            category,
+        )
+
+
+@contextlib.asynccontextmanager
+async def local_video_session(deployment: str) -> AsyncIterator[None]:
+    """
+    Mark a local video model call active for its duration.
+
+    Clears _video_idle so Sentinel admission can detect and defer.
+    Reference-counted: deferral lifts only when the last concurrent video
+    context exits.  No-op when CONF_MODEL_PROVIDER_UNCONTENDED is True
+    (caller is responsible for checking) or for cloud deployments.
+    The try/finally guarantees the flag resets on cancellation or exception.
+    """
+    if not is_edge_deployment(deployment):
+        yield
+        return
+    global _video_active_count  # noqa: PLW0603
+    _video_active_count += 1
+    _video_idle.clear()
+    try:
+        LOGGER.debug("Video session active (deployment=%s).", deployment)
+        yield
+    finally:
+        _video_active_count -= 1
+        if _video_active_count == 0:
+            _video_idle.set()
+        LOGGER.debug("Video session ended (deployment=%s).", deployment)
+
+
+def video_is_active() -> bool:
+    """Return True if any video model call is currently in progress."""
+    return not _video_idle.is_set()
+
+
+async def wait_for_chat_idle(timeout_s: float) -> bool:
+    """Wait for chat to become idle. Returns True when idle, False on timeout."""
+    if _chat_idle.is_set():
+        return True
+    try:
+        async with asyncio.timeout(timeout_s):
+            await _chat_idle.wait()
+    except TimeoutError:
+        return False
+    else:
+        return True
+
+
+async def _cancel_active_sentinel_llm_tasks(category: str) -> None:
+    """Cancel in-flight Sentinel LLM HTTP calls before foreground chat proceeds."""
+    tasks = [task for task in _sentinel_llm_tasks if not task.done()]
+    if not tasks:
+        return
+    LOGGER.warning(
+        "Cancelling %d active Sentinel LLM call(s) for foreground %s.",
+        len(tasks),
+        category,
+    )
+    for task in tasks:
+        task.cancel()
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=_SENTINEL_CANCEL_WAIT_S,
+        )
+    except TimeoutError:
+        LOGGER.warning(
+            "Sentinel LLM task(s) did not cancel within %.1fs; "
+            "GPU contention may persist briefly.",
+            _SENTINEL_CANCEL_WAIT_S,
+        )
+
+
+async def sentinel_admission(
+    deployment: str,
+    *,
+    category: str,
+    timeout_s: float,
+    health_stats: MutableMapping[str, Any] | None = None,
+) -> bool:
+    """
+    Return True if a Sentinel LLM call may proceed.
+
+    Edge: waits up to timeout_s for both chat and video to become idle; returns
+    False if either is still active so the caller can defer the pass.
+    Cloud: always admitted.
+    Tracks last-admitted timestamp and consecutive deferral count for health
+    monitoring; logs a WARNING when Sentinel has been starved beyond the
+    starvation threshold.
+    """
+    global _sentinel_first_defer, _sentinel_last_run, _sentinel_defer_count  # noqa: PLW0603
+    global _sentinel_admissions_deferred_chat, _sentinel_admissions_deferred_video  # noqa: PLW0603
+    if not is_edge_deployment(deployment):
+        _sentinel_last_run = time.monotonic()
+        _sentinel_first_defer = 0.0
+        _sentinel_defer_count = 0
+        if health_stats is not None:
+            health_stats["sentinel_admission_degraded"] = False
+            health_stats["sentinel_admission_degraded_category"] = None
+            health_stats["sentinel_admission_consecutive_deferrals"] = 0
+            health_stats["sentinel_admission_starved_for_s"] = 0
+        return True
+
+    try:
+        async with asyncio.timeout(timeout_s):
+            # Both events must be set (idle) before Sentinel may proceed.
+            await asyncio.gather(_chat_idle.wait(), _video_idle.wait())
+    except TimeoutError:
+        # Re-evaluate after timeout: both could still be blocking.
+        chat_blocking = not _chat_idle.is_set()
+        video_blocking = not _video_idle.is_set()
+        _sentinel_defer_count += 1
+        if chat_blocking:
+            _sentinel_admissions_deferred_chat += 1
+        if video_blocking:
+            _sentinel_admissions_deferred_video += 1
+        now = time.monotonic()
+        if _sentinel_first_defer <= 0:
+            _sentinel_first_defer = now
+        last_activity = _sentinel_last_run or _sentinel_first_defer
+        starved_for_s = now - last_activity
+        degraded = starved_for_s > _SENTINEL_STARVATION_WARN_S
+        if health_stats is not None:
+            health_stats["sentinel_admission_degraded"] = degraded
+            health_stats["sentinel_admission_degraded_category"] = (
+                category if degraded else None
+            )
+            health_stats["sentinel_admission_consecutive_deferrals"] = (
+                _sentinel_defer_count
+            )
+            health_stats["sentinel_admission_starved_for_s"] = int(starved_for_s)
+        if degraded:
+            LOGGER.warning(
+                "Sentinel %s deferred %d consecutive time(s); "
+                "last successful run or first deferral %.0fs ago. "
+                "Consider reducing chat load or tuning sentinel intervals.",
+                category,
+                _sentinel_defer_count,
+                starved_for_s,
+            )
+        return False
+    _sentinel_last_run = time.monotonic()
+    _sentinel_first_defer = 0.0
+    _sentinel_defer_count = 0
+    if health_stats is not None:
+        health_stats["sentinel_admission_degraded"] = False
+        health_stats["sentinel_admission_degraded_category"] = None
+        health_stats["sentinel_admission_consecutive_deferrals"] = 0
+        health_stats["sentinel_admission_starved_for_s"] = 0
+    return True
+
+
+def sentinel_admission_counters() -> dict[str, int]:
+    """Return and reset Sentinel admission deferral counters since last call."""
+    global _sentinel_admissions_deferred_chat, _sentinel_admissions_deferred_video  # noqa: PLW0603
+    result = {
+        "deferred_chat": _sentinel_admissions_deferred_chat,
+        "deferred_video": _sentinel_admissions_deferred_video,
+    }
+    _sentinel_admissions_deferred_chat = 0
+    _sentinel_admissions_deferred_video = 0
+    return result
+
+
+async def run_sentinel_llm_call(  # noqa: PLR0913
+    call_factory: Callable[[], Coroutine[Any, Any, Any]],
+    *,
+    deployment: str,
+    category: str,
+    admission_timeout_s: float,
+    call_timeout_s: float,
+    health_stats: MutableMapping[str, Any] | None = None,
+) -> Any:
+    """Run a Sentinel LLM call with chat-priority admission and interruption."""
+    if not await sentinel_admission(
+        deployment,
+        category=category,
+        timeout_s=admission_timeout_s,
+        health_stats=health_stats,
+    ):
+        raise SentinelLLMDeferredError(category, "deferred; chat is active")
+
+    task = asyncio.create_task(call_factory())
+    _sentinel_llm_tasks.add(task)
+    try:
+        return await asyncio.wait_for(task, timeout=call_timeout_s)
+    except asyncio.CancelledError as err:
+        raise SentinelLLMDeferredError(
+            category, "interrupted by foreground chat"
+        ) from err
+    finally:
+        _sentinel_llm_tasks.discard(task)
+
+
+async def run_sentinel_llm_call_in_executor(  # noqa: PLR0913
+    call_factory: Callable[[], Any],
+    *,
+    deployment: str,
+    category: str,
+    admission_timeout_s: float,
+    call_timeout_s: float,
+    health_stats: MutableMapping[str, Any] | None = None,
+) -> Any:
+    """Run a blocking Sentinel LLM call off the event loop."""
+    if not await sentinel_admission(
+        deployment,
+        category=category,
+        timeout_s=admission_timeout_s,
+        health_stats=health_stats,
+    ):
+        raise SentinelLLMDeferredError(category, "deferred; chat is active")
+
+    task = asyncio.create_task(asyncio.to_thread(call_factory))
+    _sentinel_llm_tasks.add(task)
+    try:
+        return await asyncio.wait_for(task, timeout=call_timeout_s)
+    except asyncio.CancelledError as err:
+        raise SentinelLLMDeferredError(
+            category, "interrupted by foreground chat"
+        ) from err
+    finally:
+        _sentinel_llm_tasks.discard(task)
+
+
+async def run_sentinel_model_call(  # noqa: PLR0913
+    model: Any,
+    messages: Any,
+    *,
+    deployment: str,
+    category: str,
+    admission_timeout_s: float,
+    call_timeout_s: float,
+    health_stats: MutableMapping[str, Any] | None = None,
+) -> Any:
+    """Run a Sentinel model call, preferring sync ``invoke`` off the event loop."""
+    invoke = getattr(model, "invoke", None)
+    if callable(invoke):
+        return await run_sentinel_llm_call_in_executor(
+            lambda: invoke_dropping_unsupported_params(model, messages),
+            deployment=deployment,
+            category=category,
+            admission_timeout_s=admission_timeout_s,
+            call_timeout_s=call_timeout_s,
+            health_stats=health_stats,
+        )
+    return await run_sentinel_llm_call(
+        lambda: ainvoke_dropping_unsupported_params(model, messages),
+        deployment=deployment,
+        category=category,
+        admission_timeout_s=admission_timeout_s,
+        call_timeout_s=call_timeout_s,
+        health_stats=health_stats,
+    )
+
+
+async def generate_embeddings(
+    emb: Any,
+    texts: Sequence[str],
+) -> list[list[float]]:
+    """
+    Generate embeddings for the given texts.
+
+    Embedding models are expected to be small enough to run concurrently with
+    LLM work, so no chat-priority gate is applied regardless of provider.
+    For Gemini embeddings, output_dimensionality is forced to EMBEDDING_MODEL_DIMS
+    to match the pgvector index.
+    """
+    texts_list = [t for t in texts if t]
+    if not texts_list:
+        return []
+    if isinstance(emb, GoogleGenerativeAIEmbeddings):
+        return await emb.aembed_documents(
+            texts_list, output_dimensionality=EMBEDDING_MODEL_DIMS
+        )
+    return await emb.aembed_documents(texts_list)
+
+
+# Service-name prefix of a Home Assistant companion-app notify service.
+MOBILE_APP_SERVICE_PREFIX = "mobile_app_"
+
+
+def discover_mobile_notify_service(hass: HomeAssistant) -> str | None:
+    """Return the name of a mobile_app notify service if available."""
+    # Returns just the service *name* (e.g., "mobile_app_lindos_iphone")
+    services = hass.services.async_services().get("notify", {})
+    # `services` is a dict mapping service_name -> Service object
+    for svc_name in services:
+        if svc_name.startswith(MOBILE_APP_SERVICE_PREFIX):
+            return svc_name
+    return None
+
+
+def list_mobile_notify_services(hass: HomeAssistant) -> list[str]:
+    """Return a sorted list like ['notify.mobile_app_xxx', ...]."""
+    services = hass.services.async_services().get("notify", {}) or {}
+    return sorted(
+        f"notify.{name}"
+        for name in services
+        if name.startswith(MOBILE_APP_SERVICE_PREFIX)
+    )
+
+
+def default_mobile_notify_service(hass: HomeAssistant) -> str | None:
+    """Best default mobile_app notify service name or None."""
+    services = list_mobile_notify_services(hass)
+    return services[0] if services else None
+
+
+def hash_pin(pin: str, *, salt: str | None = None) -> tuple[str, str]:
+    """Return (hash, salt) for a numeric PIN using PBKDF2-HMAC."""
+    if not salt:
+        salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", pin.encode("utf-8"), salt.encode("utf-8"), 120_000
+    )
+    return digest.hex(), salt
+
+
+def verify_pin(pin: str, *, hashed: str, salt: str) -> bool:
+    """Compare a PIN against the stored hash+salt."""
+    digest, _ = hash_pin(pin, salt=salt)
+    return hmac.compare_digest(digest, hashed)
+
+
+EXCLUSION_ENTRY_MAX_LEN = 256
+
+# Exclusion entries may only use the entity-ID alphabet (lowercase letters,
+# digits, underscore, the domain separator dot) plus the two simple glob
+# wildcards. Character classes ("[...]") are rejected outright: their syntax
+# characters defeat any "has a literal character" check — e.g. "[!.]*.*"
+# reads as having literals but matches every valid entity ID — and no
+# realistic entity-ID pattern needs them.
+_EXCLUSION_ENTRY_ALLOWED_RE = re.compile(r"[a-z0-9_.*?]+\Z")
+_EXCLUSION_ENTRY_LITERAL_RE = re.compile(r"[a-z0-9_]")
+
+
+def valid_exclusion_entry(entry: str) -> bool:
+    """
+    Return True when *entry* is a usable sentinel exclusion entry.
+
+    Entries are entity IDs or glob patterns over them (``*`` and ``?`` only).
+    Four rules keep a security engine from failing open on a typo: the entry
+    must use only the entity-ID alphabet plus ``*``/``?`` (no ``[...]``
+    character classes — see the comment above), must contain a dot (entity
+    IDs are ``domain.object``), must contain at least one literal
+    ``[a-z0-9_]`` character (rejecting match-everything spellings like ``*``
+    and ``*.*``), and must fit in ``EXCLUSION_ENTRY_MAX_LEN``. Shared by the
+    engine option parser and the config-flow field validator so both stay in
+    lockstep.
+    """
+    if "." not in entry or len(entry) > EXCLUSION_ENTRY_MAX_LEN:
+        return False
+    if _EXCLUSION_ENTRY_ALLOWED_RE.fullmatch(entry) is None:
+        return False
+    return _EXCLUSION_ENTRY_LITERAL_RE.search(entry) is not None
+
+
+# ---------------------------
+# Health checks
+# ---------------------------
+
+
+def _http_status(resp: httpx.Response) -> str:
+    """Name an HTTP error status for a validator's exception message."""
+    return f"HTTP {resp.status_code}"
+
+
+def redact_url(url: str) -> str:
+    """Return ``url`` without credentials, query or fragment, for logging."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        # Malformed (bad IPv6 brackets, non-numeric port): nothing safe to show.
+        return "<invalid URL>"
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    if port is not None:
+        host = f"{host}:{port}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+# Transport errors whose text is safe to log: it names the network failure,
+# never the request. Other httpx errors can quote it: h11 rejects a key with a
+# stray newline as "Illegal header value b'Bearer sk-...'", key included.
+_SAFE_CAUSE_TYPES: tuple[type[BaseException], ...] = (
+    TimeoutError,
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    OSError,
+)
+
+
+def health_failure_reason(err: Exception) -> str:
+    """
+    Describe why a health check failed, readably and without secrets.
+
+    The validators raise ``CannotConnectError`` from the transport error, so
+    the error itself often has no message, and a ``TimeoutError`` prints as
+    nothing at all. Naming the cause's type keeps the log line readable
+    (issue #711); its text is added only for error types that cannot carry a
+    request header (see ``_SAFE_CAUSE_TYPES``).
+    """
+    cause = err.__cause__
+    if cause is not None:
+        name = type(cause).__name__
+        detail = str(cause) if isinstance(cause, _SAFE_CAUSE_TYPES) else ""
+        return f"{name}: {detail}" if detail else name
+    return str(err) or type(err).__name__
+
+
+async def ollama_healthy(
+    hass: HomeAssistant, base_url: str, timeout_s: float = 2.0
+) -> bool:
+    """Return True if Ollama is reachable, False otherwise."""
+    try:
+        await validate_ollama_url(hass, base_url, timeout_s)
+    except CannotConnectError as err:
+        LOGGER.warning(
+            "Ollama health check failed (%s): %s",
+            redact_url(ensure_http_url(base_url)),
+            health_failure_reason(err),
+        )
+        return False
+    else:
+        return True
+
+
+async def openai_healthy(
+    hass: HomeAssistant, api_key: str | None, timeout_s: float = 2.0
+) -> bool:
+    """Return True if OpenAI API is reachable, False otherwise."""
+    if not api_key:
+        LOGGER.warning("OpenAI health check skipped: missing API key.")
+        return False
+    try:
+        await validate_openai_key(hass, api_key, timeout_s)
+    except (CannotConnectError, InvalidAuthError) as err:
+        LOGGER.warning("OpenAI health check failed: %s", health_failure_reason(err))
+        return False
+    else:
+        return True
+
+
+async def gemini_healthy(
+    hass: HomeAssistant, api_key: str | None, timeout_s: float = 2.0
+) -> bool:
+    """Return True if Gemini API is reachable, False otherwise."""
+    if not api_key:
+        LOGGER.warning("Gemini health check skipped: missing API key.")
+        return False
+    try:
+        await validate_gemini_key(hass, api_key, timeout_s)
+    except (CannotConnectError, InvalidAuthError) as err:
+        LOGGER.warning("Gemini health check failed: %s", health_failure_reason(err))
+        return False
+    else:
+        return True
+
+
+# ---------------------------
+# Validators
+# ---------------------------
+
+
+async def validate_ollama_url(
+    hass: HomeAssistant, base_url: str, timeout_s: float = 10.0
+) -> None:
+    """Validate that the Ollama endpoint is reachable."""
+    if not base_url:
+        return
+    base_url = ensure_http_url(base_url)
+    client = get_async_client(hass)
+    try:
+        async with asyncio.timeout(timeout_s):
+            resp = await client.get(urljoin(base_url.rstrip("/") + "/", "api/tags"))
+    except (TimeoutError, httpx.RequestError) as err:
+        LOGGER.debug("Ollama connectivity exception: %s", err)
+        raise CannotConnectError from err
+    except (httpx.InvalidURL, ValueError) as err:
+        # A malformed saved URL must fail its check, not abort setup.
+        raise CannotConnectError(type(err).__name__) from err
+    else:
+        if resp.status_code >= HTTP_STATUS_BAD_REQUEST:
+            raise CannotConnectError(_http_status(resp))
+
+
+async def _ollama_json(
+    hass: HomeAssistant,
+    base_url: str,
+    path: str,
+    *,
+    body: dict[str, Any] | None = None,
+    timeout_s: float = 5.0,
+) -> dict[str, Any] | None:
+    """
+    Return an Ollama API reply as a dict, or None if there is no usable one.
+
+    GETs ``path``, or POSTs ``body`` when one is given. None covers an empty
+    or malformed URL, an unreachable server, an HTTP error and a reply that
+    is not a JSON object, so callers can treat every one as "can't tell".
+    """
+    if not base_url:
+        return None
+    client = get_async_client(hass)
+    try:
+        # Inside the try: a malformed saved URL raises ValueError here.
+        url = urljoin(ensure_http_url(base_url).rstrip("/") + "/", path)
+        async with asyncio.timeout(timeout_s):
+            resp = await (
+                client.get(url) if body is None else client.post(url, json=body)
+            )
+    except (TimeoutError, httpx.RequestError, httpx.InvalidURL, ValueError):
+        # Unreachable, or a malformed saved URL.
+        return None
+    if resp.status_code >= HTTP_STATUS_BAD_REQUEST:
+        return None
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+async def fetch_ollama_models(
+    hass: HomeAssistant, base_url: str, timeout_s: float = 5.0
+) -> list[str] | None:
+    """
+    Return the model names an Ollama server lists, or None if it cannot say.
+
+    None means unreachable, an HTTP error, or a reply that is not a model
+    listing; an empty list is a server that answered and has no models.
+    Checks that report a missing model must tell the two apart (#757).
+    """
+    payload = await _ollama_json(hass, base_url, "api/tags", timeout_s=timeout_s)
+    models = payload.get("models") if payload is not None else None
+    if not isinstance(models, list):
+        return None
+    names: list[str] = []
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("model")
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+    # Entries that carry no usable name (a proxy speaking a variant of the
+    # API) say nothing about which models exist: unknown, not "none".
+    if models and not names:
+        return None
+    return names
+
+
+async def fetch_ollama_embedding_dims(
+    hass: HomeAssistant, base_url: str, model: str, timeout_s: float = 5.0
+) -> int | None:
+    """
+    Return the vector size an Ollama model produces, or None if unknown.
+
+    /api/show reports it as ``<architecture>.embedding_length`` in the model
+    info. None for an unreachable server, a model it does not have, or a
+    reply without that field, so callers skip the check rather than guess.
+    """
+    if not model:
+        return None
+    payload = await _ollama_json(
+        hass, base_url, "api/show", body={"model": model}, timeout_s=timeout_s
+    )
+    info = payload.get("model_info") if payload is not None else None
+    if not isinstance(info, dict):
+        return None
+    arch = info.get("general.architecture")
+    dims = info.get(f"{arch}.embedding_length") if isinstance(arch, str) else None
+    # bool is an int; a size of True is not a size.
+    if isinstance(dims, int) and not isinstance(dims, bool) and dims > 0:
+        return dims
+    return None
+
+
+async def ollama_embedding_dims(
+    hass: HomeAssistant, urls: Sequence[str], model: str
+) -> dict[str, int]:
+    """
+    Map each server that reports a vector size for ``model`` to that size.
+
+    Servers that do not report one are left out: they are unmeasured, which
+    callers must not read as either the right or the wrong size.
+    """
+    sizes = await asyncio.gather(
+        *(fetch_ollama_embedding_dims(hass, url, model) for url in urls)
+    )
+    return {
+        url: dims for url, dims in zip(urls, sizes, strict=True) if dims is not None
+    }
+
+
+def format_embedding_dims(wrong: Mapping[str, int]) -> tuple[str, str]:
+    """
+    Spell ``wrong`` servers and their sizes for the ``url``/``dims`` placeholders.
+
+    When the servers disagree, each server carries its own size so a message
+    never pairs a server with another one's size.
+    """
+    sizes = sorted(set(wrong.values()))
+    if len(sizes) == 1:
+        return ", ".join(redact_url(url) for url in wrong), str(sizes[0])
+    servers = ", ".join(f"{redact_url(url)} ({dims})" for url, dims in wrong.items())
+    return servers, ", ".join(str(size) for size in sizes)
+
+
+async def list_ollama_models(
+    hass: HomeAssistant, base_url: str, timeout_s: float = 5.0
+) -> list[str]:
+    """Return available Ollama model names for the given base URL."""
+    return await fetch_ollama_models(hass, base_url, timeout_s) or []
+
+
+_OLLAMA_DEFAULT_REGISTRY = "registry.ollama.ai/"
+_OLLAMA_DEFAULT_NAMESPACE = "library/"
+
+
+def _ollama_model_key(name: str) -> str:
+    """
+    Spell a model name the way Ollama resolves it, for comparison only.
+
+    Ollama matches names case-insensitively, fills in its default registry and
+    ``library/`` namespace, and reads an untagged name as ``:latest``; /api/tags
+    lists the short form ("mxbai-embed-large:latest").
+    """
+    key = name.strip().casefold()
+    key = key.removeprefix(_OLLAMA_DEFAULT_REGISTRY)
+    key = key.removeprefix(_OLLAMA_DEFAULT_NAMESPACE)
+    # The tag colon follows the last path segment; an earlier colon belongs to
+    # a registry host:port ("myregistry:5000/lib/model").
+    return key if ":" in key.rsplit("/", 1)[-1] else f"{key}:latest"
+
+
+def ollama_model_installed(model: str, installed: list[str]) -> bool:
+    """
+    Return True if ``model`` is among the names /api/tags returned.
+
+    A digest-pinned name ("model@sha256:...") is not listed by digest, so it
+    cannot be checked and is reported installed rather than refused.
+    """
+    if "@" in model:
+        return True
+    wanted = _ollama_model_key(model)
+    return any(_ollama_model_key(name) == wanted for name in installed)
+
+
+async def validate_openai_key(
+    hass: HomeAssistant, api_key: str, timeout_s: float = 10.0
+) -> None:
+    """Validate that an OpenAI API key is authorized and reachable."""
+    if not api_key:
+        return
+    client = get_async_client(hass)
+    try:
+        async with asyncio.timeout(timeout_s):
+            resp = await client.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+    except (TimeoutError, httpx.RequestError) as err:
+        LOGGER.debug("OpenAI connectivity exception: %s", err)
+        raise CannotConnectError from err
+    else:
+        if resp.status_code == HTTP_STATUS_UNAUTHORIZED:
+            raise InvalidAuthError(_http_status(resp))
+        if resp.status_code >= HTTP_STATUS_BAD_REQUEST:
+            raise CannotConnectError(_http_status(resp))
+
+
+# Statuses that mean "nothing serves this path here" rather than "your request
+# was wrong". The capability probe sends a deliberately empty body, so every
+# other error status still proves the route exists and is what makes the probe
+# able to tell a wrong base URL from a server that merely rejected the probe.
+_ROUTE_ABSENT_STATUSES = frozenset(
+    {
+        HTTP_STATUS_WEBPAGE_NOT_FOUND,
+        HTTP_STATUS_METHOD_NOT_ALLOWED,
+        HTTP_STATUS_NOT_IMPLEMENTED,
+    }
+)
+
+
+def _is_model_catalog(resp: httpx.Response) -> bool:
+    """
+    Whether a 200 response is actually an OpenAI model catalog.
+
+    A status code alone proves only that something is listening. A single-page
+    app whose catch-all route serves ``index.html`` answers ``/v1/models`` with
+    a 200 and no API behind it (Open WebUI does this), which used to read as a
+    working endpoint and then failed on every runtime call. Shape checking is
+    deliberately loose — a bare list, or a dict carrying ``data`` or the
+    ``object: list`` marker, all count — because the caller falls back to
+    probing the real route when this says no, so a server with an unusual but
+    genuine catalog is not rejected on this evidence alone.
+    """
+    try:
+        payload = resp.json()
+    except ValueError:
+        return False
+    if isinstance(payload, list):
+        return True
+    if not isinstance(payload, dict):
+        return False
+    if isinstance(payload.get("data"), list):
+        return True
+    return payload.get("object") == "list"
+
+
+async def _probe_openai_compatible_route(
+    hass: HomeAssistant,
+    url: str,
+    headers: dict[str, str],
+    timeout_s: float,
+) -> None:
+    """
+    Prove a specific OpenAI-compatible route is served, or raise.
+
+    The body is empty on purpose: the question is whether the route exists,
+    not whether it can do work, and an empty body cannot synthesize speech or
+    transcribe anything. A well-formed server answers 400/422 to it, which is
+    proof enough; only 404/405/501 mean the URL points somewhere that does not
+    serve this API.
+    """
+    client = get_async_client(hass)
+    try:
+        async with asyncio.timeout(timeout_s):
+            resp = await client.post(url, headers=headers, json={})
+    except (TimeoutError, httpx.RequestError) as err:
+        LOGGER.debug("OpenAI-compatible capability probe exception: %s", err)
+        raise CannotConnectError from err
+    if resp.status_code == HTTP_STATUS_UNAUTHORIZED:
+        LOGGER.debug("OpenAI-compatible capability probe unauthorized: %s", url)
+        raise InvalidAuthError
+    if resp.status_code in _ROUTE_ABSENT_STATUSES:
+        LOGGER.debug(
+            "OpenAI-compatible capability probe: %s is not served here (HTTP %s)",
+            url,
+            resp.status_code,
+        )
+        raise CannotConnectError
+    LOGGER.debug(
+        "OpenAI-compatible capability probe: %s is served (HTTP %s)",
+        url,
+        resp.status_code,
+    )
+
+
+async def validate_openai_compatible_url(
+    hass: HomeAssistant,
+    base_url: str,
+    api_key: str | None = None,
+    timeout_s: float = 10.0,
+    *,
+    capability_path: str | None = None,
+) -> None:
+    """
+    Validate an OpenAI-compatible endpoint, by catalog or by capability.
+
+    The model catalog (``/v1/models``) is the primary probe because every
+    general-purpose server implements it. Audio-only servers need not:
+    Chatterbox-TTS-Server answers 404 there while serving ``/v1/audio/speech``
+    correctly. Callers that know which route they will actually use therefore
+    pass ``capability_path``; when the catalog probe fails with anything other
+    than an authorization error, that route is probed instead and decides the
+    outcome. Without ``capability_path`` a failed catalog probe is final.
+    """
+    if not base_url:
+        raise CannotConnectError
+    base = normalize_openai_compatible_base_url(base_url)
+    url = base + "/models"
+    headers: dict[str, str] = {}
+    if api_key and api_key != "none":
+        headers["Authorization"] = f"Bearer {api_key}"
+    client = get_async_client(hass)
+    try:
+        async with asyncio.timeout(timeout_s):
+            resp = await client.get(url, headers=headers)
+    except (TimeoutError, httpx.RequestError) as err:
+        LOGGER.debug("OpenAI-compatible connectivity exception: %s", err)
+        # The host itself is unreachable, so the capability route cannot be
+        # reachable either — no second probe.
+        raise CannotConnectError from err
+    if resp.status_code == HTTP_STATUS_UNAUTHORIZED:
+        raise InvalidAuthError
+    if resp.status_code < HTTP_STATUS_BAD_REQUEST:
+        if _is_model_catalog(resp):
+            return
+        LOGGER.debug(
+            "OpenAI-compatible model catalog probe answered HTTP %s at %s but the "
+            "body is not a model catalog; treating it as absent",
+            resp.status_code,
+            url,
+        )
+    else:
+        LOGGER.debug(
+            "OpenAI-compatible model catalog probe failed (HTTP %s): %s",
+            resp.status_code,
+            url,
+        )
+    if capability_path is None:
+        raise CannotConnectError
+    await _probe_openai_compatible_route(
+        hass, base + capability_path, headers, timeout_s
+    )
+
+
+async def openai_compatible_healthy(
+    hass: HomeAssistant,
+    base_url: str | None,
+    api_key: str | None = None,
+    timeout_s: float = 2.0,
+) -> bool:
+    """Return True if an OpenAI-compatible endpoint is reachable, False otherwise."""
+    if not base_url:
+        LOGGER.warning("OpenAI-compatible health check skipped: missing base URL.")
+        return False
+    try:
+        await validate_openai_compatible_url(
+            hass,
+            base_url,
+            api_key,
+            timeout_s,
+            capability_path=OPENAI_CHAT_COMPLETIONS_PATH,
+        )
+    except (CannotConnectError, InvalidAuthError) as err:
+        LOGGER.warning(
+            "OpenAI-compatible health check failed (%s): %s",
+            redact_url(base_url),
+            health_failure_reason(err),
+        )
+        return False
+    else:
+        return True
+
+
+async def validate_gemini_key(
+    hass: HomeAssistant, api_key: str, timeout_s: float = 10.0
+) -> None:
+    """Validate that a Gemini API key is authorized and reachable."""
+    if not api_key:
+        return
+    client = get_async_client(hass)
+    try:
+        async with asyncio.timeout(timeout_s):
+            # Key goes in a header, not the query string: a key in the URL leaks
+            # into every exception message and log line that quotes the request.
+            resp = await client.get(
+                "https://generativelanguage.googleapis.com/v1/models",
+                headers={"x-goog-api-key": api_key},
+            )
+    except (TimeoutError, httpx.RequestError) as err:
+        LOGGER.debug("Gemini connectivity exception: %s", err)
+        raise CannotConnectError from err
+    else:
+        # Google reports a bad, blocked or unauthorized key as 400/401/403 --
+        # reporting those as "cannot connect" sends users hunting a network
+        # problem they do not have.
+        if resp.status_code in (
+            HTTP_STATUS_BAD_REQUEST,
+            HTTP_STATUS_UNAUTHORIZED,
+            HTTP_STATUS_FORBIDDEN,
+        ):
+            raise InvalidAuthError(_http_status(resp))
+        if resp.status_code >= HTTP_STATUS_BAD_REQUEST:
+            raise CannotConnectError(_http_status(resp))
+
+
+async def validate_anthropic_key(
+    hass: HomeAssistant, api_key: str, timeout_s: float = 10.0
+) -> None:
+    """Validate that an Anthropic API key is authorized and reachable."""
+    if not api_key:
+        return
+    client = get_async_client(hass)
+    try:
+        async with asyncio.timeout(timeout_s):
+            resp = await client.get(
+                "https://api.anthropic.com/v1/models",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+            )
+    except (TimeoutError, httpx.RequestError) as err:
+        LOGGER.debug("Anthropic connectivity exception: %s", err)
+        raise CannotConnectError from err
+    else:
+        if resp.status_code == HTTP_STATUS_UNAUTHORIZED:
+            raise InvalidAuthError(_http_status(resp))
+        if resp.status_code >= HTTP_STATUS_BAD_REQUEST:
+            raise CannotConnectError(_http_status(resp))
+
+
+async def anthropic_healthy(
+    hass: HomeAssistant, api_key: str | None, timeout_s: float = 2.0
+) -> bool:
+    """Return True if Anthropic API is reachable, False otherwise."""
+    if not api_key:
+        LOGGER.debug("Anthropic health check skipped: not configured.")
+        return False
+    try:
+        await validate_anthropic_key(hass, api_key, timeout_s)
+    except (CannotConnectError, InvalidAuthError) as err:
+        LOGGER.warning("Anthropic health check failed: %s", health_failure_reason(err))
+        return False
+    else:
+        return True
+
+
+async def validate_face_api_url(
+    hass: HomeAssistant, base_url: str, timeout_s: float = 10.0
+) -> None:
+    """Validate that the face-recognition API endpoint is reachable."""
+    if not base_url:
+        return
+    base_url = ensure_http_url(base_url)
+    client = get_async_client(hass)
+    try:
+        async with asyncio.timeout(timeout_s):
+            resp = await client.get(urljoin(base_url.rstrip("/") + "/", "status"))
+    except (TimeoutError, httpx.RequestError) as err:
+        LOGGER.debug("Face API connectivity exception: %s", err)
+        raise CannotConnectError from err
+    else:
+        if resp.status_code >= HTTP_STATUS_BAD_REQUEST:
+            raise CannotConnectError
+
+
+async def validate_db_uri(hass: HomeAssistant, db_uri: str) -> None:
+    """Validate PostgreSQL connection URI by executing a trivial query."""
+    if not db_uri:
+        return
+
+    parsed = urlparse(db_uri)
+    if not parsed.scheme.startswith("postgres"):
+        raise CannotConnectError
+    if not parsed.hostname or not parsed.path or parsed.path == "/":
+        raise CannotConnectError
+
+    def _psycopg_ping() -> None:
+        try:
+            with (
+                psycopg.connect(db_uri, connect_timeout=5) as conn,
+                conn.cursor() as cur,
+            ):
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        except psycopg.Error as err:
+            raise CannotConnectError from err
+
+    await hass.async_add_executor_job(_psycopg_ping)
+
+
+# ---------------------------
+# Ollama "thinking"/reasoning
+# ---------------------------
+
+
+# 'reasoning' may be boolean or an effort level required by gpt-oss.
+type ReasoningValue = bool | Literal["low", "medium", "high"]
+
+
+@lru_cache(maxsize=128)
+def _guess_ollama_reasoning(model: str) -> tuple[bool, ReasoningValue]:
+    """
+    Zero-network heuristic to decide if a model probably supports reasoning.
+
+    Returns:
+        (True, OLLAMA_GPT_EFFORT)  for gpt-oss models
+        (True, True)               for boolean-style models
+        (False, False)             for others
+
+    """
+    m = model.lower()
+
+    # Normalize: drop digest, tag, and any registry/user prefix
+    base = m.split("@", 1)[0].split(":", 1)[0].rsplit("/", 1)[-1]
+
+    # Special-case: qwen3* can reason EXCEPT qwen3-vl*
+    if base.startswith("qwen3") and not base.startswith("qwen3-vl"):
+        return True, True
+
+    if OLLAMA_OSS_TAG in m:
+        return True, OLLAMA_GPT_EFFORT
+
+    if any(tag in m for tag in OLLAMA_BOOL_HINT_TAGS):
+        return True, True
+
+    return False, False
+
+
+def reasoning_field(
+    *,
+    model: str,
+    enabled: Any,
+) -> dict[str, ReasoningValue]:
+    """
+    Return {'reasoning': value} for models that support thinking.
+
+    Explicitly passes False when disabled so ChatOllama does not fall back to
+    the model's default (which for Qwen3-family is thinking-on). For gpt-oss
+    models a configured effort string passes through verbatim; boolean-style
+    models treat any truthy value as on.
+    """
+    supported, value = _guess_ollama_reasoning(model)
+    if not supported:
+        return {}
+    if not enabled:
+        return {"reasoning": False}
+    if value == OLLAMA_GPT_EFFORT and enabled in ("low", "medium", "high"):
+        return {"reasoning": cast("ReasoningValue", enabled)}
+    return {"reasoning": value}
+
+
+_EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high"})
+
+
+def _thinking_openai(
+    _reasoning: Any, effort: str | None, _budget: int | None, _model: str
+) -> dict[str, Any]:
+    # Cloud OpenAI reasoning models cannot disable thinking; only known effort
+    # levels are meaningful. On/Off and free-form strings are not sent.
+    return {"reasoning_effort": effort} if effort in _EFFORT_LEVELS else {}
+
+
+def _thinking_openai_compatible(
+    reasoning: Any, effort: str | None, budget: int | None, _model: str
+) -> dict[str, Any]:
+    # llama.cpp/vLLM-style servers: 'reasoning_effort: none' plus
+    # 'chat_template_kwargs.enable_thinking' cover both template styles;
+    # unknown template variables are ignored, so sending both is safe.
+    # Free-form effort strings (llama.cpp also understands e.g. "xhigh")
+    # pass through verbatim - the server, not this code, owns the vocabulary.
+    config: dict[str, Any] = {}
+    extra_body: dict[str, Any] = {}
+    if reasoning is False:
+        config["reasoning_effort"] = "none"
+        extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+    elif effort:
+        config["reasoning_effort"] = effort
+    else:
+        extra_body["chat_template_kwargs"] = {"enable_thinking": True}
+    if reasoning is not False and budget:
+        # Per-request budget on recent llama.cpp servers; older servers
+        # ignore unknown body fields.
+        extra_body["thinking_budget_tokens"] = budget
+    if extra_body:
+        config["extra_body"] = extra_body
+    return config
+
+
+def _thinking_gemini(
+    reasoning: Any, effort: str | None, budget: int | None, _model: str
+) -> dict[str, Any]:
+    # Only thinking_budget is expressible on the pinned stack:
+    # google-ai-generativelanguage 0.10.0's ThinkingConfig protobuf has no
+    # thinking_level field, so langchain-google-genai 3.1.0 crashes at proto
+    # marshaling if that pydantic field is ever set - for every model,
+    # Gemini 3-family included. Level control can land with the 4.x upgrade.
+    if reasoning is False:
+        return {"thinking_budget": 0}
+    if effort is not None and effort not in _EFFORT_LEVELS:
+        return {}
+    # Effort levels have no budget-API equivalent; treat them as On.
+    # -1 = dynamic thinking when no explicit budget is configured.
+    return {"thinking_budget": budget or -1}
+
+
+def _thinking_anthropic(
+    reasoning: Any, _effort: str | None, budget: int | None, _model: str
+) -> dict[str, Any]:
+    # Only an explicit On enables extended thinking; effort strings can only
+    # arrive as stale data from another provider type and must not enable it.
+    if reasoning is not True:
+        return {}
+    budget_tokens = min(
+        max(budget or 0, ANTHROPIC_THINKING_MIN_BUDGET),
+        ANTHROPIC_THINKING_MAX_BUDGET,
+    )
+    # Extended thinking requires max_tokens > budget_tokens and
+    # temperature=1; these override the feature-level temperature.
+    return {
+        "thinking": {"type": "enabled", "budget_tokens": budget_tokens},
+        "max_tokens": budget_tokens + ANTHROPIC_THINKING_RESPONSE_TOKENS,
+        "temperature": 1,
+    }
+
+
+_THINKING_BUILDERS: dict[
+    str, Callable[[Any, str | None, int | None, str], dict[str, Any]]
+] = {
+    "openai": _thinking_openai,
+    "openai_compatible": _thinking_openai_compatible,
+    "gemini": _thinking_gemini,
+    "anthropic": _thinking_anthropic,
+}
+
+
+def thinking_configurable(
+    *,
+    provider_type: str,
+    reasoning: Any,
+    budget: int | None = None,
+    model: str = "",
+) -> dict[str, Any]:
+    """
+    Map the canonical chat thinking setting to provider configurable fields.
+
+    Canonical ``reasoning`` values: ``None`` (provider default - send nothing),
+    ``False`` (explicitly off), ``True`` (explicitly on), or an effort-level
+    string. ``budget`` is a thinking-token budget honored where the provider
+    API has one; ``model`` steers model-family mappings (Gemini 3 levels).
+
+    Ollama is handled separately via :func:`reasoning_field` (its value depends
+    on model-name heuristics); this helper returns ``{}`` for it.
+    """
+    if reasoning is None:
+        return {}
+    effort = reasoning if isinstance(reasoning, str) else None
+    builder = _THINKING_BUILDERS.get(provider_type)
+    if builder is None:
+        return {}
+    return builder(reasoning, effort, budget, model)
+
+
+def is_gemini_3_or_later(model: Any) -> bool:
+    """Return True for Gemini 3-family (and later) model names."""
+    return "gemini-3" in str(model or "").lower()
+
+
+def gemini_sampling_configurable(
+    *,
+    model: Any,
+    temperature: Any,
+    top_p: float | None,
+    recommended_temperature: Any,
+) -> dict[str, Any]:
+    """
+    Return sampling configurable entries (temperature/top_p) for a Gemini model.
+
+    Google strongly recommends keeping Gemini 3 models at their default
+    temperature of 1.0 - lower values can cause looping or degraded
+    reasoning - and the per-feature recommended default (0.2) predates
+    Gemini 3. When the configured temperature still equals that recommended
+    default, it is not a deliberate per-model choice: bind 1.0 explicitly
+    (the configurable-fields path reconstructs the model with every field
+    set, so the library's own not-explicitly-set default of 1.0 never
+    applies) and unset top_p (None is dropped from the request, deferring
+    to the API default). An explicitly customized temperature is honored,
+    with a warning pointing at Google's guidance.
+
+    Pre-Gemini-3 models keep the configured values unchanged.
+    """
+    if (
+        not is_gemini_3_or_later(model)
+        or temperature is None
+        or recommended_temperature is None
+    ):
+        return {"temperature": temperature, "top_p": top_p}
+    if temperature == recommended_temperature:
+        return {"temperature": GEMINI_3_RECOMMENDED_TEMPERATURE, "top_p": None}
+    if temperature != GEMINI_3_RECOMMENDED_TEMPERATURE:
+        LOGGER.warning(
+            (
+                "Gemini model %s is configured with temperature %s; Google "
+                "recommends leaving Gemini 3 models at their default "
+                "temperature of %s to avoid looping or degraded reasoning."
+            ),
+            model,
+            temperature,
+            GEMINI_3_RECOMMENDED_TEMPERATURE,
+        )
+    return {"temperature": temperature, "top_p": top_p}
+
+
+def extract_final(
+    raw: str | list[Any],
+    max_chars: int | None = None,
+    *,
+    collapse_whitespace: bool = True,
+) -> str:
+    """
+    Return plain text with <think> blocks removed.
+
+    ``collapse_whitespace`` (default True) folds every whitespace run into a
+    single space and joins content blocks with a space, which is what the
+    one-line consumers want (notifications, triage/discovery verdicts,
+    explanations, video summaries).
+
+    The conversation agent must pass False. Its text is rendered as markdown in
+    the chat UI and is also compared byte-for-byte against the streamed copy to
+    detect a mid-stream model fallback, so with False this returns the model's
+    text verbatim apart from removed <think> blocks: whitespace runs, leading
+    and trailing whitespace, and the block join all match what the streaming
+    path delivers to HA's chat_log. Collapsing instead made that comparison
+    fire on every multi-line turn and flattened the reply (issue #628).
+    """
+    if not raw:
+        return ""
+    if isinstance(raw, list):
+        # Anthropic returns one text block per contiguous run of text, and the
+        # streaming path emits one delta per block which HA's chat_log
+        # concatenates with no separator. The agent path must join the same way
+        # or its copy differs from the streamed one by the separator alone. The
+        # one-line callers keep the space so adjacent blocks cannot run
+        # together in a notification.
+        raw = (" " if collapse_whitespace else "").join(
+            part["text"]
+            for part in raw
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        )
+    # Remove any leaked reasoning
+    s, think_blocks_removed = _THINK_BLOCK.subn("", raw)
+    if collapse_whitespace:
+        s = re.sub(r"\s+", " ", s).strip()
+    elif think_blocks_removed:
+        # Strip only the whitespace the removed <think> block left behind. The
+        # model's own leading and trailing whitespace has to survive, or the
+        # agent copy differs from the streamed copy on any reply that ends in a
+        # newline (most of them) and the fallback check fires anyway (#628).
+        s = s.strip()
+    # Char-limit (if specified)
+    if max_chars is None:
+        return s
+    if len(s) <= max_chars:
+        return s
+    segment = s[:max_chars]
+    last_space = _LAST_WHITESPACE.search(segment)
+    if last_space is not None and last_space.start() > 0:
+        segment = segment[: last_space.start()]
+    return _TRAILING_PUNCT_OR_SPACE.sub("", segment)
+
+
+def _close_pending_coroutines(tasks: list[Any]) -> None:
+    """Close never-awaited coroutines so abandoned writes cannot leak warnings."""
+    for task in tasks:
+        close_fn = getattr(task, "close", None)
+        if callable(close_fn):
+            with contextlib.suppress(Exception):
+                close_fn()
+
+
+async def gather_store_puts_in_chunks(
+    tasks: list[Any],
+    *,
+    chunk_size: int = 4,
+    sleep_s: float = 0.01,
+) -> None:
+    """
+    Await store.aput coroutines in sequential chunks (embedding provider limits).
+
+    On failure the remaining never-scheduled coroutines are closed before the
+    first failure re-raises, so no chunk is left detached or un-awaited.
+    CancelledError propagates (never swallowed as a result).
+    """
+    if not tasks:
+        return
+    n = len(tasks)
+    i = 0
+    try:
+        for i in range(0, n, chunk_size):
+            # A cancelled gather cleans up its own chunk.
+            await _run_chunk(tasks[i : i + chunk_size])
+            # A cancel that lands here, between chunks, must still close
+            # the chunks never scheduled (the except below covers it).
+            await asyncio.sleep(sleep_s)
+    except BaseException:
+        _close_pending_coroutines(tasks[i + chunk_size :])
+        raise
+
+
+async def _run_chunk(chunk: list[Any]) -> None:
+    """Await one chunk together and re-raise its first failure."""
+    results = await asyncio.gather(*chunk, return_exceptions=True)
+    failure = next((r for r in results if isinstance(r, BaseException)), None)
+    if failure is not None:
+        raise failure

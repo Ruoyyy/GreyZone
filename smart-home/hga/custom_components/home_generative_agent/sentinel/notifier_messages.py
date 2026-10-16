@@ -1,0 +1,324 @@
+"""
+Localized fixed strings for Sentinel notification chrome.
+
+Covers titles, subtitles, type labels, and the batch/digest/snooze
+summary strings -- these are the pieces of a Sentinel notification
+that are *not* LLM output: severity titles ("Security Alert"), finding-type labels
+("Open entry while away"), subtitle templates, the burst-batch summary,
+the daily digest, and the permanent-snooze confirmation prompt. They
+are built directly in ``notifier.py`` as Python string literals and
+never pass through ``strings.json`` / ``translations/*.json`` (see
+discussion on #523 / #531).
+
+This module gives them the same "pick a language, fall back to
+English" treatment as ``agent/pin_messages.py``, resolved from
+``hass.config.language`` -- *not* ``CONF_SENTINEL_RESPONSE_LANGUAGE``,
+which is a free-text LLM prompt fragment ("Czech", "please respond in
+German") rather than a language code, and so is not usable as a table
+key. Using ``hass.config.language`` also means these strings translate
+automatically for a Czech-configured instance even if
+``sentinel_response_language`` (the LLM explainer option) is left
+unset.
+
+Deliberately out of scope: the deterministic per-template mobile
+message bodies (``_deterministic_mobile_message`` and friends in
+``notifier.py``) stay English-only by design -- they carry exact
+figures/units/entity names that a translation could blur, per the
+#523 review discussion. Only the chrome around them is localized here.
+
+Add a new language by adding a key to ``_MESSAGES`` with the same set
+of message ids as ``"en"``. Missing keys in a non-English language
+fall back to the English string automatically.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
+_MESSAGES: dict[str, dict[str, str]] = {
+    "en": {
+        "severity_title_high": "Security Alert",
+        "severity_title_medium": "Home Alert",
+        "severity_title_low": "Home Update",
+        "type_open_entry_while_away": "Open entry while away",
+        "type_open_entry_at_night": "Open entry at night",
+        "type_open_any_window_at_night_while_away": "Window open at night",
+        "type_motion_detected_at_night_while_away": "Motion at night while away",
+        "type_motion_detected_while_away": "Motion while away",
+        "type_unlocked_lock_at_night": "Door lock left unlocked",
+        "type_camera_entry_unsecured": "Activity near unsecured entry",
+        "type_alarm_disarmed_during_external_threat": (
+            "Outdoor activity while alarm disarmed"
+        ),
+        "type_appliance_power_duration": "Appliance power duration",
+        "type_low_battery_sensors": "Low battery",
+        "type_entity_state_duration": "Unchanged too long",
+        "type_motion_detected_at_night_while_alarm_disarmed": (
+            "Motion at night, alarm disarmed"
+        ),
+        "type_unlabeled_rule": "Sentinel alert",
+        "type_ha_sensitive_entity_exposed_without_pin": (
+            "Sensitive entity exposed without PIN"
+        ),
+        "type_ha_new_admin_or_token": "New administrator or access token",
+        "type_ha_long_lived_token_stale": "Old long-lived access token",
+        "type_ha_failed_logins": "Failed login attempts",
+        "type_ha_cloud_remote_ui_enabled": "Cloud remote access enabled",
+        "type_ha_addon_exposed_port": "Add-on port exposed on host",
+        "type_ha_addon_unprotected": "Add-on protection mode off",
+        "type_ha_webhook_automation_public": "Public webhook automation",
+        "type_ha_trusted_networks_bypass_login": "Trusted network login bypass",
+        "type_ha_http_proxy_misconfigured": "IP banning disabled",
+        "type_security_device_unavailable": "Security device unavailable",
+        "type_network_unconfigured_discovered_device": "Unconfigured device discovered",
+        "type_network_router_update_pending": "Router update available",
+        "type_network_upnp_enabled": "UPnP enabled on router",
+        "type_network_public_ip_changed": "Public IP address changed",
+        "type_network_upnp_port_mapping_added": "New UPnP port mapping",
+        "type_radio_new_device_joined": "New radio device joined",
+        "type_network_unknown_device_joined": "New device on the network",
+        "type_network_guest_client_present": "Untrusted device on the guest Wi-Fi",
+        "type_network_client_usage_anomaly": "A device moved far more data than usual",
+        "type_network_client_present_when": (
+            "A device is on the network when it should not be"
+        ),
+        "type_network_client_absent_when": "A device is missing from the network",
+        "type_network_posture_equals": "A router setting is at a value you watch for",
+        "type_network_guest_network_idle": "Guest Wi-Fi left on unused",
+        "type_network_wpa3_disabled": "WPA3 is off",
+        "type_network_protection_disabled": "Router threat blocking is off",
+        "type_network_ddns_enabled": "Dynamic DNS is on",
+        "type_zwave_insecure_security_class": "Z-Wave device without S2 security",
+        "type_zigbee_permit_join_open": "Zigbee pairing is open",
+        "type_zwave_inclusion_active": "Z-Wave inclusion is active",
+        "type_radio_coordinator_update_pending": "Radio coordinator update available",
+        "subtitle_appliance_finished": "{appliance} finished",
+        "subtitle_appliance_cycle_complete": "Appliance cycle complete",
+        "subtitle_entry_open_alarm_disarmed": "{entry_name} open, alarm disarmed",
+        "subtitle_power_deviation": "{appliance}: power {direction} than expected",
+        "subtitle_reading_deviation": "{appliance}: reading {direction} than expected",
+        "subtitle_entry_open": "{entity} open",
+        "subtitle_state_open_for": "{entity} open for {duration}",
+        "subtitle_state_unlocked_for": "{entity} unlocked for {duration}",
+        "subtitle_state_unchanged_for": "{entity} unchanged for {duration}",
+        "duration_hours_short": "{hours} h",
+        "duration_minutes_short": "{minutes} min",
+        "direction_lower": "lower",
+        "direction_higher": "higher",
+        "fallback_entry": "Entry",
+        "fallback_sensor": "Sensor",
+        "fallback_unknown_entity": "Unknown entity",
+        "fallback_message": "{summary}: {entity}. {action_hint}",
+        "persistent_fallback": "{summary} (severity {severity}) for {entities}. {hint}",
+        "batch_title": "Home Update",
+        "batch_message": "{count} home update{plural}: {type_summary}.",
+        "batch_more": "\u2026and {count} more",
+        "also_line": "Also: {names}",
+        "also_more": "+{count} more",
+        "condition_open_while_away": "open while away",
+        "condition_open_while_home": "open while home",
+        "condition_open_at_night": "open at night",
+        "condition_alarm_disarmed": "alarm disarmed",
+        "condition_open_too_long": "open too long",
+        "condition_unlocked_too_long": "unlocked too long",
+        "digest_title": "Sentinel Daily Digest",
+        "digest_message": (
+            "Sentinel: {count} alert{plural} in the last 24 h ({sev_summary})."
+        ),
+        "audit_report_title": "Security audit report",
+        "trust_several": (
+            "Trust the ones you recognize with the Sentinel trust device service."
+        ),
+        "audit_report_not_run": "Checks that could not run",
+        "audit_report_notes": "Notes",
+        "audit_report_other": "Other",
+        "audit_report_truncated": (
+            "truncated; run the run_network_audit service for the rest."
+        ),
+        "severity_word_high": "high",
+        "severity_word_medium": "medium",
+        "severity_word_low": "low",
+        "snooze_confirm_title": "Confirm permanent snooze",
+        "snooze_confirm_message": (
+            "Permanently suppress '{friendly}' alerts? "
+            "This can only be undone from settings."
+        ),
+        "action_hint_high": "Urgent: check and secure it now.",
+        "action_hint_medium": "Check soon and secure it if unexpected.",
+        "action_hint_low": "Review when convenient.",
+    },
+    "cs": {
+        "severity_title_high": "Bezpečnostní výstraha",
+        "severity_title_medium": "Upozornění z domova",
+        "severity_title_low": "Novinka z domova",
+        "type_open_entry_while_away": "Otevřený vstup v nepřítomnosti",
+        "type_open_entry_at_night": "Otevřený vstup v noci",
+        "type_open_any_window_at_night_while_away": "Otevřené okno v noci",
+        "type_motion_detected_at_night_while_away": ("Pohyb v noci v nepřítomnosti"),
+        "type_motion_detected_while_away": "Pohyb v nepřítomnosti",
+        "type_unlocked_lock_at_night": "Zámek ponechán odemčený",
+        "type_camera_entry_unsecured": "Pohyb u nezajištěného vstupu",
+        "type_alarm_disarmed_during_external_threat": (
+            "Pohyb venku při vypnutém alarmu"
+        ),
+        "type_appliance_power_duration": "Doba provozu spotřebiče",
+        "type_low_battery_sensors": "Slabá baterie",
+        "type_entity_state_duration": "Příliš dlouho beze změny",
+        "type_motion_detected_at_night_while_alarm_disarmed": (
+            "Pohyb v noci při vypnutém alarmu"
+        ),
+        "type_unlabeled_rule": "Upozornění Sentinelu",
+        "type_ha_sensitive_entity_exposed_without_pin": (
+            "Citlivá entita zpřístupněna bez PIN"
+        ),
+        "type_ha_new_admin_or_token": "Nový administrátor nebo přístupový token",
+        "type_ha_long_lived_token_stale": "Starý dlouhodobý přístupový token",
+        "type_ha_failed_logins": "Neúspěšné pokusy o přihlášení",
+        "type_ha_cloud_remote_ui_enabled": "Vzdálený přístup přes cloud je zapnutý",
+        "type_ha_addon_exposed_port": "Port doplňku vystaven na hostiteli",
+        "type_ha_addon_unprotected": "Ochranný režim doplňku vypnutý",
+        "type_ha_webhook_automation_public": "Veřejná webhook automatizace",
+        "type_ha_trusted_networks_bypass_login": (
+            "Obejití přihlášení z důvěryhodné sítě"
+        ),
+        "type_ha_http_proxy_misconfigured": "Blokování IP adres vypnuté",
+        "type_security_device_unavailable": "Bezpečnostní zařízení nedostupné",
+        "type_network_unconfigured_discovered_device": (
+            "Nalezeno nenakonfigurované zařízení"
+        ),
+        "type_network_router_update_pending": "K dispozici aktualizace routeru",
+        "type_network_upnp_enabled": "UPnP zapnuté na routeru",
+        "type_network_public_ip_changed": "Veřejná IP adresa se změnila",
+        "type_network_upnp_port_mapping_added": "Nové mapování portu přes UPnP",
+        "type_radio_new_device_joined": "Připojeno nové rádiové zařízení",
+        "type_network_unknown_device_joined": "Nové zařízení v síti",
+        "type_network_guest_client_present": "Neověřené zařízení na hostovské Wi-Fi",
+        "type_network_client_usage_anomaly": (
+            "Zařízení přeneslo mnohem více dat než obvykle"
+        ),
+        "type_network_client_present_when": "Zařízení je v síti, když by nemělo být",
+        "type_network_client_absent_when": "Zařízení v síti chybí",
+        "type_network_posture_equals": (
+            "Nastavení routeru má hodnotu, kterou sledujete"
+        ),
+        "type_network_guest_network_idle": "Hostovská Wi-Fi zapnutá bez využití",
+        "type_network_wpa3_disabled": "WPA3 je vypnuto",
+        "type_network_protection_disabled": "Blokování hrozeb na routeru je vypnuto",
+        "type_network_ddns_enabled": "Dynamické DNS je zapnuto",
+        "type_zwave_insecure_security_class": "Zařízení Z-Wave bez zabezpečení S2",
+        "type_zigbee_permit_join_open": "Párování Zigbee je otevřené",
+        "type_zwave_inclusion_active": "Začleňování Z-Wave je aktivní",
+        "type_radio_coordinator_update_pending": (
+            "K dispozici aktualizace rádiového koordinátoru"
+        ),
+        "subtitle_appliance_finished": "{appliance} dokončeno",
+        "subtitle_appliance_cycle_complete": "Cyklus spotřebiče dokončen",
+        "subtitle_entry_open_alarm_disarmed": "{entry_name} otevřeno, alarm vypnutý",
+        "subtitle_power_deviation": "{appliance}: odběr {direction}, než se čekalo",
+        "subtitle_reading_deviation": (
+            "{appliance}: hodnota {direction}, než se čekalo"
+        ),
+        "subtitle_entry_open": "{entity}: otevřeno",
+        "subtitle_state_open_for": "{entity}: otevřeno {duration}",
+        "subtitle_state_unlocked_for": "{entity}: odemčeno {duration}",
+        "subtitle_state_unchanged_for": "{entity}: beze změny {duration}",
+        "duration_hours_short": "{hours} h",
+        "duration_minutes_short": "{minutes} min",
+        "direction_lower": "nižší",
+        "direction_higher": "vyšší",
+        "fallback_entry": "Vstup",
+        "fallback_sensor": "Senzor",
+        "fallback_unknown_entity": "Neznámá entita",
+        "fallback_message": "{summary}: {entity}. {action_hint}",
+        "persistent_fallback": (
+            "{summary} (závažnost {severity}) pro {entities}. {hint}"
+        ),
+        "batch_title": "Novinka z domova",
+        "batch_message": "{count} novinek z domova: {type_summary}.",
+        "batch_more": "\u2026a dal\u0161\u00edch {count}",
+        "also_line": "Také: {names}",
+        "also_more": "+{count} další",
+        "condition_open_while_away": "otevřeno v nepřítomnosti",
+        "condition_open_while_home": "otevřeno v přítomnosti",
+        "condition_open_at_night": "otevřeno v noci",
+        "condition_alarm_disarmed": "alarm vypnutý",
+        "condition_open_too_long": "otevřeno příliš dlouho",
+        "condition_unlocked_too_long": "odemčeno příliš dlouho",
+        "digest_title": "Denní přehled Sentinelu",
+        "digest_message": (
+            "Sentinel: {count} upozornění za posledních 24 h ({sev_summary})."
+        ),
+        "audit_report_title": "Zpráva z bezpečnostního auditu",
+        "trust_several": (
+            "Ta, která znáte, označte jako důvěryhodná službou Sentinel trust device."
+        ),
+        "audit_report_not_run": "Kontroly, které nebylo možné provést",
+        "audit_report_notes": "Poznámky",
+        "audit_report_other": "Ostatní",
+        "audit_report_truncated": (
+            "zkráceno; zbytek získáte službou run_network_audit."
+        ),
+        "severity_word_high": "vysoká",
+        "severity_word_medium": "střední",
+        "severity_word_low": "nízká",
+        "snooze_confirm_title": "Potvrdit trvalé ztlumení",
+        "snooze_confirm_message": (
+            "Trvale potlačit upozornění typu '{friendly}'? "
+            "Lze vrátit zpět pouze v nastavení."
+        ),
+        "action_hint_high": "Naléhavé: zkontrolujte a zajistěte to hned.",
+        "action_hint_medium": "Zkontrolujte brzy a zajistěte, pokud je to neobvyklé.",
+        "action_hint_low": "Projděte si to, až budete mít čas.",
+    },
+}
+
+_DEFAULT_LANGUAGE = "en"
+
+
+def _resolve_language(hass: HomeAssistant | None) -> str:
+    """Resolve the message language from the HA instance's configured language."""
+    if hass is None:
+        return _DEFAULT_LANGUAGE
+    # Guard the config attribute itself, not just language: notification
+    # dispatch must never crash on language resolution, and lightweight
+    # test doubles may not carry a config object at all.
+    config = getattr(hass, "config", None)
+    language = getattr(config, "language", None) or _DEFAULT_LANGUAGE
+    base = language.split("-", 1)[0].lower()
+    return base if base in _MESSAGES else _DEFAULT_LANGUAGE
+
+
+def notif_msg(hass: HomeAssistant | None, key: str, /, **kwargs: Any) -> str:
+    """
+    Return the localized Sentinel notification-chrome string for ``key``.
+
+    Falls back to the English string if the resolved language is
+    missing the key, and to the key itself if English is missing it
+    too (so a bug here shows up as an odd sentence, not a crash).
+    That promise also covers formatting: this runs on the last hop of
+    the notification pipeline, so a template whose placeholders drift
+    from what the call site supplies degrades to the English (then
+    unformatted) string instead of raising and losing the alert.
+    """
+    language = _resolve_language(hass)
+    table = _MESSAGES.get(language, _MESSAGES[_DEFAULT_LANGUAGE])
+    english = _MESSAGES[_DEFAULT_LANGUAGE].get(key)
+    template = table.get(key) or english
+    if template is None:
+        # Unknown message id: return it verbatim and never treat it as a
+        # format template — the id may be data-derived (e.g. a stored
+        # severity word in the daily digest).
+        return key
+    if not kwargs:
+        return template
+    for candidate in (template, english):
+        if candidate is None:
+            continue
+        try:
+            return candidate.format(**kwargs)
+        except (KeyError, IndexError, ValueError):
+            continue
+    return template

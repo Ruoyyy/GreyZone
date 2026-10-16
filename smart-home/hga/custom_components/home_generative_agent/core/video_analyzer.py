@@ -1,0 +1,4213 @@
+"""Video analyzer for recording and motion-triggered cameras."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import math
+import os
+import re
+import shutil
+import statistics
+import tempfile
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from functools import partial
+from pathlib import Path
+from time import monotonic, time
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from urllib.parse import urljoin
+
+import aiofiles
+import homeassistant.util.dt as dt_util
+import httpx
+from homeassistant.components.camera.const import DOMAIN as CAMERA_DOMAIN
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.httpx_client import get_async_client
+from langchain_core.messages import HumanMessage, SystemMessage
+from ollama import ResponseError as OllamaResponseError
+from PIL import Image
+
+from ..agent.tools import (  # noqa: TID252
+    VLM_ERROR_CAPTION,
+    VLMPromptOverrides,
+    analyze_image,
+)
+from ..const import (  # noqa: TID252
+    CONF_MODEL_PROVIDER_UNCONTENDED,
+    CONF_NOTIFY_SERVICE,
+    CONF_VIDEO_ANALYZER_EVENT_RECORDING_ENABLED,
+    CONF_VIDEO_ANALYZER_HOUSE_NOTIFICATION_COOLDOWN_S,
+    CONF_VIDEO_ANALYZER_MODE,
+    CONF_VIDEO_ANALYZER_MOTION_CAMERA_MAP,
+    CONF_VIDEO_ANALYZER_NOTIFICATION_COOLDOWN_S,
+    CONF_VIDEO_ANALYZER_UNIQUENESS_ENABLED,
+    CONF_VIDEO_MODEL_SEMAPHORE,
+    CONF_VLM_PROMPT_EXTRA,
+    CONF_VLM_RESPONSE_LANGUAGE,
+    RECOMMENDED_VIDEO_ANALYZER_HOUSE_NOTIFICATION_COOLDOWN_S,
+    RECOMMENDED_VIDEO_ANALYZER_NOTIFICATION_COOLDOWN_S,
+    RECOMMENDED_VIDEO_MODEL_SEMAPHORE,
+    RECOMMENDED_VLM_PROMPT_EXTRA,
+    RECOMMENDED_VLM_RESPONSE_LANGUAGE,
+    RESERVED_IDENTITY_LABELS,
+    SIGNAL_HGA_NEW_LATEST,
+    SIGNAL_HGA_RECOGNIZED,
+    VIDEO_ANALYZER_CAPTION_DEDUPE_WINDOW_SEC,
+    VIDEO_ANALYZER_EVENT_SELECT_MAX_WINDOW,
+    VIDEO_ANALYZER_EVENT_SELECT_WINDOW,
+    VIDEO_ANALYZER_FACE_CROP,
+    VIDEO_ANALYZER_FACE_MERGE_THRESHOLD,
+    VIDEO_ANALYZER_HOUSE_NOTIFICATION_COOLDOWN_MAX_S,
+    VIDEO_ANALYZER_LATEST_NAME,
+    VIDEO_ANALYZER_LATEST_SUBFOLDER,
+    VIDEO_ANALYZER_MOTION_CAMERA_MAP,
+    VIDEO_ANALYZER_MOTION_SCAN_INTERVAL,
+    VIDEO_ANALYZER_NOTIFICATION_COOLDOWN_MAX_S,
+    VIDEO_ANALYZER_PROMPT,
+    VIDEO_ANALYZER_SCAN_INTERVAL,
+    VIDEO_ANALYZER_SIMILARITY_THRESHOLD,
+    VIDEO_ANALYZER_SNAPSHOT_ROOT,
+    VIDEO_ANALYZER_SNAPSHOTS_TO_KEEP,
+    VIDEO_ANALYZER_SYSTEM_MESSAGE,
+    VIDEO_ANALYZER_TIME_OFFSET,
+    VIDEO_ANALYZER_TRIGGER_ON_MOTION,
+    VIDEO_SUMMARY_NUM_PREDICT,
+    VIDEO_VLM_NUM_PREDICT,
+)
+from .event_recording import (
+    EVENT_WORK_PREFIX,
+    RECORDING_FETCH_BACKOFF_SEC,
+    RECORDING_FLUSH_GRACE_SEC,
+    RECORDING_INGEST_DEADLINE_SEC,
+    RECORDING_MAX_CONCURRENT,
+    RECORDING_MAX_PENDING_PER_CAMERA,
+    RecordingError,
+    RecordingNotReadyError,
+    assert_public_host,
+    download_recording,
+    extract_frames,
+    ffmpeg_available,
+    ffmpeg_binary,
+    is_valid_event_id,
+    recording_url_from_state,
+    thin_frames,
+)
+from .fallback import ainvoke_dropping_unsupported_params
+from .notify_cooldown import (
+    CooldownAction,
+    CooldownWindow,
+    HouseWindow,
+    active_window,
+    decide,
+    has_unknown_face,
+    house_hushes,
+    house_window_after_sound,
+    notification_tag,
+    opened_window,
+    window_after_unknown_face,
+)
+from .person_gallery import FACE_EMBEDDING_DIMS
+from .utils import (
+    MOBILE_APP_SERVICE_PREFIX,
+    discover_mobile_notify_service,
+    dispatch_on_loop,
+    extract_final,
+    is_edge_deployment,
+    local_video_session,
+    wait_for_chat_idle,
+)
+from .video_helpers import (
+    apply_name_substitution,
+    camera_id_from_fs_dir,
+    clean_frame_text,
+    crop_resize_encode_jpeg,
+    dedupe_desc_tagged,
+    dhash_bytes,
+    ensure_dir,
+    epoch_from_path,
+    format_subject,
+    hamming64,
+    has_human_terms,
+    is_no_change_reply,
+    latest_target,
+    limit_sentences_and_chars,
+    load_image_rgb,
+    order_batch,
+    publish_latest_atomic,
+    put_with_backpressure,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine, Iterable, Sequence
+
+    from homeassistant.core import Event, HomeAssistant
+
+    from .runtime import HGAConfigEntry
+
+LOGGER = logging.getLogger(__name__)
+
+# --- Video analyzer tuning constants ---
+_MAX_BATCH: Final[int] = 5  # frames per batch
+_QUEUE_MAXSIZE: Final[int] = 50  # per-camera backlog cap
+_FRAME_DEADLINE_SEC: Final[int] = 600  # skip frames older than this
+_SUMMARY_TIMEOUT_SEC: Final[int] = 60  # was 35
+_FACE_TIMEOUT_SEC: Final[int] = 10  # was 10 (keep)
+# Budget for one identity-merge distance lookup (issue #543); a wedged DB
+# connection degrades to a merge refusal instead of hanging the worker.
+_MERGE_DB_TIMEOUT_SEC: Final[int] = 5
+# Total DB budget for one batch's identity merge; lookups past this degrade
+# to refusals so a slow-but-alive database cannot delay alerts for minutes.
+_MERGE_DB_BUDGET_SEC: Final[int] = 15
+_VISION_TIMEOUT_SEC: Final[int] = 90  # was 30
+_VIDEO_MODEL_SEMAPHORE_WAIT_SEC: Final[int] = (
+    30  # max wait for semaphore before dropping
+)
+_VIDEO_QUEUE_BACKLOG_THRESHOLD: Final[int] = (
+    2  # drop stale frames when queue exceeds this
+)
+_WORKER_ERROR_BACKOFF_SEC: Final[int] = 5  # pause after unexpected worker error
+_SUMMARY_MAX_FRAMES: Final[int] = 8  # kept frame descriptions fed to the summary
+_NOTIFY_PROTECT_TTL_SEC: Final[int] = 1800  # pruning protection for notified images
+# Captions the dedup check considers, and the rows the similarity search asks
+# for so that another camera sharing the name prefix cannot crowd them out.
+_CAPTION_SEARCH_LIMIT: Final[int] = 10
+_CAPTION_SEARCH_WIDE_LIMIT: Final[int] = 50
+# Recent-caption scan (issue #704): when a caption would re-notify as a stale
+# match, the captions notified inside the dedupe window are read newest first,
+# a page at a time, and compared with it directly.
+_RECENT_CAPTION_SCAN_PAGE: Final[int] = 50
+_RECENT_CAPTION_SCAN_MAX_PAGES: Final[int] = 4
+_RECENT_CAPTION_SCAN_TIMEOUT_SEC: Final[int] = 10
+# Exact filename shape _capture_snapshot writes; the retention seed claims
+# ONLY these (user files like "snapshot_family.jpg" must never match).
+# ASCII digit class on purpose: \d is Unicode-aware and would also claim
+# user files named with e.g. Arabic-Indic digits.
+# Frames extracted from an event recording (issue #491) carry an `_rNN` suffix
+# (their second within the clip) so they never collide with a capture the
+# snapshot loop stamps with the same wall-clock second; epoch_from_path reads
+# only the leading timestamp, so ordering and retention treat both alike.
+_SNAPSHOT_FILE_RE: Final = re.compile(
+    r"snapshot_([0-9]{8}_[0-9]{6})(?:_r[0-9]{2})?\.jpg"
+)
+_RECORDING_FRAME_RE: Final = re.compile(r"snapshot_[0-9]{8}_[0-9]{6}_r[0-9]{2}\.jpg")
+
+
+def _is_analyzer_snapshot_name(name: str) -> bool:
+    """Return True only for names _capture_snapshot can actually produce."""
+    m = _SNAPSHOT_FILE_RE.fullmatch(name)
+    if m is None:
+        return False
+    try:
+        datetime.strptime(m.group(1), "%Y%m%d_%H%M%S")  # noqa: DTZ007
+    except ValueError:
+        return False
+    return True
+
+
+def _place_recording_frame(
+    src: Path, snapshot_dir: Path, base: datetime, second: int
+) -> Path:
+    """
+    Link ``src`` into ``snapshot_dir`` under a free analyzer-owned name.
+
+    Blocking; runs in the executor. os.link fails on an existing target, so
+    two writers can never overwrite each other; when hard links are not
+    supported (some network mounts) fall back to a checked rename. The stamp
+    is bumped a second at a time until a free name is found.
+    """
+    suffix = f"_r{min(second, 99):02d}.jpg"
+    for bump in range(60):
+        stamp = dt_util.as_local(base + timedelta(seconds=bump)).strftime(
+            "%Y%m%d_%H%M%S"
+        )
+        dst = snapshot_dir / f"snapshot_{stamp}{suffix}"
+        try:
+            os.link(src, dst)
+        except FileExistsError:
+            continue
+        except OSError:
+            if dst.exists():
+                continue
+            src.replace(dst)
+            return dst
+        src.unlink()
+        return dst
+    msg = f"no free name for recording frame {src.name}"
+    raise RecordingError(msg)
+
+
+# --- Snapshot capture (issue #464) ---
+_SNAPSHOT_SERVICE_TIMEOUT_SEC: Final[int] = 15  # camera.snapshot blocking-call budget
+_SNAPSHOT_APPEAR_ATTEMPTS: Final[int] = 10  # post-service file visibility polls (0.2s)
+_SNAPSHOT_FAILURE_ESCALATION: Final[int] = 3  # consecutive failures before ERROR log
+# --- Stale retained snapshot guard (issue #490) ---
+# ring-mqtt snapshot cameras expose a `timestamp` attribute (epoch seconds of
+# the last published frame). On battery cameras the frame can stop refreshing —
+# the interval snapshot can silently freeze, or the Auto/Motion snapshot modes
+# never request battery snapshots at all (issue #466) — leaving MQTT
+# serving a days-old retained frame; capturing it would send stale imagery to
+# the VLM with no visible failure. The threshold is 3x the slowest known
+# ring-mqtt Interval-mode refresh (600 s on battery power).
+_SNAPSHOT_STALE_MAX_AGE_SEC: Final[int] = 1800
+_SNAPSHOT_TS_EPOCH_MIN: Final[int] = 1_000_000_000  # ignore non-epoch timestamps
+# Timestamps further in the future than this are not epoch seconds (e.g. a
+# millisecond epoch) — treating one as valid would silently defeat the guard.
+_SNAPSHOT_TS_FUTURE_SLACK_SEC: Final[int] = 3600
+# Re-record an ONGOING staleness episode this often, so the issue #464 streak
+# can escalate to ERROR and hourly metrics show a multi-day freeze.
+_STALE_REREPORT_INTERVAL_SEC: Final[int] = 3600
+
+
+def _plausible_epoch(ts: object, now: datetime) -> float | None:
+    """
+    Coerce a `timestamp` attribute to plausible epoch seconds, else None.
+
+    An implausible value must never drive the stale guard: NaN would fail it
+    permanently closed (all captures blocked) while a millisecond epoch or
+    inf would fail it permanently open (guard silently defeated). Numeric
+    strings are coerced so a broker delivering string epochs is not inert.
+    """
+    if isinstance(ts, bool) or not isinstance(ts, (int, float, str)):
+        return None
+    try:
+        ts_val = float(ts)
+    except (ValueError, OverflowError):
+        # OverflowError: float(10**4000) — a corrupt huge int must not kill
+        # the capture loop.
+        return None
+    if (
+        not math.isfinite(ts_val)
+        or ts_val < _SNAPSHOT_TS_EPOCH_MIN
+        or ts_val > now.timestamp() + _SNAPSHOT_TS_FUTURE_SLACK_SEC
+    ):
+        # Log so an upstream unit change (e.g. seconds -> milliseconds) shows.
+        LOGGER.debug("Ignoring implausible snapshot timestamp attribute: %r", ts)
+        return None
+    return ts_val
+
+
+# --- Uniqueness gate tuning ---
+# Enabled at runtime via CONF_VIDEO_ANALYZER_UNIQUENESS_ENABLED option (default off).
+_UNIQUENESS_HAMMING_MAX: Final[int] = 4  # <= this => "too similar" (tune 4-10)
+_UNIQUENESS_HISTORY: Final[int] = 2  # compare against last N accepted hashes
+_UNIQUENESS_HEARTBEAT_SEC: Final[int] = 10  # always allow a frame at least this often
+
+# --- Metrics reporting ---
+_METRICS_REPORT_INTERVAL_SEC: Final[int] = 3600  # once per hour
+_METRICS_LAT_HISTORY: Final[int] = 512  # keep up to 512 lat samples per camera
+
+# --- ring-mqtt event_select trigger (issue #466) ---
+# ring-mqtt publishes a new eventId attribute on select.*_event_select per Ring
+# event; used as a motion trigger for battery cameras.
+_EVENT_SELECT_SUFFIX: Final[str] = "_event_select"
+
+# --- Caption novelty: lexical fast-path terms ---
+_ARTIFACT_RE: Final = re.compile(
+    r"bright light|light streak|glare|\bblur|monochrome|black and white|"
+    r"night scene|no(?:body| (?:people|persons?|one|body|humans?)) (?:\w+ )?visible"
+)
+_SUBJECT_RE: Final = re.compile(
+    r"\b(?:person|people|man|woman|child|children|boy|girl|"
+    r"package|box|delivery|"
+    r"car|truck|vehicle|suv|van|bus|motorcycle|pickup|minivan|"
+    r"cat|dog|bird|deer|raccoon|fox|coyote|squirrel|animal)\b"
+)
+# Matches negated human presence so "no people visible" does not count as a subject.
+_NEGATED_HUMAN_RE: Final = re.compile(
+    r"\bno\s+(?:people|persons?|one|body|humans?)\b.{0,20}\bvisible\b"
+)
+# Action/presence verbs indicating a subject is doing something or is actively there.
+# stale_match only fires when an action verb is present — a parked car or a static
+# house description does not count as an event worth re-notifying.
+_ACTION_RE: Final = re.compile(
+    r"\b(?:walk|walks|walking|walked|"
+    r"run|runs|running|ran|"
+    r"approach|approaches|approaching|approached|"
+    r"enter|enters|entering|entered|"
+    r"exit|exits|exiting|exited|"
+    r"cross|crosses|crossing|crossed|"
+    r"appear|appears|appearing|appeared|"
+    r"disappear|disappears|disappearing|disappeared|"
+    r"arrive|arrives|arriving|arrived|"
+    r"leave|leaves|leaving|left|"
+    r"drive|drives|driving|drove|"
+    r"pull|pulls|pulling|pulled|"
+    r"step|steps|stepping|stepped|"
+    r"move|moves|moving|moved|"
+    r"stand|stands|standing|stood|"
+    r"sit|sits|sitting|sat|"
+    r"wait|waits|waiting|waited|"
+    r"watch|watches|watching|watched)\b"
+)
+# Phrases where an action verb describes an inanimate object, not a person.
+# Scrubbed from the caption before _ACTION_RE is applied.
+_STATIC_CONTEXT_RE: Final = re.compile(
+    # "SUV sits parked" / "car sits there" — vehicle static position
+    r"\b(?:suv|car|truck|vehicle|van|bus|sedan|pickup|minivan)\s+sits?\b"
+    # "path/walkway/fence runs along" — a feature extending through the scene
+    r"|\b(?:path|walkway|road|driveway|fence|lane)\s+runs?\b"
+    # "stepping stones" — "stepping" modifies "stones", not a person
+    r"|\bstepping\s+stones?\b"
+)
+
+
+def _normalize_caption(caption: str) -> str:
+    """Lowercase, collapse punctuation/whitespace, canonicalize compound terms."""
+    text = caption.lower()
+    text = text.replace("black-and-white", "black and white")
+    text = re.sub(r"[^\w\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _in_artifact_bucket(normalized: str) -> bool:
+    """Return True if the caption describes a low-value visual artifact."""
+    return bool(_ARTIFACT_RE.search(normalized))
+
+
+def _has_action(normalized: str) -> bool:
+    """
+    Return True if the caption contains an action/presence verb from an animate subject.
+
+    Inanimate patterns ('SUV sits parked', 'path runs alongside') are scrubbed
+    before the check so they do not produce false positives.
+    """
+    scrubbed = _STATIC_CONTEXT_RE.sub(" ", normalized)
+    return bool(_ACTION_RE.search(scrubbed))
+
+
+def _caption_age_seconds(item: Any) -> int:
+    """Return how long ago a stored caption was written, in whole seconds."""
+    age = (dt_util.now() - dt_util.as_local(item.created_at)).total_seconds()
+    return max(0, int(age))
+
+
+def _caption_notified(item: Any) -> bool:
+    """
+    Return True if a stored caption was sent as a notification.
+
+    Captions stored before the flag existed carry none and count as notified.
+    """
+    return (item.value or {}).get("notified") is not False
+
+
+def _caption_anchors(item: Any, *, unknown_only: bool) -> bool:
+    """
+    Return True if a stored caption may suppress the caption being checked.
+
+    It must have been notified; and when the batch being checked holds an
+    unknown face, it must come from a batch that held one too, so a resident's
+    caption never silences a stranger's.
+    """
+    if not _caption_notified(item):
+        return False
+    return not unknown_only or (item.value or {}).get("unknown_person") is True
+
+
+def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
+    """Return the cosine similarity of two vectors (0.0 for a zero vector)."""
+    norm = math.hypot(*a) * math.hypot(*b)
+    if not norm:
+        return 0.0
+    return math.sumprod(a, b) / norm
+
+
+def _has_real_subject(normalized: str, recognized_names: list[str]) -> bool:
+    """Return True if the caption mentions a subject that should prevent suppression."""
+    # Remove negated human spans before scanning for subject terms so that
+    # "no people visible" does not look like a human presence.
+    scrubbed = _NEGATED_HUMAN_RE.sub(" ", normalized)
+    if _SUBJECT_RE.search(scrubbed):
+        return True
+    # "Indeterminate" means face recognition ran but found no identifiable face.
+    # Only "Unknown Person" (seen but unrecognized) or a known name counts.
+    return any(n and n != "Indeterminate" for n in recognized_names)
+
+
+# Neutral stand-in caption for a frame whose VLM analysis failed or came back
+# empty while face recognition detected a person. Keeps the detection in the
+# pipeline without leaking the raw error text into user-facing output.
+_PERSON_FALLBACK_CAPTION = "A person is present; scene analysis unavailable."
+
+# Neutral stand-in caption for a repeated-scene sentinel frame that face
+# recognition proved holds a person. The frame is kept so the detection is not
+# erased, but "Scene unchanged." is a control reply, not scene content: handed
+# to the summarizer as a frame description it produced "A man in a gray shirt
+# walks out of an open door onto the porch, then stands still as Lindo"
+# (field report 2026-08-17, camera.playroomdoor).
+#
+# The caption must CONTINUE the subject, never introduce one. The first
+# stand-in here read "A person is present." — an indefinite introduction — and
+# the summarizer, obliged by the Chronology rule to narrate every frame in
+# order, read a bare presence assertion arriving after an earlier frame as
+# somebody new turning up: "A man in a dark shirt stands on the porch at dusk,
+# then remains there as a person becomes visible nearby" (field report
+# 2026-08-18, camera.backyard, one human in frame). Same failure family as the
+# sentinel leak itself — evidence in the prompt that no frame ever held — and
+# the summary prompt's introduce-once rule cannot undo it, because that rule
+# governs the model's OUTPUT while this text is its INPUT.
+#
+# So the wording is load-bearing on three counts, each measured against the
+# live summarizer (temperature 0.2, n=10, real prompts):
+#   * "the same person" continues the subject, so no second actor appears
+#     (2/10 clean before, 10/10 after);
+#   * it still ASSERTS presence, so the detection survives when the VLM missed
+#     the person entirely — a scene-only phrasing ("The same scene continues.")
+#     dropped the person from the summary 3/10 when recognition had no name,
+#     which is the erasure this whole branch exists to prevent;
+#   * it keeps a word _HUMAN_TERM_RE matches, so _pick_notify_frame can still
+#     choose this frame's snapshot as the notification image.
+# It claims no motion, since the sentinel means the VLM reported no change.
+_PERSON_SENTINEL_CAPTION = "The same person remains in view."
+
+# Word-bounded human terms (singular + plural) for notify-frame selection.
+# has_human_terms does bare substring matching ("man" hits "manicured lawn")
+# and counts negated phrases ("no people visible") — good enough for subject
+# formatting, but a false person hit here would steer the notification image
+# back to an empty scene, the exact mismatch _pick_notify_frame exists to
+# prevent.
+_HUMAN_TERMS_WORDS: Final = (
+    r"person|persons|people|man|men|woman|women|boy|boys|girl|girls|"
+    r"child|children"
+)
+_HUMAN_TERM_RE: Final = re.compile(rf"\b(?:{_HUMAN_TERMS_WORDS})\b")
+# Any "no <human term>" span, regardless of trailing wording — broader than
+# _NEGATED_HUMAN_RE, which only covers "no ... visible" phrasings. The
+# optional modifier covers "no other person" / "no additional people".
+_NEGATED_PERSON_RE: Final = re.compile(
+    rf"\bno\s+(?:(?:other|additional|second|more)\s+)?"
+    rf"(?:{_HUMAN_TERMS_WORDS}|one|body|humans?|"
+    r"individuals?|figures?|kids?|ladies|lady|guys?)\b"
+)
+
+
+def _caption_mentions_person(caption: str) -> bool:
+    """Return True if the caption affirmatively mentions a human."""
+    scrubbed = _NEGATED_PERSON_RE.sub(" ", _normalize_caption(caption))
+    return bool(_HUMAN_TERM_RE.search(scrubbed))
+
+
+def _is_detected_name(name: str) -> bool:
+    """
+    Return True when a face-recognition name denotes a detected person.
+
+    "Unknown Person" (seen but unenrolled) and known names count;
+    "Indeterminate" (ran, no identifiable face), legacy "None", and empty
+    entries do not.
+    """
+    return bool(name) and name not in ("Indeterminate", "None")
+
+
+def _has_detected_person(faces: list[str]) -> bool:
+    """Return True when face recognition saw an actual person in the frame."""
+    return any(_is_detected_name(p) for p in faces)
+
+
+# Two identity entries in one frame = two detected face boxes: the no-face
+# sentinel is only ever emitted as a LONE "Indeterminate" entry, so a
+# two-element list always means two real detections even when one embedding
+# degraded to Indeterminate.
+_COOCCURRENT_FACES: Final = 2
+
+# Plural / second-person caption evidence. Face recognition proves presence,
+# never absence — a caption is the only sensor that can see a face-averted
+# companion, so plural wording must veto any single-person claim.
+_SINGULAR_HUMAN: Final = (
+    r"(?:person|man|woman|boy|girl|child|individual|figure|kid|lady|guy|"
+    r"adult|baby|toddler|teenager|teen|infant|stranger|visitor|neighbor|"
+    r"newcomer)"
+)
+_PLURAL_HUMAN_NOUNS: Final = (
+    r"(?:people|persons|men|women|boys|girls|children|kids|adults|babies|"
+    r"toddlers|teenagers|teens|infants|individuals|figures|ladies|guys|"
+    r"strangers|visitors|neighbors|newcomers)"
+)
+_PLURAL_HUMAN_RE: Final = re.compile(
+    rf"\b(?:{_PLURAL_HUMAN_NOUNS}|couple|crowd|both|"
+    rf"(?:two|three|four|five|six|several|multiple)\s+"
+    rf"(?:{_SINGULAR_HUMAN}|{_PLURAL_HUMAN_NOUNS})|"
+    # Explicit contrast markers assert a DISTINCT person even across frames.
+    rf"(?:another|second|other|different|new|unfamiliar|separate)\s+"
+    rf"{_SINGULAR_HUMAN}|"
+    # Nouns that inherently assert someone other than the resident.
+    r"strangers?|intruders?|trespassers?|"
+    # Singular conjunctions: "a man and a woman", "a man and woman", "a
+    # person is beside a child". Up to three intervening words; the article
+    # before the second term is optional (VLM captions often share one).
+    rf"{_SINGULAR_HUMAN}(?:\s+\w+){{0,3}}\s+"
+    r"(?:and|with|beside|alongside|near|behind|next\s+to|toward|towards|"
+    r"carrying|holding|carries|holds)\s+"
+    rf"(?:(?:a|an|another|the|his|her|their)\s+)?{_SINGULAR_HUMAN})\b"
+)
+
+# Names allowed inside the single-person constraint block. The block is an
+# authoritative instruction to the summarizer, so a name that could carry
+# markup, newlines, unbounded length, or sentence-shaped instruction text
+# suppresses the constraint instead of being interpolated. The word cap is
+# the instruction-shape guard: real display names are a few words, while
+# imperative payloads need a clause.
+_SAFE_CONSTRAINT_NAME_RE: Final = re.compile(r"[\w.,'\-]+(?: [\w.,'\-]+){0,3}")
+_SAFE_CONSTRAINT_NAME_MAX_LEN: Final = 64
+
+
+def _is_safe_constraint_name(name: str) -> bool:
+    """Return True when a name is safe to interpolate into instructions."""
+    return (
+        len(name) <= _SAFE_CONSTRAINT_NAME_MAX_LEN
+        and _SAFE_CONSTRAINT_NAME_RE.fullmatch(name) is not None
+    )
+
+
+def _is_enrolled_name(name: str) -> bool:
+    """Return True for a detected name that is a real enrolled identity."""
+    return (
+        _is_detected_name(name) and name.strip().lower() not in RESERVED_IDENTITY_LABELS
+    )
+
+
+# Article-led singular human mention, e.g. "a man", "the young woman".
+_ARTICLE_HUMAN_RE: Final = re.compile(
+    rf"\b(?:a|an|another|the)\s+(?:\w+\s+){{0,2}}?({_SINGULAR_HUMAN})\b"
+)
+
+# Demographic (sex, age) axes for cross-frame caption comparison. Two
+# captions whose human terms differ on either axis ("a man" then "a woman";
+# "an adult" then "a child") describe people who cannot be the same person,
+# so they veto the single-person claim even though each caption is singular.
+# Neutral terms (person, figure, visitor, ...) are absent and never
+# conflict; boy/girl/teen carry no age (a VLM can flip man<->boy for the
+# same teenager by size and distance, but it does not flip sex).
+_HUMAN_TERM_AXES: Final[dict[str, tuple[str | None, str | None]]] = {
+    "man": ("male", "adult"),
+    "guy": ("male", "adult"),
+    "woman": ("female", "adult"),
+    "lady": ("female", "adult"),
+    "adult": (None, "adult"),
+    "boy": ("male", None),
+    "girl": ("female", None),
+    "teen": (None, None),
+    "teenager": (None, None),
+    "child": (None, "child"),
+    "kid": (None, "child"),
+    "toddler": (None, "child"),
+    "baby": (None, "child"),
+    "infant": (None, "child"),
+}
+
+
+def _captions_conflict_on_humans(captions: list[str]) -> bool:
+    """
+    Return True when two captions describe demographically disjoint people.
+
+    A sequential real visitor ("a man ..." in one frame, "a woman ..." in a
+    later frame) never co-occurs and uses no contrast wording, so the
+    per-caption vetoes cannot see them. The demographic axes can: two human
+    terms that disagree on sex or on age cannot be one person, so the batch
+    provably contains two different people.
+    """
+    axes: list[tuple[str | None, str | None]] = [
+        _HUMAN_TERM_AXES[term]
+        for caption in captions
+        for term in _ARTICLE_HUMAN_RE.findall(
+            _NEGATED_PERSON_RE.sub(" ", _normalize_caption(caption))
+        )
+        if term in _HUMAN_TERM_AXES
+    ]
+    return any(
+        (a[0] and b[0] and a[0] != b[0]) or (a[1] and b[1] and a[1] != b[1])
+        for i, a in enumerate(axes)
+        for b in axes[i + 1 :]
+    )
+
+
+def _caption_mentions_plural_humans(caption: str) -> bool:
+    """
+    Return True if the caption affirmatively mentions multiple humans.
+
+    Beyond plural nouns, counts, and conjunction pairs, two article-led
+    singular mentions with DIFFERENT human terms ("a man talks to a woman",
+    "the man holds a child") count as two people regardless of the verb
+    between them — relation verbs are unenumerable. Same-term re-reference
+    ("a man ... the man") stays singular, since captions re-reference one
+    person with the same noun.
+    """
+    scrubbed = _NEGATED_PERSON_RE.sub(" ", _normalize_caption(caption))
+    if _PLURAL_HUMAN_RE.search(scrubbed):
+        return True
+    return len(set(_ARTICLE_HUMAN_RE.findall(scrubbed))) >= _COOCCURRENT_FACES
+
+
+def _decide_sole_person(
+    frame_descriptions: list[dict[str, list[str]]],
+    dropped_hits: list[list[FaceHit]],
+) -> str | None:
+    """
+    Batch-level single-person verdict with caption vetoes, or None.
+
+    Runs in _process_batch over the FULL pre-cap evidence — kept frames'
+    post-merge identities plus dropped frames' raw hits — so evidence later
+    sliced by dedupe or the summary cap still counts. Caption vetoes (plural
+    mentions, cross-frame demographic conflicts) scan every kept caption for
+    the same reason.
+    """
+    sole = _verified_sole_person(
+        [next(iter(d.values()), []) for d in frame_descriptions]
+        + [[h.name for h in hits] for hits in dropped_hits]
+    )
+    if sole is None:
+        return None
+    captions = [caption for d in frame_descriptions for caption in d]
+    if any(_caption_mentions_plural_humans(caption) for caption in captions):
+        return None
+    if _captions_conflict_on_humans(captions):
+        return None
+    return sole
+
+
+def _verified_sole_person(name_lists: list[list[str]]) -> str | None:
+    """
+    Return the batch's verified sole person, or None.
+
+    name_lists must carry the FULL batch evidence: post-merge identity lists
+    of every kept frame plus the hit names of frames dropped on the VLM side
+    — computed before dedupe and the summary frame cap, so evidence sliced
+    from the summary cannot be sliced from this decision (the same
+    full-evidence rule _merge_unknown_faces follows).
+
+    Verified means: at least one detected face, no frame with two or more
+    identity entries (raw count — a degraded second face still counts), and
+    exactly one distinct detected name that is a real enrolled identity.
+    Anything short of that returns None; missing or failed recognition is
+    never treated as proof of absence.
+    """
+    detected = [n for names in name_lists for n in names if _is_detected_name(n)]
+    if not detected:
+        return None
+    if any(len(names) >= _COOCCURRENT_FACES for names in name_lists):
+        return None
+    unique = set(detected)
+    if len(unique) != 1:
+        return None
+    name = next(iter(unique))
+    if not _is_enrolled_name(name):
+        return None
+    return name
+
+
+def _single_person_constraint(
+    sole_person: str | None,
+    frame_descriptions: list[dict[str, list[str]]],
+) -> str | None:
+    """
+    Render the single-person summarizer constraint, or None.
+
+    The system prompt's single-actor bias fails in the field (issue #543):
+    frames whose face recognition returned "Indeterminate" but whose caption
+    mentions a person get narrated as a second actor ("a person stands ...
+    then Lindo appears"). sole_person is the batch-level verdict from
+    _verified_sole_person, already caption-vetoed over the FULL pre-cap
+    batch in _process_batch. The vetoes are re-applied here over whatever
+    frame_descriptions this call received — cheap defense for direct
+    callers: a caption that affirmatively mentions multiple humans (the VLM
+    saw someone recognition could not), and a name that fails the safe
+    interpolation grammar. Either yields None — pre-constraint behavior.
+    """
+    if sole_person is None:
+        return None
+    captions = [caption for d in frame_descriptions for caption in d]
+    if any(_caption_mentions_plural_humans(caption) for caption in captions):
+        return None
+    if _captions_conflict_on_humans(captions):
+        return None
+    if not _is_safe_constraint_name(sole_person):
+        return None
+    # Attribution license, NOT a denial: the block identifies single-person
+    # frames without forbidding plurality, so a caption that genuinely
+    # describes two people — in any wording or language the veto regexes
+    # don't know — remains narratable under the base rules. The worst case
+    # of an over-broad emission is a mislabeled name, never an erased
+    # companion. The name itself is data inside the verified-name tag; the
+    # instruction prose is fully static, so a name that smuggles imperative
+    # wording past the grammar gate is quoted, never instructed.
+    return (
+        "\n<single person constraint>\n"
+        f"<verified name>{sole_person}</verified name>\n"
+        "Face recognition verified that the person named in the verified "
+        "name tag above is the only person whose face appears anywhere in "
+        "this footage. Treat every frame description that mentions a single "
+        "person as describing that named person; do not narrate those "
+        "frames as different people or add an unknown person alongside "
+        "them. Introduce that person by the verified name at their first "
+        "mention and continue with the same subject afterwards, so no "
+        "frame reintroduces them as “a person”. Only mention "
+        "additional people if a frame description "
+        "clearly describes two or more people at once, or explicitly "
+        "describes a different or additional person.\n"
+        "</single person constraint>"
+    )
+
+
+def _pick_notify_frame(
+    descs: list[dict[str, list[str]]], paths: list[Path]
+) -> Path | None:
+    """
+    Choose the snapshot whose image best illustrates the summary.
+
+    The summary is generated from descs only, so the reference image must come
+    from those frames — never from sentinel/error frames dropped in
+    _process_batch, which show a scene the summary does not describe. Prefer
+    frames showing a person (recognized face or human terms in the caption)
+    since summaries lead with people; otherwise use the middle kept frame.
+
+    descs and paths must be index-aligned (descs[i] describes paths[i]);
+    a length mismatch raises ValueError.
+    """
+    person_idxs = [
+        i
+        for i, (d, _path) in enumerate(zip(descs, paths, strict=True))
+        for text, faces in d.items()
+        if _has_detected_person(faces) or _caption_mentions_person(text)
+    ]
+    if not paths:
+        return None
+    pool = person_idxs or list(range(len(paths)))
+    return paths[pool[len(pool) // 2]]
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchNotifyContext:
+    """What the notification step needs to know about the batch it describes."""
+
+    # Names on the frames the summary kept (sensor, image entity, novelty).
+    recognized: list[str]
+    # Every name detected in any frame of the batch (notification cooldown).
+    batch_names: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _NotifyCard:
+    """Which notification card a push lands on, and whether it sounds."""
+
+    tag: str
+    quiet: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _CooldownPlan:
+    """A planned cooldown push and the state to commit once it is sent."""
+
+    card: _NotifyCard
+    # The camera window to store, or None to leave it as it is.
+    window: CooldownWindow | None
+    # The house window to store, or None to leave it as it is.
+    house: HouseWindow | None = None
+
+
+@dataclass(frozen=True)
+class CaptionNoveltyDecision:
+    """Result of _is_caption_novel."""
+
+    notify: bool
+    reason: Literal[
+        "stale_snapshot",
+        "no_match",
+        "score_none",
+        "score_below_threshold",
+        "score_above_threshold",
+        "recent_match",
+        "artifact_bucket",
+        "stale_match",
+        "renotify",
+        "store_timeout",
+        "store_error",
+    ]
+    best_score: float | None = None
+    matched_caption: str | None = None
+    matched_age_seconds: int | None = None
+
+
+@dataclass(frozen=True)
+class FaceHit:
+    """
+    One face-recognition result: the assigned name plus its raw embedding.
+
+    embedding is None when recognition could not produce one for the face
+    ("Indeterminate" placeholders). Carried alongside the per-frame name lists
+    so _process_batch can consolidate flapping identities (issue #543).
+    """
+
+    name: str
+    embedding: list[float] | None = None
+
+
+@dataclass
+class _SnapshotItem:
+    path: Path
+    enqueued: float  # monotonic() at enqueue time
+
+
+@dataclass
+class _Metrics:
+    captured: int = 0
+    enqueued: int = 0
+    skipped_duplicate: int = 0
+    dropped_stale: int = 0
+    dropped_backlog: int = 0
+    analyzed: int = 0
+    sentinel_dropped: int = 0
+    timeouts: int = 0
+    semaphore_timeouts: int = 0
+    snapshot_failures: int = 0
+    recording_frames: int = 0
+    recording_failures: int = 0
+    replaced_by_recording: int = 0
+    unknown_merged: int = 0
+    unknown_merge_refused_cooccurrence: int = 0
+    unknown_merge_refused_distance: int = 0
+    unknown_merge_refused_multi_known: int = 0
+    unknown_merge_refused_no_lookup: int = 0
+    # PEP 585: deque is subscriptable; keep in a field to avoid shared default
+    lat_ms: deque[float] = field(
+        default_factory=lambda: deque(maxlen=_METRICS_LAT_HISTORY)
+    )
+
+
+class VideoAnalyzer:
+    """Analyze video from recording or motion-triggered cameras."""
+
+    def __init__(self, hass: HomeAssistant, entry: HGAConfigEntry) -> None:
+        """Initialize the video analyzer."""
+        self.hass = hass
+        self.entry = entry
+        self._snapshot_queues: dict[str, asyncio.Queue[_SnapshotItem]] = {}
+        self._retention_deques: dict[str, deque[Path]] = {}
+        # One-way latch set by stop(). An instance belongs to exactly one
+        # config-entry setup, so once it has been stopped it must never run
+        # again - see the note in start().
+        self._stopped = False
+        # One-shot startup task that folds pre-restart files into retention.
+        self._retention_seed_task: asyncio.Task[None] | None = None
+        self._active_queue_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._initialized_dirs: set[str] = set()
+        self._active_motion_cameras: dict[str, asyncio.Task[Any]] = {}
+        self._active_recording_cameras: dict[str, asyncio.Task[Any]] = {}
+        # Frames captured during a motion/recording window, held out of the
+        # live worker queue until the event ends and they flush as one batch.
+        self._event_snapshot_buffers: dict[str, deque[Path]] = {}
+        # camera_id -> cancel for the timer that ends an event_select-triggered
+        # loop (issue #466); event_select has no "off" edge to key on.
+        self._event_select_window_cancels: dict[str, Callable[[], None]] = {}
+        # Cameras whose motion loop was started by (and is terminated by) the
+        # event_select window. A loop the binary motion sensor started is
+        # never subject to the window timer — its OFF edge owns the lifecycle.
+        self._event_select_owned: set[str] = set()
+        # Cameras whose CURRENT loop was started by event_select and must
+        # dedupe frames (issue #489). Separate from ownership: a motion-sensor
+        # takeover transfers the lifecycle but keeps the dedupe requirement,
+        # since battery motion sensors typically lag the eventId by seconds.
+        # Cleared only when the loop stops.
+        self._event_select_dedupe: set[str] = set()
+        # camera_id -> monotonic() when the current window opened, enforcing
+        # VIDEO_ANALYZER_EVENT_SELECT_MAX_WINDOW across extensions.
+        self._event_select_window_started: dict[str, float] = {}
+        # Event-recording ingest (issue #491): in-flight download/extract
+        # tasks keyed "<camera_id>:<eventId>"; the eventIds recently ingested
+        # per camera (a re-published or re-selected state must not fetch the
+        # same clip twice, and A-B-A must not double-book the task key); a
+        # per-camera lock so clips are ingested in event order plus a global
+        # semaphore bounding concurrent decoders; the monotonic time of the
+        # last WARNING per camera (failures are rate-limited to one warning
+        # an hour; the hourly metrics carry the count); the cached ffmpeg
+        # presence probe with its time (re-probed hourly so installing the
+        # binary takes effect without a reload); and a per-camera window
+        # generation, bumped every time a capture window ends, so a clip
+        # that lands after its window closed never displaces a later
+        # window's snapshots. Each in-flight ingest remembers the generation
+        # it was scheduled under, and a window that closes while its own
+        # ingest is still running parks its snapshots under (camera,
+        # generation) until the clip lands or RECORDING_FLUSH_GRACE_SEC runs
+        # out, so the clip can still displace them.
+        self._event_recording_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._event_recording_task_gen: dict[str, int] = {}
+        self._deferred_flush: dict[tuple[str, int], list[Path]] = {}
+        self._deferred_flush_tasks: set[asyncio.Task[Any]] = set()
+        self._event_recording_recent: dict[str, deque[str]] = {}
+        self._event_recording_locks: dict[str, asyncio.Lock] = {}
+        # Notification cooldown state (issue #672), keyed by camera entity id
+        # and in memory only: an options change reloads the entry.
+        self._notify_windows: dict[str, CooldownWindow] = {}
+        self._notify_locks: dict[str, asyncio.Lock] = {}
+        # The house window across all cameras (issue #721), and the one lock
+        # every camera's cooldown push takes while it is on.
+        self._house_window: HouseWindow | None = None
+        self._house_lock = asyncio.Lock()
+        # Per-camera lock making caption dedup's check, send and store one step.
+        self._finalize_locks: dict[str, asyncio.Lock] = {}
+        self._notify_cooldown_unsupported_logged = False
+        self._event_recording_sem = asyncio.Semaphore(RECORDING_MAX_CONCURRENT)
+        self._event_recording_warned_at: dict[str, float] = {}
+        self._event_recording_ffmpeg_missing_logged = False
+        self._event_recording_binary_ok: dict[str, tuple[bool, float]] = {}
+        self._window_generation: dict[str, int] = {}
+        # camera_id -> the frozen timestamp value whose staleness episode was
+        # last recorded (issue #490); prevents one frozen snapshot from
+        # spamming a failure per 3-second loop iteration. A changed frozen
+        # value is a NEW episode (freeze -> unobserved recovery -> freeze must
+        # not be silent), and an ongoing episode is re-recorded hourly so the
+        # #464 streak escalation and hourly metrics stay truthful.
+        self._stale_reported: dict[str, float] = {}
+        self._stale_reported_at: dict[str, float] = {}
+        # Protect images referenced in notifications from immediate pruning
+        self._notify_protected: dict[Path, float] = {}  # path -> expiry time
+        self._httpx_client: httpx.AsyncClient | None = None
+        self._last_hashes: dict[
+            str, deque[int]
+        ] = {}  # camera_id -> deque of recent dHashes
+        self._last_unique_ts: dict[
+            str, float
+        ] = {}  # camera_id -> monotonic() of last accepted
+        # Per-camera counters and latency samples
+        self._metrics: dict[str, _Metrics] = defaultdict(_Metrics)
+        # camera_id -> consecutive capture failures (issue #464 escalation)
+        self._snapshot_fail_streak: dict[str, int] = {}
+        # Cameras with a capture in flight: the 1.5s recording poll doesn't
+        # wait for the previous tick, so a wedged camera holding the blocking
+        # camera.snapshot call must not accumulate overlapping calls.
+        self._snapshot_inflight: set[str] = set()
+        self._metrics_job_cancel: Callable[[], None] | None = (
+            None  # hourly report handle
+        )
+        # Initialized in start() once runtime_data.options is available.
+        self._video_model_sem: asyncio.Semaphore | None = None
+
+    def _pctl(self, values: Iterable[float], q: float) -> float:
+        """Nearest-rank percentile for a finite iterable."""
+        xs = list(values)
+        if not xs:
+            return 0.0
+        xs.sort()
+        if len(xs) == 1:
+            return float(xs[0])
+        # clamp rank to [0, len(xs)-1]
+        k = max(0, min(len(xs) - 1, round((q / 100.0) * (len(xs) - 1))))
+        return float(xs[k])
+
+    def _m_inc(self, camera_id: str, key: str, n: int = 1) -> None:
+        """Increment a metrics counter by key."""
+        m = self._metrics[camera_id]
+        current = getattr(m, key, None)
+        if isinstance(current, int):
+            setattr(m, key, current + n)
+        else:
+            # Unknown keys must not raise in prod, but a typo'd counter name
+            # should at least be visible in development.
+            LOGGER.debug("Ignoring unknown metrics key %r", key)
+
+    def _record_snapshot_failure(self, camera_id: str, reason: str) -> None:
+        """
+        Count a failed snapshot capture and log it with its cause.
+
+        Repeated consecutive failures escalate from WARNING to ERROR so a
+        camera that silently stops producing snapshots is visible (issue #464).
+        """
+        self._m_inc(camera_id, "snapshot_failures")
+        streak = self._snapshot_fail_streak.get(camera_id, 0) + 1
+        self._snapshot_fail_streak[camera_id] = streak
+        log = LOGGER.error if streak >= _SNAPSHOT_FAILURE_ESCALATION else LOGGER.warning
+        log(
+            "[%s] Snapshot capture failed (%d consecutive): %s",
+            camera_id,
+            streak,
+            reason,
+        )
+
+    def _m_add_latency(self, camera_id: str, ms: float) -> None:
+        """Record a single latency sample in milliseconds."""
+        self._metrics[camera_id].lat_ms.append(float(ms))
+
+    async def _metrics_flush_report(self, _now: datetime) -> None:
+        """Aggregate and log per-camera metrics, then reset counters and samples."""
+        for cam, m in self._metrics.items():
+            lat_list = list(m.lat_ms)
+            avg_ms = statistics.fmean(lat_list) if lat_list else 0.0
+            p95_ms = self._pctl(lat_list, 95.0) if lat_list else 0.0
+
+            msg = (
+                "[%s] Metrics (last interval): "
+                "captured=%d enqueued=%d skipped_duplicate=%d "
+                "dropped_stale=%d dropped_backlog=%d analyzed=%d "
+                "sentinel_dropped=%d "
+                "timeouts=%d semaphore_timeouts=%d snapshot_failures=%d "
+                "recording_frames=%d recording_failures=%d "
+                "replaced_by_recording=%d "
+                "unknown_merged=%d unknown_merge_refused_cooccurrence=%d "
+                "unknown_merge_refused_distance=%d "
+                "unknown_merge_refused_multi_known=%d "
+                "unknown_merge_refused_no_lookup=%d "
+                "avg_latency_ms=%.1f p95_latency_ms=%.1f"
+            )
+            LOGGER.info(
+                msg,
+                cam,
+                m.captured,
+                m.enqueued,
+                m.skipped_duplicate,
+                m.dropped_stale,
+                m.dropped_backlog,
+                m.analyzed,
+                m.sentinel_dropped,
+                m.timeouts,
+                m.semaphore_timeouts,
+                m.snapshot_failures,
+                m.recording_frames,
+                m.recording_failures,
+                m.replaced_by_recording,
+                m.unknown_merged,
+                m.unknown_merge_refused_cooccurrence,
+                m.unknown_merge_refused_distance,
+                m.unknown_merge_refused_multi_known,
+                m.unknown_merge_refused_no_lookup,
+                avg_ms,
+                p95_ms,
+            )
+
+            # reset counters and samples
+            m.captured = 0
+            m.enqueued = 0
+            m.skipped_duplicate = 0
+            m.dropped_stale = 0
+            m.dropped_backlog = 0
+            m.analyzed = 0
+            m.sentinel_dropped = 0
+            m.timeouts = 0
+            m.semaphore_timeouts = 0
+            m.snapshot_failures = 0
+            m.recording_frames = 0
+            m.recording_failures = 0
+            m.replaced_by_recording = 0
+            m.unknown_merged = 0
+            m.unknown_merge_refused_cooccurrence = 0
+            m.unknown_merge_refused_distance = 0
+            m.unknown_merge_refused_multi_known = 0
+            m.unknown_merge_refused_no_lookup = 0
+            m.lat_ms.clear()
+
+    def protect_notify_image(self, p: Path, ttl_sec: int = 1800) -> None:
+        """Mark a snapshot as protected from pruning for ttl_sec seconds."""
+        self._notify_protected[p] = monotonic() + ttl_sec
+
+    def _is_protected(self, p: Path) -> bool:
+        """Return True if snapshot is still within its protection TTL."""
+        now = monotonic()
+        # Drop expired entries
+        expired = [k for k, t in self._notify_protected.items() if t < now]
+        for k in expired:
+            self._notify_protected.pop(k, None)
+        return self._notify_protected.get(p, 0) > now
+
+    def _get_snapshot_queue(self, camera_id: str) -> asyncio.Queue[_SnapshotItem]:
+        if camera_id not in self._snapshot_queues:
+            queue: asyncio.Queue[_SnapshotItem] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
+            self._snapshot_queues[camera_id] = queue
+            task = self._create_background_task(
+                self._snapshot_worker(camera_id),
+                f"hga video snapshot worker {camera_id}",
+            )
+            self._active_queue_tasks[camera_id] = task
+        return self._snapshot_queues[camera_id]
+
+    def _create_background_task(
+        self,
+        target: Coroutine[Any, Any, object],
+        name: str,
+    ) -> asyncio.Task[Any]:
+        """Create a task that must not hold Home Assistant startup open."""
+        task = self.hass.async_create_background_task(target, name)
+        if not isinstance(task, asyncio.Task):
+            target.close()
+        return cast("asyncio.Task[Any]", task)
+
+    async def _get_batch(
+        self,
+        queue: asyncio.Queue[_SnapshotItem],
+        camera_id: str,
+        *,
+        max_batch: int = _MAX_BATCH,
+    ) -> list[Path]:
+        first: _SnapshotItem = await queue.get()
+
+        # Backlog policy: when the queue is deep, keep only the newest frame.
+        if queue.qsize() > _VIDEO_QUEUE_BACKLOG_THRESHOLD:
+            pending: list[_SnapshotItem] = [first]
+            with contextlib.suppress(asyncio.QueueEmpty):
+                while True:
+                    pending.append(queue.get_nowait())
+            kept = max(pending, key=lambda it: it.enqueued)
+            dropped = len(pending) - 1
+            self._m_inc(camera_id, "dropped_backlog", dropped)
+            LOGGER.debug(
+                "video_backlog camera=%s dropped=%d kept=1",
+                camera_id,
+                dropped,
+            )
+            batch: list[Path] = [kept.path]
+        else:
+            batch = [first.path]
+            n: int = max(max_batch - 1, 0)
+            with contextlib.suppress(asyncio.QueueEmpty):
+                for _ in range(n):
+                    batch.append(queue.get_nowait().path)
+
+        LOGGER.debug(
+            "[%s] Start t=%s batch=%d qsize=%d",
+            camera_id,
+            dt_util.utcnow().isoformat(),
+            len(batch),
+            queue.qsize(),
+        )
+        return batch
+
+    async def _process_batch(
+        self,
+        camera_id: str,
+        ordered: list[tuple[Path, int]],
+    ) -> tuple[
+        list[dict[str, list[str]]], list[str], Path | None, str | None, list[str]
+    ]:
+        if not ordered:
+            return [], [], None, None, []
+
+        t0: int = ordered[0][1]
+        frame_descriptions: list[dict[str, list[str]]] = []
+        # Per-kept-frame FaceHit lists, index-aligned with frame_descriptions:
+        # every append to frame_descriptions below MUST be paired with one to
+        # frame_hits, or the identity merge attaches the wrong embeddings.
+        frame_hits: list[list[FaceHit]] = []
+        # Face evidence from frames the VLM side dropped (timeouts, gate
+        # failures). Never merged or summarized, but the identity merge's
+        # refusal conditions must still see it: the batch's only two-person
+        # frame failing its VLM call must not blind the companion guard.
+        dropped_hits: list[list[FaceHit]] = []
+        frame_paths: list[Path] = []
+        prev_text: str | None = None
+
+        for path, ts in ordered:
+            fd, hits = await self._process_snapshot(
+                path, camera_id, prev_text=prev_text
+            )
+            if not fd:
+                # Empty hit lists are harmless to both consumers (no names,
+                # zero face count), so append unconditionally.
+                dropped_hits.append(hits)
+                continue
+            frame_desc, faces = next(iter(fd.items()))
+            if not frame_desc or frame_desc == VLM_ERROR_CAPTION:
+                # Empty and error captions carry no scene content. Skip the
+                # frame — matching _process_snapshot's empty-result paths — so the
+                # caption can neither anchor a later sentinel comparison nor
+                # reach summaries, notifications, or the vector store. But if
+                # face recognition caught an actual person, keep the frame:
+                # dropping it would erase the detection (recognized list,
+                # sensor, notifications) whenever the VLM call fails. Use a
+                # neutral caption so the raw error text never leaks into
+                # user-facing summaries either.
+                if _has_detected_person(faces):
+                    frame_descriptions.append(
+                        {f"t+{ts - t0}s. {_PERSON_FALLBACK_CAPTION}": faces}
+                    )
+                    frame_hits.append(hits)
+                    frame_paths.append(path)
+                else:
+                    # No detected NAME, but face boxes may have existed (two
+                    # Indeterminate slots): keep the count evidence for the
+                    # single-person verdict.
+                    dropped_hits.append(hits)
+                continue
+            entry = {f"t+{ts - t0}s. {frame_desc}": faces}
+            is_sentinel = is_no_change_reply(frame_desc)
+            if prev_text is not None and is_sentinel:
+                # Repeated-scene sentinel (issue #493): the VLM judged this
+                # frame identical to prev_text. Keep prev_text anchored on
+                # that full description — a sentinel carries no scene content
+                # for later frames to be compared against — and drop the
+                # frame from the summary input, unless face recognition
+                # caught an actual person the VLM missed. Keep that frame
+                # under a neutral caption, never the sentinel text: "Scene
+                # unchanged." is a control reply carrying no scene content,
+                # and the summarizer must narrate the person it is told is
+                # there — given the sentinel verbatim it wrote "then stands
+                # still as Lindo" (field report 2026-08-17). Same reason the
+                # empty/error path above substitutes a caption.
+                if _has_detected_person(faces):
+                    frame_descriptions.append(
+                        {f"t+{ts - t0}s. {_PERSON_SENTINEL_CAPTION}": faces}
+                    )
+                    frame_hits.append(hits)
+                    frame_paths.append(path)
+                else:
+                    # Face-box count evidence survives the sentinel drop
+                    # for the single-person verdict.
+                    dropped_hits.append(hits)
+                    self._m_inc(camera_id, "sentinel_dropped")
+                    LOGGER.debug(
+                        "[%s] Sentinel frame dropped: %r (anchor: %.80r)",
+                        camera_id,
+                        frame_desc,
+                        prev_text,
+                    )
+                continue
+            frame_descriptions.append(entry)
+            frame_hits.append(hits)
+            frame_paths.append(path)
+            if not is_sentinel:
+                # A sentinel-shaped reply that arrives without previous-frame
+                # context (kept above as a description) must still never
+                # become the comparison anchor.
+                prev_text = frame_desc
+
+        # Identity consolidation (issue #543) must run while frame_hits is
+        # still index-aligned with frame_descriptions — dedupe below drops
+        # entries and would break the pairing. The hit lists are not needed
+        # afterwards.
+        await self._merge_unknown_faces(
+            camera_id, frame_descriptions, frame_hits, dropped_hits
+        )
+
+        # Single-person verdict for the summarizer (issue #543, caption-side
+        # phantom), decided over the same full pre-cap evidence the merge saw.
+        sole_person = _decide_sole_person(frame_descriptions, dropped_hits)
+
+        # Every detected name in the batch, taken after the identity merge but
+        # BEFORE dedupe and the summary cap, plus the frames the VLM side
+        # dropped. `recognized` below describes only the frames the summary
+        # kept; the notification cooldown must not lose an unknown face that
+        # the cap sliced off (issue #672).
+        batch_names: list[str] = sorted(
+            {
+                name
+                for d in frame_descriptions
+                for names in d.values()
+                for name in names
+                if _is_detected_name(name)
+            }
+            | {
+                hit.name
+                for hits in dropped_hits
+                for hit in hits
+                if _is_detected_name(hit.name)
+            }
+        )
+
+        # dedupe near-identical, then cap to the newest frames; both lists get
+        # the same cap so descs/paths stay index-aligned for _pick_notify_frame.
+        # tag_person_check keeps the path of the frame where a person was
+        # actually recognized when a duplicate run merges identities.
+        frame_descriptions, frame_paths = dedupe_desc_tagged(
+            frame_descriptions, frame_paths, tag_person_check=_has_detected_person
+        )
+        frame_descriptions = frame_descriptions[-_SUMMARY_MAX_FRAMES:]
+        frame_paths = frame_paths[-_SUMMARY_MAX_FRAMES:]
+
+        recognized: list[str] = sorted(
+            {
+                p
+                for d in frame_descriptions
+                for v in d.values()
+                for p in v
+                if p != "None"
+            }
+        )
+        try:
+            notify_frame = _pick_notify_frame(frame_descriptions, frame_paths)
+        except ValueError:
+            # A descs/paths misalignment is a code bug, but it must cost image
+            # accuracy (batch-middle fallback), never the alert itself.
+            LOGGER.exception(
+                "[%s] Notify-frame selection failed; falling back to batch middle",
+                camera_id,
+            )
+            notify_frame = None
+        return frame_descriptions, recognized, notify_frame, sole_person, batch_names
+
+    async def _merge_unknown_faces(  # noqa: PLR0912
+        self,
+        camera_id: str,
+        frame_descriptions: list[dict[str, list[str]]],
+        frame_hits: list[list[FaceHit]],
+        dropped_hits: list[list[FaceHit]] | None = None,
+    ) -> None:
+        """
+        Merge batch-local "Unknown Person" faces into the batch's known identity.
+
+        Face recognition flaps between a known name and "Unknown Person" across
+        frames of the same human (face turned, blur, distance), so the summary
+        reports a phantom second person (issue #543). Merge strictly — all
+        conditions required:
+        1. exactly one known name in the batch;
+        2. no frame contains two or more detected faces (a known name and an
+           unknown in the same frame is the genuine-companion signal);
+        3. the known person is the unknown face's NEAREST gallery match, at a
+           cosine distance under VIDEO_ANALYZER_FACE_MERGE_THRESHOLD. The
+           nearest-match requirement stops a face that is actually closer to a
+           different enrolled person from being relabeled as the batch's
+           known name.
+
+        dropped_hits carries face evidence from frames whose VLM call failed
+        after recognition succeeded. Those frames never reach the output, but
+        conditions 1 and 2 still scan them: a dropped two-person frame or a
+        dropped second known name must refuse the merge, not blind it.
+
+        Mutates the identity lists inside frame_descriptions in place.
+        Best-effort: a DAO failure keeps "Unknown Person" for that face and
+        never fails the batch. Cannot change Sentinel rule firing — the
+        unknown-person rules fire on "Unknown Person" present with no
+        enrolled name alongside, and a merge only happens when a known name
+        is present, which already suppresses those rules on its own.
+        """
+        name_lists = [next(iter(d.values()), []) for d in frame_descriptions]
+        if len(name_lists) != len(frame_hits) or any(
+            len(names) != len(hits)
+            for names, hits in zip(name_lists, frame_hits, strict=False)
+        ):
+            # Alignment is an invariant of _process_batch's paired append
+            # sites; merging misaligned lists would attach the wrong
+            # embeddings, so refuse outright.
+            LOGGER.error(
+                "[%s] Frame/face-hit misalignment; skipping identity merge",
+                camera_id,
+            )
+            return
+
+        if not any("Unknown Person" in names for names in name_lists):
+            return
+
+        dropped_name_lists = [[h.name for h in hits] for hits in (dropped_hits or [])]
+        evidence_lists = name_lists + dropped_name_lists
+        # Normalized reserved-label exclusion (_is_enrolled_name): gallery
+        # rows enrolled before the reserved-name guard may carry variants
+        # like "unknown person" or " Indeterminate " — those must never
+        # count as a mergeable identity.
+        known = {n for names in evidence_lists for n in names if _is_enrolled_name(n)}
+        if not known:
+            # An unknown-only batch has no merge target; nothing was refused,
+            # so nothing is counted (stranger-only batches are the common
+            # case and must not pollute the tuning counters).
+            return
+        if len(known) != 1:
+            self._m_inc(camera_id, "unknown_merge_refused_multi_known")
+            LOGGER.debug(
+                "[%s] Unknown-face merge refused: %d known identities in batch",
+                camera_id,
+                len(known),
+            )
+            return
+        known_name = next(iter(known))
+
+        detected_per_frame = (
+            sum(1 for n in names if _is_detected_name(n)) for names in evidence_lists
+        )
+        if any(count >= _COOCCURRENT_FACES for count in detected_per_frame):
+            self._m_inc(camera_id, "unknown_merge_refused_cooccurrence")
+            LOGGER.debug(
+                "[%s] Unknown-face merge refused: frame with multiple faces",
+                camera_id,
+            )
+            return
+
+        dao = self.entry.runtime_data.person_gallery
+        dao_failed = False
+        # One DB budget for the whole batch: a degraded database answering
+        # each lookup just under the per-call timeout must not stall the
+        # worker for minutes on a large flush.
+        db_deadline = monotonic() + _MERGE_DB_BUDGET_SEC
+        for names, hits in zip(name_lists, frame_hits, strict=True):
+            for i, hit in enumerate(hits):
+                if names[i] != "Unknown Person":
+                    continue
+                nearest: tuple[str, float] | None = None
+                if (
+                    dao is not None
+                    and hit.embedding is not None
+                    and not dao_failed
+                    and monotonic() < db_deadline
+                ):
+                    try:
+                        # Bounded: a wedged DB connection must degrade to a
+                        # refusal, not hang the per-camera worker.
+                        async with asyncio.timeout(_MERGE_DB_TIMEOUT_SEC):
+                            nearest = await dao.nearest_match(hit.embedding)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # Best-effort by contract: any DAO/DB failure keeps
+                        # "Unknown Person"; the batch must survive. Skip the
+                        # remaining lookups — a dead DB should cost the batch
+                        # one timeout, not one per unknown face.
+                        dao_failed = True
+                        LOGGER.warning(
+                            "[%s] nearest_match failed; keeping unknown",
+                            camera_id,
+                            exc_info=True,
+                        )
+                if (
+                    nearest is not None
+                    and nearest[0] == known_name
+                    and nearest[1] < VIDEO_ANALYZER_FACE_MERGE_THRESHOLD
+                ):
+                    names[i] = known_name
+                    self._m_inc(camera_id, "unknown_merged")
+                    LOGGER.debug(
+                        "[%s] Merged unknown face into %r (distance=%.6f < %.2f)",
+                        camera_id,
+                        known_name,
+                        nearest[1],
+                        VIDEO_ANALYZER_FACE_MERGE_THRESHOLD,
+                    )
+                elif nearest is None:
+                    # No usable lookup (gallery unavailable/empty, missing
+                    # embedding, DB failure, or budget exhausted) — counted
+                    # apart from real distance refusals so threshold tuning
+                    # sees clean data.
+                    self._m_inc(camera_id, "unknown_merge_refused_no_lookup")
+                    LOGGER.debug(
+                        "[%s] Unknown face kept: no usable gallery lookup",
+                        camera_id,
+                    )
+                else:
+                    self._m_inc(camera_id, "unknown_merge_refused_distance")
+                    LOGGER.debug(
+                        "[%s] Unknown face kept: nearest=%s@%.6f bound=%.2f",
+                        camera_id,
+                        nearest[0],
+                        nearest[1],
+                        VIDEO_ANALYZER_FACE_MERGE_THRESHOLD,
+                    )
+
+    async def _summarize(  # noqa: PLR0911
+        self,
+        camera_id: str,
+        frame_descriptions: list[dict[str, list[str]]],
+        sole_person: str | None = None,
+    ) -> str | None:
+        if not frame_descriptions:
+            return None
+
+        sum_deployment = self.entry.runtime_data.model_deployments.get(
+            "summarization", "edge"
+        )
+        uncontended = self.entry.runtime_data.options.get(
+            CONF_MODEL_PROVIDER_UNCONTENDED, False
+        )
+        use_gate = is_edge_deployment(sum_deployment) and not uncontended
+
+        if use_gate:
+            sem = self._video_model_sem
+            if sem is None:
+                msg = "Video model semaphore not initialized."
+                raise RuntimeError(msg)
+            async with local_video_session(sum_deployment):
+                # Sentinel defers from here; chat must clear before the model call.
+                if not await wait_for_chat_idle(_VIDEO_MODEL_SEMAPHORE_WAIT_SEC):
+                    LOGGER.debug("video_chat_wait summary result=timeout")
+                    return None
+                t_sem = monotonic()
+                try:
+                    async with asyncio.timeout(_VIDEO_MODEL_SEMAPHORE_WAIT_SEC):
+                        await sem.acquire()
+                except TimeoutError:
+                    LOGGER.debug(
+                        "video_semaphore summary wait=%ds result=timeout",
+                        _VIDEO_MODEL_SEMAPHORE_WAIT_SEC,
+                    )
+                    self._m_inc(camera_id, "semaphore_timeouts")
+                    return None
+                LOGGER.debug(
+                    "video_semaphore summary wait=%.1fs result=acquired",
+                    monotonic() - t_sem,
+                )
+                t_model = monotonic()
+                try:
+                    try:
+                        async with asyncio.timeout(_SUMMARY_TIMEOUT_SEC):
+                            summary_text: str = await self._generate_summary(
+                                frame_descriptions, sole_person
+                            )
+                    except TimeoutError as exc:
+                        LOGGER.warning("[%s] Summary timed out: %s", camera_id, exc)
+                        return None
+                    except ValueError as exc:
+                        LOGGER.warning("[%s] Summary failed: %s", camera_id, exc)
+                        return None
+                finally:
+                    sem.release()
+                LOGGER.debug(
+                    "video_model op=summary elapsed=%.1fs result=ok",
+                    monotonic() - t_model,
+                )
+        else:
+            try:
+                async with asyncio.timeout(_SUMMARY_TIMEOUT_SEC):
+                    summary_text = await self._generate_summary(
+                        frame_descriptions, sole_person
+                    )
+            except TimeoutError as exc:
+                LOGGER.warning("[%s] Summary timed out: %s", camera_id, exc)
+                return None
+            except ValueError as exc:
+                LOGGER.warning("[%s] Summary failed: %s", camera_id, exc)
+                return None
+
+        LOGGER.debug("[%s] Video analysis: %s", camera_id, summary_text)
+        return summary_text
+
+    async def _finalize(
+        self,
+        camera_id: str,
+        batch: list[Path],
+        msg: str,
+        notify_frame: Path | None = None,
+        *,
+        context: _BatchNotifyContext,
+    ) -> None:
+        # Retention registration happens at capture time (_capture_snapshot),
+        # so batches that never reach this point cannot leak files — and
+        # registering again here would duplicate deque entries.
+        # Batches for one camera can overlap (worker, queue, event recording).
+        # Caption dedup reads the stored captions and this batch's caption is
+        # stored last, so check, send and store are one step per camera: two
+        # batches with the same scene cannot both find nothing to match.
+        lock = self._finalize_locks.setdefault(camera_id, asyncio.Lock())
+        async with lock:
+            notified = await self._handle_notification(
+                camera_id, msg, batch, notify_frame, context=context
+            )
+            await self._store_results(
+                camera_id,
+                batch,
+                msg,
+                notified=notified,
+                unknown_person=has_unknown_face(
+                    (*context.recognized, *context.batch_names)
+                ),
+            )
+
+    async def _analyze_and_finalize(
+        self, camera_id: str, ordered: list[tuple[Path, int]]
+    ) -> None:
+        (
+            frame_descs,
+            recognized,
+            notify_frame,
+            sole_person,
+            batch_names,
+        ) = await self._process_batch(camera_id, ordered)
+        if not frame_descs:
+            return
+        msg = await self._summarize(camera_id, frame_descs, sole_person)
+        if not msg:
+            return
+        # Hand this batch's own names down: several batches for one camera can
+        # be in flight at once (worker, queue, event recording), so a per-camera
+        # "last recognized" slot read after an await could hold another batch's.
+        await self._finalize(
+            camera_id,
+            [p for p, _ in ordered],
+            msg,
+            notify_frame,
+            context=_BatchNotifyContext(recognized=recognized, batch_names=batch_names),
+        )
+
+    async def _snapshot_worker(self, camera_id: str) -> None:
+        """Consume and process snapshots for one camera."""
+        queue = self._snapshot_queues[camera_id]
+        LOGGER.debug("[%s] Worker started", camera_id)
+        try:
+            while True:
+                try:
+                    batch = await self._get_batch(queue, camera_id)
+                    ordered = order_batch(batch)
+
+                    if ordered:
+                        first_epoch = ordered[0][1]
+                        age = int(dt_util.utcnow().timestamp() - first_epoch)
+                        LOGGER.debug(
+                            "[%s] Dequeue age=%ds qsize=%d",
+                            camera_id,
+                            age,
+                            queue.qsize(),
+                        )
+
+                    await self._analyze_and_finalize(camera_id, ordered)
+                except Exception:
+                    # Batch is dropped but the worker must survive; a dead
+                    # worker silently disables camera analysis (issue #473).
+                    LOGGER.exception(
+                        "[%s] Worker error; batch dropped, worker continues",
+                        camera_id,
+                    )
+                    await asyncio.sleep(_WORKER_ERROR_BACKOFF_SEC)
+        except asyncio.CancelledError:
+            LOGGER.debug("[%s] Worker cancelled", camera_id)
+            raise
+        finally:
+            # Drop this camera's entries so the next snapshot respawns a fresh
+            # worker instead of enqueueing to a queue nobody consumes. Identity
+            # checks guard against a respawned worker's entries being removed
+            # by a stale worker whose cancellation landed after the respawn.
+            if self._snapshot_queues.get(camera_id) is queue:
+                del self._snapshot_queues[camera_id]
+            if self._active_queue_tasks.get(camera_id) is asyncio.current_task():
+                del self._active_queue_tasks[camera_id]
+
+    def _resolve_notify_service(self) -> tuple[str, str] | None:
+        """Return the (domain, service) notifications go to, or None."""
+        # Prefer configured option; fall back to discovery
+        full_service = self.entry.runtime_data.options.get(CONF_NOTIFY_SERVICE)
+        if full_service and full_service.startswith("notify."):
+            domain, service = full_service.split(".", 1)
+            return domain, service
+        service = discover_mobile_notify_service(self.hass)
+        if not service:
+            return None
+        return "notify", service
+
+    async def _send_notification(
+        self,
+        msg: str,
+        camera_name: str,
+        notify_img_path: Path,
+        *,
+        target: tuple[str, str] | None = None,
+        card: _NotifyCard | None = None,
+    ) -> bool:
+        """
+        Send one camera notification; return False when no service exists.
+
+        With the defaults the payload and the fire-and-forget call are exactly
+        what they were before the notification cooldown existed. `target` is an
+        already-resolved (domain, service), so the service the cooldown decided
+        for is the one that gets the push. `card` puts the push on a tagged
+        card, which a later push with the same tag replaces.
+        """
+        resolved = target or self._resolve_notify_service()
+        if resolved is None:
+            LOGGER.warning("No notify.mobile_app_* service found.")
+            return False
+        domain, service = resolved
+
+        clean_msg = msg.replace("**", "").replace("`", "")
+        # The target service name is deliberately not logged: it carries the
+        # phone's device name, which code scanning treats as private data.
+        LOGGER.debug("[%s] Dispatching notification: %r", camera_name, clean_msg[:80])
+        data: dict[str, Any] = {"image": str(notify_img_path)}
+        if card is not None:
+            data["tag"] = card.tag
+            if card.quiet:
+                # iOS: deliver without sound or banner (the Sentinel notifier's
+                # convention, verified on an iPhone for this payload). Android:
+                # alert_once, do not re-alert while the card is showing; not
+                # verified on a device.
+                data["alert_once"] = True
+                data["push"] = {"interruption-level": "passive", "sound": "none"}
+        await self.hass.services.async_call(
+            domain,
+            service,
+            {
+                "message": clean_msg,
+                "title": f"Camera Alert from {camera_name}!",
+                "data": data,
+            },
+            blocking=False,
+        )
+        return True
+
+    def _cooldown_option_s(self, key: str, default: int, maximum: int) -> int:
+        """Return a cooldown option in seconds; 0 when off or malformed."""
+        raw = self.entry.runtime_data.options.get(key, default)
+        try:
+            seconds = int(float(raw or 0))
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: a stored "inf" or "1e999"; junk like any other.
+            return 0
+        return min(maximum, max(0, seconds))
+
+    def _notification_cooldown_s(self) -> int:
+        """Return the per-camera cooldown in seconds; 0 when off or malformed."""
+        return self._cooldown_option_s(
+            CONF_VIDEO_ANALYZER_NOTIFICATION_COOLDOWN_S,
+            RECOMMENDED_VIDEO_ANALYZER_NOTIFICATION_COOLDOWN_S,
+            VIDEO_ANALYZER_NOTIFICATION_COOLDOWN_MAX_S,
+        )
+
+    def _house_notification_cooldown_s(self) -> int:
+        """Return the house cooldown in seconds; 0 when off or malformed."""
+        return self._cooldown_option_s(
+            CONF_VIDEO_ANALYZER_HOUSE_NOTIFICATION_COOLDOWN_S,
+            RECOMMENDED_VIDEO_ANALYZER_HOUSE_NOTIFICATION_COOLDOWN_S,
+            VIDEO_ANALYZER_HOUSE_NOTIFICATION_COOLDOWN_MAX_S,
+        )
+
+    async def _dispatch_notification(
+        self,
+        camera_id: str,
+        msg: str,
+        notify_img: Path,
+        context: _BatchNotifyContext,
+    ) -> bool:
+        """
+        Send a push that passed the novelty check, honoring the cooldowns.
+
+        Returns True when a sounding push was handed to a notify service:
+        False when there was no service, and for a quiet cooldown update.
+        """
+        camera_name = camera_id.rsplit(".", maxsplit=1)[-1]
+        house_s = self._house_notification_cooldown_s()
+        # A camera window is never shorter than the house window: with only
+        # the house cooldown on, the camera that sounded is quiet for it too,
+        # and a camera the house window hushed keeps replacing one card
+        # instead of starting a new one on every push.
+        cooldown_s = max(self._notification_cooldown_s(), house_s)
+        target = self._resolve_notify_service() if cooldown_s > 0 else None
+        if target is None:
+            # Cooldowns off, or no service at all: the unchanged send (which
+            # logs the missing service itself).
+            return await self._send_notification(msg, camera_name, notify_img)
+        if not target[1].startswith(MOBILE_APP_SERVICE_PREFIX):
+            # Replacing a card quietly is a companion-app behavior. Any other
+            # target (a notify group, a Sentinel-configured service) gets every
+            # push exactly as with the cooldown off; nothing is withheld.
+            if not self._notify_cooldown_unsupported_logged:
+                self._notify_cooldown_unsupported_logged = True
+                # The service name is deliberately not logged: it can carry a
+                # device name, which code scanning treats as private data.
+                LOGGER.warning(
+                    "A camera notification cooldown is set but does not apply: "
+                    "it needs a single notify.mobile_app_* service, and the "
+                    "configured notify service is not one. Every camera "
+                    "notification is sent as usual.",
+                )
+            return await self._send_notification(
+                msg, camera_name, notify_img, target=target
+            )
+
+        # Batches for one camera can overlap (worker, queue, event recording):
+        # the lock makes read-decide-send-commit one step, so two of them
+        # cannot both see "no open window" and both sound. The house window
+        # is shared by every camera, so while it is on one lock covers all.
+        lock = (
+            self._house_lock
+            if house_s > 0
+            else self._notify_locks.setdefault(camera_id, asyncio.Lock())
+        )
+        async with lock:
+            try:
+                plan: _CooldownPlan | None = self._plan_cooldown_push(
+                    camera_id,
+                    f"{target[0]}.{target[1]}",
+                    context,
+                    cooldown_s,
+                    house_s,
+                )
+            except Exception:
+                # The cooldown is a convenience layered on the alert: a bug in
+                # it must cost the convenience, never the push.
+                LOGGER.exception(
+                    "[%s] Notification cooldown failed; sending without it", camera_id
+                )
+                plan = None
+            card = plan.card if plan is not None else None
+            # A send the notify service refuses raises out of here exactly as
+            # it does with the cooldown off: no window is committed, and the
+            # batch's caption is not stored, so caption dedup cannot suppress
+            # the next attempt on the strength of an alert that never went out.
+            sent = await self._send_notification(
+                msg, camera_name, notify_img, target=target, card=card
+            )
+            # Commit only a push the notify service accepted, so a push that
+            # could not even be handed over never starts a quiet window.
+            if sent and plan is not None:
+                if plan.window is not None:
+                    self._notify_windows[camera_id] = plan.window
+                if plan.house is not None:
+                    self._house_window = plan.house
+            # A quiet replacement of the window's card is not an alert: it
+            # must not let caption dedup withhold a later, sounding one.
+            return sent and not (card is not None and card.quiet)
+
+    def _plan_cooldown_push(
+        self,
+        camera_id: str,
+        target: str,
+        context: _BatchNotifyContext,
+        cooldown_s: int,
+        house_s: int,
+    ) -> _CooldownPlan:
+        """
+        Decide which card this push lands on and whether it sounds.
+
+        Returns the card and the camera and house windows to commit once the
+        push has been handed to the notify service.
+        """
+        now = monotonic()
+        previous = self._notify_windows.get(camera_id)
+        window = active_window(previous, now=now, cooldown_s=cooldown_s, target=target)
+        house = (
+            active_window(
+                self._house_window, now=now, cooldown_s=house_s, target=target
+            )
+            if house_s > 0
+            else None
+        )
+        # Escalation looks at every frame of the batch; which card a quiet
+        # update lands on looks only at the frames its text and image show.
+        unknown_in_batch = has_unknown_face(context.batch_names)
+        action = decide(
+            window,
+            unknown_in_batch=unknown_in_batch,
+            unknown_displayed=has_unknown_face(context.recognized),
+        )
+        # Only a push the camera window would sound reaches the house window.
+        hushed = action in {
+            CooldownAction.OPEN,
+            CooldownAction.UNKNOWN_FACE,
+        } and house_hushes(house, unknown_in_batch=unknown_in_batch)
+        LOGGER.debug(
+            "[%s] notification cooldown: action=%s unknown_face=%s window=%s "
+            "house_window=%s hushed=%s",
+            camera_id,
+            action,
+            unknown_in_batch,
+            "open" if window is not None else "none",
+            "off" if house_s <= 0 else ("open" if house is not None else "none"),
+            hushed,
+        )
+        if window is None:
+            new_window = opened_window(
+                previous,
+                # A hushed window counts from the sound that covered it, so
+                # no camera stays quiet longer than its window after a sound.
+                now=house.started if hushed and house is not None else now,
+                wall_time=time(),
+                target=target,
+                # Only an unknown face that sounded spends the camera's
+                # escalation: a hushed one leaves the camera's first unknown
+                # face after the house window free to sound.
+                unknown_face=unknown_in_batch and not hushed,
+            )
+        elif action is CooldownAction.UNKNOWN_FACE and not hushed:
+            new_window = window_after_unknown_face(window, wall_time=time())
+        else:
+            # A quiet update of the window's card. A hushed escalation lands
+            # here too and changes no state, so it is not spent.
+            tag = notification_tag(
+                camera_id, window, follow_up=action is CooldownAction.FOLLOW_UP
+            )
+            return _CooldownPlan(card=_NotifyCard(tag=tag, quiet=True), window=None)
+        # A push on a new card: it sounds unless the house window hushed it.
+        # Either way its window is committed once it is sent, so the camera's
+        # later pushes replace this card.
+        card = _NotifyCard(tag=notification_tag(camera_id, new_window), quiet=hushed)
+        new_house = (
+            house_window_after_sound(
+                house, now=now, target=target, unknown_face=unknown_in_batch
+            )
+            if house_s > 0 and not hushed
+            else None
+        )
+        return _CooldownPlan(card=card, window=new_window, house=new_house)
+
+    async def _generate_summary(
+        self,
+        frame_descriptions: list[dict[str, list[str]]],
+        sole_person: str | None = None,
+    ) -> str:
+        await asyncio.sleep(0)  # yield control
+        if not frame_descriptions:
+            msg = "At least one frame description required."
+            raise ValueError(msg)
+
+        # ---------- Heuristic fast-path for a single frame ----------
+        if len(frame_descriptions) == 1:
+            # Expect a single dict mapping <frame description> -> [identities...]
+            entry = frame_descriptions[0]
+            if not entry:
+                msg = "At least one frame description required."
+                raise ValueError(msg)
+
+            # Unpack first (and only) (frame_text, identities) pair
+            (raw_text, identities), *_ = entry.items()
+
+            text = clean_frame_text(raw_text or "")
+            identities = identities or []
+
+            subject = format_subject(identities, text)
+            had_known_name = bool(subject and subject != "a person")
+            # The batch verdict can name a person the surviving frame could
+            # not (its face evidence lived in a VLM-dropped frame): upgrade
+            # the generic subject to the verified name (issue #543).
+            if (
+                not had_known_name
+                and subject == "a person"
+                and sole_person is not None
+                and _is_safe_constraint_name(sole_person)
+            ):
+                subject = sole_person
+                had_known_name = True
+
+            if subject:
+                # If we have a subject, try to weave it in naturally.
+                caption = apply_name_substitution(
+                    text, subject, had_known_name=had_known_name
+                )
+                # If the text doesn't already contain a subject,
+                # prepend one with a simple verb.
+                if caption == text and had_known_name and not has_human_terms(text):
+                    # Minimal, neutral verb to avoid speculation.
+                    caption = f"{subject} is present. {text}".strip()
+            else:
+                # No human present; describe scene as-is.
+                caption = text
+
+            caption = limit_sentences_and_chars(caption, max_chars=150, max_sentences=2)
+            if caption:
+                LOGGER.debug("Heuristic single-frame summary: %s", caption)
+                return caption
+
+            LOGGER.debug("Heuristic produced empty caption; falling back to LLM.")
+
+        # ---------- LLM path for multiple frames ----------
+        ftag = "\n<frame description>\n{}\n</frame description>"
+        ptag = "\n<person identity>\n{}\n</person identity>"
+        # Deterministic backstop for the caption-side phantom (issue #543):
+        # when recognition proved a single known person, say so explicitly —
+        # the system prompt's single-actor bias alone is not reliably obeyed.
+        # sole_person was decided in _process_batch over the full pre-cap
+        # evidence; prompt-time vetoes (plural captions, unsafe name) remain.
+        constraint = _single_person_constraint(sole_person, frame_descriptions)
+        prompt = " ".join(
+            [VIDEO_ANALYZER_PROMPT]
+            + ([constraint] if constraint else [])
+            + [
+                ftag.format(frame) + "".join([ptag.format(p) for p in people])
+                for entry in frame_descriptions
+                for frame, people in entry.items()
+            ]
+        )
+
+        LOGGER.debug("Prompt: %s", prompt)
+
+        messages = [
+            SystemMessage(content=VIDEO_ANALYZER_SYSTEM_MESSAGE),
+            HumanMessage(content=prompt),
+        ]
+        sum_deployment = self.entry.runtime_data.model_deployments.get(
+            "summarization", "edge"
+        )
+        base_sum = self.entry.runtime_data.summarization_model
+        sum_cfg = dict(getattr(base_sum, "config", {}).get("configurable", {}))
+        sum_cfg["num_predict"] = VIDEO_SUMMARY_NUM_PREDICT
+        # Only force-disable thinking when the base config carries a reasoning
+        # key (set via reasoning_field() for thinking-capable models); sending
+        # one for non-thinking models makes some Ollama builds reject the call.
+        if is_edge_deployment(sum_deployment) and "reasoning" in sum_cfg:
+            sum_cfg["reasoning"] = False
+        model = base_sum.with_config(config={"configurable": sum_cfg})
+        summary = await ainvoke_dropping_unsupported_params(model, messages)
+        LOGGER.debug("Raw video analyzer summary: %s", summary)
+
+        text = extract_final(getattr(summary, "content", "") or "", max_chars=150)
+        if text:
+            return text
+
+        msg = "Empty model content after parsing."
+        raise ValueError(msg)
+
+    async def _is_caption_novel(  # noqa: PLR0911, PLR0912
+        self,
+        camera_name: str,
+        msg: str,
+        first_path: str,
+        recognized_names: list[str],
+        *,
+        unknown_person_seen: bool = False,
+    ) -> CaptionNoveltyDecision:
+        # Decision tree: one early-return per CaptionNoveltyDecision reason code.
+        # PLR0911 (too many return statements) suppressed intentionally — each
+        # return maps to a named reason that callers and tests can assert on.
+        # Snapshot names are in the form "snapshot_20250426_002804.jpg"; an
+        # event-recording frame adds an "_rNN" suffix, which epoch_from_path
+        # ignores.
+        first_dt = dt_util.as_local(
+            dt_util.utc_from_timestamp(epoch_from_path(Path(first_path)))
+        )
+        if first_dt < dt_util.now() - timedelta(minutes=VIDEO_ANALYZER_TIME_OFFSET):
+            return CaptionNoveltyDecision(notify=True, reason="stale_snapshot")
+
+        namespace = ("video_analysis", camera_name)
+        try:
+            async with asyncio.timeout(10):
+                search_results = await self._search_own_captions(namespace, msg)
+        except TimeoutError:
+            LOGGER.warning(
+                "[%s] store.asearch timed out in _is_caption_novel; treating as novel.",
+                camera_name,
+            )
+            return CaptionNoveltyDecision(notify=True, reason="store_timeout")
+        except Exception:
+            # Fail open: a store or embedding error must cost the dedup, never
+            # the notification.
+            LOGGER.warning(
+                "[%s] store.asearch failed in _is_caption_novel; treating as novel.",
+                camera_name,
+                exc_info=True,
+            )
+            return CaptionNoveltyDecision(notify=True, reason="store_error")
+
+        if not search_results:
+            return CaptionNoveltyDecision(notify=True, reason="no_match")
+
+        if not any(r.score is not None for r in search_results):
+            return CaptionNoveltyDecision(notify=True, reason="score_none")
+
+        best_result = max(
+            search_results, key=lambda r: r.score if r.score is not None else -1.0
+        )
+        best_score = best_result.score  # guaranteed non-None by the any() check above
+        matched_caption = (
+            best_result.value.get("content") if best_result.value else None
+        )
+        matched_age_seconds = _caption_age_seconds(best_result)
+        norm_current = _normalize_caption(msg)
+
+        if best_score >= VIDEO_ANALYZER_SIMILARITY_THRESHOLD:
+            window = VIDEO_ANALYZER_CAPTION_DEDUPE_WINDOW_SEC
+            suppress = CaptionNoveltyDecision(
+                notify=False,
+                reason="score_above_threshold",
+                best_score=best_score,
+                matched_caption=matched_caption,
+                matched_age_seconds=matched_age_seconds,
+            )
+            # Static/artifact captions suppress whatever the match's age, to
+            # avoid empty-scene notification spam: _has_action filters parked
+            # cars, static houses and passive scenes ("features", "remains",
+            # "is parked").
+            if not (
+                _has_real_subject(norm_current, recognized_names)
+                and _has_action(norm_current)
+            ):
+                return suppress
+            # A real subject in action is suppressed only by a matching caption
+            # that was itself sent as a notification inside the dedupe window.
+            # Anchoring on the last notification rather than the last stored
+            # caption means a scene that continues notifies again once the
+            # window has passed, instead of each suppressed caption renewing it;
+            # and a days-old match does not silence a new person or vehicle
+            # event (an exact caption recurring after the window, e.g. "unknown
+            # person on porch", is a genuine repeat event).
+            if matched_age_seconds <= window and _caption_anchors(
+                best_result, unknown_only=unknown_person_seen
+            ):
+                return suppress
+            # The best match does not suppress, but a slightly lower-scoring
+            # one sent a minute ago would (issue #704). For a batch in which
+            # face recognition saw an unknown person, only a notification of
+            # another such batch counts: caption wording cannot tell a
+            # stranger from a resident.
+            recent = await self._find_recent_caption_match(
+                namespace, msg, search_results, unknown_only=unknown_person_seen
+            )
+            if recent is not None:
+                return recent
+            return CaptionNoveltyDecision(
+                notify=True,
+                reason="stale_match" if matched_age_seconds > window else "renotify",
+                best_score=best_score,
+                matched_caption=matched_caption,
+                matched_age_seconds=matched_age_seconds,
+            )
+
+        # Vector score is below threshold. Check the lexical artifact fast path.
+        # Scan ALL returned candidates for any artifact-bucket match with no real
+        # subject, then use the most recent one for the window check.  Using only
+        # best_result would miss a recent artifact match when a higher-scoring but
+        # older artifact result happens to rank first.
+        if _in_artifact_bucket(norm_current) and not _has_real_subject(
+            norm_current, recognized_names
+        ):
+            artifact_cap: str | None = None
+            artifact_age: int | None = None
+            for r in search_results:
+                if r.score is None:
+                    continue
+                cap = (r.value or {}).get("content")
+                norm_cap = _normalize_caption(cap or "")
+                if _in_artifact_bucket(norm_cap) and not _has_real_subject(
+                    norm_cap, recognized_names
+                ):
+                    age = _caption_age_seconds(r)
+                    if artifact_age is None or age < artifact_age:
+                        artifact_age = age
+                        artifact_cap = cap
+
+            if artifact_age is not None:
+                if artifact_age <= VIDEO_ANALYZER_CAPTION_DEDUPE_WINDOW_SEC:
+                    return CaptionNoveltyDecision(
+                        notify=False,
+                        reason="artifact_bucket",
+                        best_score=best_score,
+                        matched_caption=artifact_cap,
+                        matched_age_seconds=artifact_age,
+                    )
+                return CaptionNoveltyDecision(
+                    notify=True,
+                    reason="stale_match",
+                    best_score=best_score,
+                    matched_caption=artifact_cap,
+                    matched_age_seconds=artifact_age,
+                )
+
+        return CaptionNoveltyDecision(
+            notify=True,
+            reason="score_below_threshold",
+            best_score=best_score,
+            matched_caption=matched_caption,
+            matched_age_seconds=matched_age_seconds,
+        )
+
+    async def _search_own_captions(
+        self, namespace: tuple[str, str], msg: str
+    ) -> list[Any]:
+        """
+        Return the camera's stored captions most similar to msg, best first.
+
+        The store matches namespaces by prefix, so a search for "side" also
+        returns "side_gate". The search asks for more rows than are used so
+        that other cameras' captions, dropped here, cannot crowd this camera's
+        own matches out of the results.
+        """
+        results = await self.entry.runtime_data.store.asearch(
+            namespace,
+            query=msg,
+            limit=_CAPTION_SEARCH_WIDE_LIMIT,
+            # No TTL is set on captions; refreshing one would wrap the query
+            # in a form that no longer guarantees its ordering.
+            refresh_ttl=False,
+        )
+        own = [r for r in results if r.namespace == namespace]
+        own.sort(key=lambda r: r.score if r.score is not None else -1.0, reverse=True)
+        return own[:_CAPTION_SEARCH_LIMIT]
+
+    async def _find_recent_caption_match(
+        self,
+        namespace: tuple[str, str],
+        msg: str,
+        search_results: list[Any],
+        *,
+        unknown_only: bool = False,
+    ) -> CaptionNoveltyDecision | None:
+        """
+        Return a suppress decision for a match notified inside the dedupe window.
+
+        The similarity search ranks by score alone and captions are never pruned,
+        so on a camera that sees the same scenes repeatedly, old near-duplicates
+        outrank a caption stored a minute ago, or push it out of the returned
+        results altogether. Look among the results first, then score the
+        captions notified inside the window against the current one directly.
+
+        Returns None when nothing inside the window reaches the threshold, and
+        when the scan fails: the caller then notifies, as it would have.
+        """
+        window = VIDEO_ANALYZER_CAPTION_DEDUPE_WINDOW_SEC
+        best: tuple[float, str | None, int] | None = None
+        for r in search_results:
+            if r.score is None or r.score < VIDEO_ANALYZER_SIMILARITY_THRESHOLD:
+                continue
+            age = _caption_age_seconds(r)
+            if (
+                age <= window
+                and _caption_anchors(r, unknown_only=unknown_only)
+                and (best is None or r.score > best[0])
+            ):
+                best = (r.score, (r.value or {}).get("content"), age)
+
+        if best is None:
+            embeddings = self.entry.runtime_data.store.embeddings
+            if embeddings is None:
+                return None
+            try:
+                async with asyncio.timeout(_RECENT_CAPTION_SCAN_TIMEOUT_SEC):
+                    recent = await self._recent_captions(
+                        namespace, unknown_only=unknown_only
+                    )
+                    if not recent:
+                        return None
+                    # Scored as the store scores a search: the same embedding
+                    # function over the caption text, cosine similarity.
+                    vectors = await embeddings.aembed_documents(
+                        [msg, *(cap for cap, _ in recent)]
+                    )
+                    if len(vectors) != len(recent) + 1:
+                        err = f"{len(vectors)} vectors for {len(recent) + 1} captions"
+                        raise ValueError(err)  # noqa: TRY301
+                    for (cap, age), vector in zip(recent, vectors[1:], strict=True):
+                        score = _cosine_similarity(vectors[0], vector)
+                        if score >= VIDEO_ANALYZER_SIMILARITY_THRESHOLD and (
+                            best is None or score > best[0]
+                        ):
+                            best = (score, cap, age)
+            except Exception:
+                # Fail open: an unanswered scan must cost the dedup, never the
+                # notification.
+                LOGGER.warning(
+                    "[%s] recent-caption scan failed; treating the caption as novel.",
+                    namespace[1],
+                    exc_info=True,
+                )
+                return None
+
+        if best is None:
+            return None
+        return CaptionNoveltyDecision(
+            notify=False,
+            reason="recent_match",
+            best_score=best[0],
+            matched_caption=best[1],
+            matched_age_seconds=best[2],
+        )
+
+    async def _recent_captions(
+        self, namespace: tuple[str, str], *, unknown_only: bool = False
+    ) -> list[tuple[str, int]]:
+        """
+        Return (caption, age_seconds) for captions notified inside the dedupe window.
+
+        Relies on AsyncPostgresStore ordering a search without a query by
+        updated_at, newest first; that is how the store is implemented, not
+        part of the BaseStore contract. Each caption has its own key, so it is
+        written once and updated_at equals the created_at the age is read from.
+        Captions stored before the notified flag existed are not returned; they
+        age out of the window half an hour after the upgrade.
+        """
+        store = self.entry.runtime_data.store
+        window = VIDEO_ANALYZER_CAPTION_DEDUPE_WINDOW_SEC
+        recent: dict[str, int] = {}
+        wanted: dict[str, bool] = {"notified": True}
+        if unknown_only:
+            wanted["unknown_person"] = True
+        for page in range(_RECENT_CAPTION_SCAN_MAX_PAGES):
+            # Only notified captions are asked for, so the withheld ones (most
+            # of a busy window) do not use up the pages.
+            items = await store.asearch(
+                namespace,
+                filter=wanted,
+                limit=_RECENT_CAPTION_SCAN_PAGE,
+                offset=page * _RECENT_CAPTION_SCAN_PAGE,
+                refresh_ttl=False,  # keeps the plain, ordered query
+            )
+            for r in items:
+                # Prefix match again: "side" also returns "side_gate".
+                if r.namespace != namespace or not _caption_anchors(
+                    r, unknown_only=unknown_only
+                ):
+                    continue
+                cap = (r.value or {}).get("content")
+                age = _caption_age_seconds(r)
+                if isinstance(cap, str) and cap and age <= window:
+                    # Identical captions are embedded once, at their newest age.
+                    recent.setdefault(cap, age)
+            if (
+                len(items) < _RECENT_CAPTION_SCAN_PAGE
+                or _caption_age_seconds(items[-1]) > window
+            ):
+                break
+        return list(recent.items())
+
+    async def _prune_old_snapshots(self, camera_id: str, batch: list[Path]) -> None:
+        retention = self._retention_deques.setdefault(camera_id, deque())
+        for path in batch:
+            # Membership guard: the startup seed can scan a file whose capture
+            # registers it moments later; a duplicate entry would waste a
+            # budget slot and double-unlink on rollover. O(budget) is cheap at
+            # one capture per camera per few seconds.
+            if path in retention:
+                continue
+            retention.append(path)
+            await self._shrink_retention(camera_id, retention)
+
+    async def _shrink_retention(self, camera_id: str, retention: deque[Path]) -> None:
+        """Delete oldest retained snapshots until the per-camera budget holds."""
+        while len(retention) > VIDEO_ANALYZER_SNAPSHOTS_TO_KEEP:
+            old = retention.popleft()
+
+            # Do not delete published "latest" assets
+            if (
+                old.name == VIDEO_ANALYZER_LATEST_NAME
+                or old.parent.name == VIDEO_ANALYZER_LATEST_SUBFOLDER
+            ):
+                retention.append(old)
+                break
+
+            # Skip if protected by a recent notification
+            if self._is_protected(old):
+                retention.append(
+                    old
+                )  # push it to the end once; stop pruning this round
+                break
+            try:
+                await self.hass.async_add_executor_job(old.unlink)
+                LOGGER.debug("[%s] Deleted old snapshot: %s", camera_id, old)
+            except OSError as err:
+                LOGGER.warning("[%s] Failed to delete %s: %s", camera_id, old, err)
+
+    async def _seed_retention_from_disk(self) -> None:
+        """
+        Seed retention deques with snapshot files that predate this start.
+
+        Retention state is in-memory, so files captured before a Home
+        Assistant restart never re-enter a deque and would otherwise leak
+        forever. Existing files are merged in as the OLDEST entries — never
+        appended after live captures, which would rotate the newest frames out
+        first — then the normal budget shrink runs, deleting over-budget files
+        oldest-first with the usual latest-asset and protection guards.
+
+        Only files the analyzer itself writes are claimed, matched against the
+        exact timestamped name _capture_snapshot produces
+        (snapshot_YYYYMMDD_HHMMSS.jpg): /media is user-visible, and a looser
+        match would eventually delete user-owned content such as
+        "snapshot_family.jpg" that the integration never created.
+
+        Frames captured within the last protection TTL are re-protected for a
+        FULL fresh TTL before the shrink: the protection map died with the
+        previous process, and a notification may have fired well after
+        capture (event buffering + processing), so remaining-TTL-from-mtime
+        arithmetic would under-protect. A fresh window is over-protective for
+        at most one TTL, never destructive.
+        """
+
+        def _scan() -> dict[str, list[tuple[float, Path]]]:
+            root = Path(VIDEO_ANALYZER_SNAPSHOT_ROOT)
+            if not root.is_dir():
+                return {}
+            found: dict[str, list[tuple[float, Path]]] = {}
+            for cam_dir in sorted(root.iterdir()):
+                # Only per-camera snapshot dirs are swept; anything else
+                # ("faces", future layouts) has its own lifecycle.
+                camera_id = camera_id_from_fs_dir(cam_dir.name)
+                if camera_id is None or not cam_dir.is_dir():
+                    continue
+                try:
+                    # Non-recursive: the VIDEO_ANALYZER_LATEST_SUBFOLDER
+                    # ("_latest") directory entry is skipped by is_file().
+                    entries = list(cam_dir.iterdir())
+                except OSError:
+                    LOGGER.warning(
+                        "[%s] Retention seed scan failed for %s",
+                        camera_id,
+                        cam_dir,
+                        exc_info=True,
+                    )
+                    continue
+                stamped: list[tuple[float, Path]] = []
+                for f in entries:
+                    # An event-recording work dir (issue #491) only outlives
+                    # its ingest when the process died or shutdown rejected
+                    # the cleanup job; nothing else creates that prefix.
+                    if f.name.startswith(EVENT_WORK_PREFIX) and f.is_dir():
+                        shutil.rmtree(f, ignore_errors=True)
+                        continue
+                    if not _is_analyzer_snapshot_name(f.name):
+                        continue
+                    # Per-file guard: one unreadable entry must cost one
+                    # file, not the whole camera's seed.
+                    try:
+                        if f.is_file():
+                            stamped.append((f.stat().st_mtime, f))
+                    except OSError:
+                        LOGGER.warning(
+                            "[%s] Retention seed skipped unreadable %s",
+                            camera_id,
+                            f,
+                            exc_info=True,
+                        )
+                if stamped:
+                    stamped.sort()
+                    found[camera_id] = stamped
+            return found
+
+        try:
+            found = await self.hass.async_add_executor_job(_scan)
+        except OSError:
+            LOGGER.warning("Retention seed scan failed", exc_info=True)
+            return
+
+        now_ts = dt_util.utcnow().timestamp()
+        for camera_id, stamped in found.items():
+            retention = self._retention_deques.setdefault(camera_id, deque())
+            known = set(retention)
+            seed = [(m, f) for m, f in stamped if f not in known]
+            if not seed:
+                continue
+            # Oldest-first seed lands left of any live registrations.
+            retention.extendleft(reversed([f for _, f in seed]))
+            for mtime, f in seed:
+                if now_ts - mtime < _NOTIFY_PROTECT_TTL_SEC:
+                    self.protect_notify_image(f, ttl_sec=_NOTIFY_PROTECT_TTL_SEC)
+            LOGGER.info(
+                "[%s] Seeded %d pre-existing snapshots into retention",
+                camera_id,
+                len(seed),
+            )
+            await self._shrink_retention(camera_id, retention)
+
+    async def recognize_faces(self, data: bytes, camera_id: str) -> list[FaceHit]:  # noqa: PLR0911, PLR0912, PLR0915
+        """Call face API to recognize faces in the snapshot image."""
+        face_recognition = self.entry.runtime_data.face_recognition
+        if not face_recognition:
+            return []
+
+        base_url = self.entry.runtime_data.face_api_url
+        client = self._httpx_client
+        if client is None:
+            # fallback if start() wasn't called yet
+            client = get_async_client(self.hass)
+
+        # Call face API with timeout & specific exception handling
+        try:
+            resp = await client.post(
+                urljoin(base_url.rstrip("/") + "/", "analyze"),
+                files={"file": ("snapshot.jpg", data, "image/jpeg")},
+                timeout=_FACE_TIMEOUT_SEC,
+            )
+            resp.raise_for_status()
+            face_res = resp.json()
+        except asyncio.CancelledError:
+            raise
+        except httpx.HTTPStatusError as err:
+            LOGGER.warning("Face API HTTP %s: %s", err.response.status_code, err)
+            return []
+        except httpx.RequestError as err:
+            LOGGER.warning("Face API request error: %s", err)
+            return []
+        except ValueError as err:  # JSON parsing
+            LOGGER.warning("Face API returned invalid JSON: %s", err)
+            return []
+
+        faces = face_res.get("faces", [])
+        if not faces:
+            return [FaceHit(name="Indeterminate")]
+
+        dao = self.entry.runtime_data.person_gallery
+        if dao is None:
+            LOGGER.debug(
+                "[%s] Person gallery unavailable; returning indeterminate faces.",
+                camera_id,
+            )
+            return [FaceHit(name="Indeterminate") for _ in faces]
+
+        # --- decode snapshot off the loop (Pillow is sync) ---
+        try:
+            img = await self.hass.async_add_executor_job(load_image_rgb, data)
+        except asyncio.CancelledError:
+            raise
+        except (Image.UnidentifiedImageError, OSError) as err:
+            LOGGER.warning("Failed to decode snapshot for crops: %s", err)
+            img = None  # still return recognition results below
+
+        recognized: list[FaceHit] = []
+
+        timestamp = dt_util.now().strftime("%Y%m%d_%H%M%S")
+        face_debug_root = (
+            Path(VIDEO_ANALYZER_SNAPSHOT_ROOT) / "faces" / camera_id.replace(".", "_")
+        )
+
+        # ensure directory off the loop
+        try:
+            await self.hass.async_add_executor_job(ensure_dir, face_debug_root)
+        except OSError as err:
+            LOGGER.debug("Could not ensure face debug dir: %s", err)
+
+        insightface_bbox_length = 4
+        small_crop_threshold = 128  # pixels
+
+        for idx, face in enumerate(faces):
+            emb = face.get("embedding") if isinstance(face, dict) else None
+            if (
+                not isinstance(emb, list)
+                or len(emb) != FACE_EMBEDDING_DIMS
+                or not all(
+                    isinstance(x, (int, float)) and math.isfinite(x) for x in emb
+                )
+            ):
+                # A malformed face-API entry (missing/ragged/non-finite
+                # embedding) must degrade to Indeterminate for this face, not
+                # take down the whole batch in the worker's blanket except.
+                LOGGER.warning(
+                    "[%s] Face API returned malformed face entry %d; "
+                    "treating as Indeterminate",
+                    camera_id,
+                    idx,
+                )
+                recognized.append(FaceHit(name="Indeterminate"))
+                continue
+            # Let unexpected DAO errors propagate; don't catch blindly
+            name = await dao.recognize_person(emb)
+            recognized.append(FaceHit(name=name, embedding=list(emb)))
+
+            # optional debug crop
+            if not VIDEO_ANALYZER_FACE_CROP or not img:
+                continue
+
+            bbox = face.get("bbox")
+            if bbox and len(bbox) == insightface_bbox_length:
+                try:
+                    # crop/resize/encode off the loop
+                    jpeg_bytes = await self.hass.async_add_executor_job(
+                        crop_resize_encode_jpeg, img, bbox, 0.3, small_crop_threshold
+                    )
+                    if not jpeg_bytes:
+                        continue
+                    face_file = face_debug_root / f"face_{timestamp}_{idx}_{name}.jpg"
+                    # async write
+                    async with aiofiles.open(face_file, "wb") as f:
+                        await f.write(jpeg_bytes)
+                    LOGGER.debug("Saved face crop: %s", face_file)
+                except asyncio.CancelledError:
+                    raise
+                except OSError as err:
+                    LOGGER.warning("Failed to save face crop: %s", err)
+
+        return recognized
+
+    def _log_snapshot_error(self, camera_id: str, path: Path, exc: Exception) -> None:
+        """Log errors from snapshot processing."""
+        if isinstance(exc, FileNotFoundError):
+            LOGGER.warning("[%s] Snapshot not found: %s", camera_id, path)
+        elif isinstance(exc, TimeoutError):
+            LOGGER.warning("[%s] Image analysis timed out for %s", camera_id, path)
+        elif isinstance(exc, HomeAssistantError):
+            LOGGER.error("[%s] Error analyzing %s", camera_id, path, exc_info=exc)
+        else:
+            LOGGER.error(
+                "[%s] Unexpected error analyzing %s.", camera_id, path, exc_info=exc
+            )
+
+    def _drain_queue(self, queue: asyncio.Queue[_SnapshotItem]) -> list[Path]:
+        """Drain all items from the asyncio queue into a list."""
+        batch: list[Path] = []
+        try:
+            while True:
+                batch.append(queue.get_nowait().path)
+        except asyncio.QueueEmpty:
+            pass
+        return batch
+
+    async def _process_snapshot(  # noqa: PLR0911, PLR0912, PLR0915
+        self, path: Path, camera_id: str, prev_text: str | None = None
+    ) -> tuple[dict[str, list[str]], list[FaceHit]]:
+        """
+        Process a single snapshot: recognize faces and describe the frame.
+
+        Returns the caption-to-names mapping plus the frame's FaceHit list;
+        hits[i] carries the embedding behind the i-th name in the mapping.
+        """
+        # freshness gate
+        try:
+            epoch = epoch_from_path(path)
+        except (OSError, FileNotFoundError, ValueError):
+            epoch = 0
+        age = dt_util.utcnow().timestamp() - float(epoch)
+        if age > _FRAME_DEADLINE_SEC:
+            self._m_inc(camera_id, "dropped_stale")
+            LOGGER.debug(
+                "[%s] Skipping stale snapshot (%ds): %s", camera_id, int(age), path
+            )
+            return {}, []
+
+        start_ns = monotonic()
+        # Face evidence must survive VLM-side failures below: the identity
+        # merge's companion guard scans dropped frames' hits, so every failure
+        # return after recognition carries face_hits instead of [].
+        face_hits: list[FaceHit] = []
+        try:
+            async with aiofiles.open(path, "rb") as file:
+                data = await file.read()
+
+            # Face recognition: short timeout
+            try:
+                async with asyncio.timeout(_FACE_TIMEOUT_SEC):
+                    face_hits = await self.recognize_faces(data, camera_id)
+            except TimeoutError:
+                LOGGER.warning(
+                    "[%s] Face recognition timed out for %s", camera_id, path
+                )
+                face_hits = []
+
+            try:
+                vlm_deployment = self.entry.runtime_data.model_deployments.get(
+                    "vlm", "edge"
+                )
+                uncontended = self.entry.runtime_data.options.get(
+                    CONF_MODEL_PROVIDER_UNCONTENDED, False
+                )
+                use_gate = is_edge_deployment(vlm_deployment) and not uncontended
+                base_vlm = self.entry.runtime_data.vision_model
+                vlm_cfg = dict(getattr(base_vlm, "config", {}).get("configurable", {}))
+                vlm_cfg["num_predict"] = VIDEO_VLM_NUM_PREDICT
+                # Only force-disable thinking when the base config carries a
+                # reasoning key (set via reasoning_field() for thinking-capable
+                # models); sending one for non-thinking models makes some
+                # Ollama builds reject the call.
+                if is_edge_deployment(vlm_deployment) and "reasoning" in vlm_cfg:
+                    vlm_cfg["reasoning"] = False
+                vision_model = base_vlm.with_config(config={"configurable": vlm_cfg})
+                vlm_overrides = VLMPromptOverrides(
+                    response_language=self.entry.runtime_data.options.get(
+                        CONF_VLM_RESPONSE_LANGUAGE, RECOMMENDED_VLM_RESPONSE_LANGUAGE
+                    ),
+                    prompt_extra=self.entry.runtime_data.options.get(
+                        CONF_VLM_PROMPT_EXTRA, RECOMMENDED_VLM_PROMPT_EXTRA
+                    ),
+                )
+                if use_gate:
+                    sem = self._video_model_sem
+                    if sem is None:
+                        return {}, face_hits
+                    async with local_video_session(vlm_deployment):
+                        # Sentinel defers; chat must clear before model call.
+                        if not await wait_for_chat_idle(
+                            _VIDEO_MODEL_SEMAPHORE_WAIT_SEC
+                        ):
+                            LOGGER.debug(
+                                "video_chat_wait camera=%s result=timeout", camera_id
+                            )
+                            return {}, face_hits
+                        t_sem = monotonic()
+                        try:
+                            async with asyncio.timeout(_VIDEO_MODEL_SEMAPHORE_WAIT_SEC):
+                                await sem.acquire()
+                        except TimeoutError:
+                            LOGGER.debug(
+                                "video_semaphore camera=%s wait=%ds result=timeout",
+                                camera_id,
+                                _VIDEO_MODEL_SEMAPHORE_WAIT_SEC,
+                            )
+                            self._m_inc(camera_id, "semaphore_timeouts")
+                            return {}, face_hits
+                        LOGGER.debug(
+                            "video_semaphore camera=%s wait=%.1fs result=acquired",
+                            camera_id,
+                            monotonic() - t_sem,
+                        )
+                        t_model = monotonic()
+                        try:
+                            async with asyncio.timeout(_VISION_TIMEOUT_SEC):
+                                frame_description = await analyze_image(
+                                    vision_model,
+                                    data,
+                                    None,
+                                    prev_text=prev_text,
+                                    overrides=vlm_overrides,
+                                )
+                        finally:
+                            sem.release()
+                        LOGGER.debug(
+                            "video_model camera=%s op=frame elapsed=%.1fs result=ok",
+                            camera_id,
+                            monotonic() - t_model,
+                        )
+                else:
+                    async with asyncio.timeout(_VISION_TIMEOUT_SEC):
+                        frame_description = await analyze_image(
+                            vision_model,
+                            data,
+                            None,
+                            prev_text=prev_text,
+                            overrides=vlm_overrides,
+                        )
+            except TimeoutError as exc:
+                self._m_inc(camera_id, "timeouts")
+                self._log_snapshot_error(camera_id, path, exc)
+                return {}, face_hits
+        except (FileNotFoundError, HomeAssistantError, OllamaResponseError) as exc:
+            self._log_snapshot_error(camera_id, path, exc)
+            return {}, face_hits
+        else:
+            dur_ms = (monotonic() - start_ns) * 1000.0
+            self._m_add_latency(camera_id, dur_ms)
+            self._m_inc(camera_id, "analyzed")
+            return {frame_description: [h.name for h in face_hits]}, face_hits
+
+    async def _handle_notification(
+        self,
+        camera_id: str,
+        msg: str,
+        batch: list[Path],
+        notify_frame: Path | None = None,
+        *,
+        context: _BatchNotifyContext,
+    ) -> bool:
+        """
+        Decide whether to notify and send if needed.
+
+        Returns True only when a sounding push was handed to a notify service.
+        """
+        camera_name = camera_id.rsplit(".", maxsplit=1)[-1]
+        recognized = context.recognized
+        # notify_frame is the frame _process_batch judged representative of
+        # the summary text. Middle-of-batch is only a legacy fallback: after
+        # the sentinel drop (issue #493) the raw batch is dominated by
+        # unchanged-scene frames the summary does not describe.
+        if notify_frame is None:
+            LOGGER.debug("[%s] No notify frame provided; using batch middle", camera_id)
+        chosen = notify_frame if notify_frame is not None else batch[len(batch) // 2]
+
+        dst = latest_target(Path(VIDEO_ANALYZER_SNAPSHOT_ROOT), camera_id)
+        await publish_latest_atomic(self.hass, chosen, dst)
+
+        # Fire bus event when a new latest is published
+        self.hass.bus.async_fire(
+            "hga_last_event_frame",
+            {
+                "camera_id": camera_id,
+                "summary": msg,
+                "path": str(chosen),
+                "latest": str(dst),
+            },
+        )
+
+        # Notify ImageEntity listeners (latest frame)
+        dispatch_on_loop(
+            self.hass,
+            SIGNAL_HGA_NEW_LATEST,
+            camera_id,
+            str(dst),
+            msg,
+            list(recognized),
+            dt_util.utcnow().isoformat(),
+        )
+
+        # Notify Sensor listeners (recognized names + summary + path)
+        dispatch_on_loop(
+            self.hass,
+            SIGNAL_HGA_RECOGNIZED,
+            camera_id,
+            list(recognized),
+            msg,
+            dt_util.utcnow().isoformat(),
+            str(dst),
+        )
+
+        # If backlog is hot, let filesystem settle before notifying
+        queue = self._snapshot_queues.get(camera_id)
+        backlog_limit = 10
+        if queue and queue.qsize() > backlog_limit:
+            await asyncio.sleep(0.5)
+
+        # If the Home Assistant media_dirs option is set in configuration.yaml,
+        # ensure that /media is added as an option for '/media/local' to work.
+        # (If its not set then the default is /media.)
+        # E.g:
+        # homeassistant:
+        #   media_dirs:
+        #       local: /media # restore default 'local'
+        #       foo: /media/snapshots/foo  # optional extra source
+        media_dir = "/media/local"
+        notify_img = Path(media_dir) / Path(*chosen.parts[-3:])
+
+        mode = self.entry.runtime_data.options.get(CONF_VIDEO_ANALYZER_MODE)
+        if mode == "notify_on_anomaly":
+            first_snapshot = batch[0].parts[-1]
+            decision = await self._is_caption_novel(
+                camera_name,
+                msg,
+                first_snapshot,
+                recognized_names=list(recognized),
+                # Every frame's names, not only the frames the summary kept.
+                unknown_person_seen=has_unknown_face(
+                    (*recognized, *context.batch_names)
+                ),
+            )
+            LOGGER.debug(
+                "[%s] novelty decision: notify=%s reason=%s best_score=%s "
+                "matched_age_s=%s caption=%r matched=%r",
+                camera_id,
+                decision.notify,
+                decision.reason,
+                f"{decision.best_score:.3f}"
+                if decision.best_score is not None
+                else "none",
+                decision.matched_age_seconds,
+                msg[:80],
+                (decision.matched_caption or "")[:80],
+            )
+            if not decision.notify:
+                return False
+        # Protect the chosen file from pruning for 30 minutes
+        self.protect_notify_image(chosen, ttl_sec=_NOTIFY_PROTECT_TTL_SEC)
+        return await self._dispatch_notification(camera_id, msg, notify_img, context)
+
+    async def _store_results(
+        self,
+        camera_id: str,
+        batch: list[Path],
+        msg: str,
+        *,
+        notified: bool = True,
+        unknown_person: bool = False,
+    ) -> None:
+        """
+        Store the analysis results in the vector DB.
+
+        `notified` records whether the caption sounded as a notification:
+        caption deduplication lets only notified captions suppress later ones.
+        `unknown_person` records that face recognition saw an unknown face in
+        the batch: only such a caption suppresses another unknown-face batch.
+        """
+        camera_name = camera_id.rsplit(".", maxsplit=1)[-1]
+        store = self.entry.runtime_data.store
+        namespace = ("video_analysis", camera_name)
+        key = batch[0].name
+        async with asyncio.timeout(10):
+            if not notified:
+                # Snapshot names have one-second precision, so two batches can
+                # share a key: a withheld caption must not erase the record
+                # that the earlier one notified.
+                existing = await store.aget(namespace, key, refresh_ttl=False)
+                if existing is not None and (existing.value or {}).get("notified"):
+                    notified = True
+                    unknown_person = (
+                        unknown_person or existing.value.get("unknown_person") is True
+                    )
+            await store.aput(
+                namespace=namespace,
+                key=key,
+                value={
+                    "content": msg,
+                    "snapshots": [str(p) for p in batch],
+                    "notified": notified,
+                    "unknown_person": unknown_person,
+                },
+            )
+
+    async def _process_snapshot_queue(
+        self, camera_id: str, *, held: list[Path] | None = None
+    ) -> None:
+        """
+        Flush held and queued snapshots for a camera as one ordered batch.
+
+        `held` is a window's frames already taken off the camera (a deferred
+        flush, which drained the live queue when it parked); otherwise the
+        camera's current buffer and live queue are flushed.
+        """
+        if held is not None:
+            batch: list[Path] = list(held)
+        else:
+            batch = list(self._event_snapshot_buffers.pop(camera_id, []))
+            queue: asyncio.Queue[_SnapshotItem] | None = self._snapshot_queues.get(
+                camera_id
+            )
+            if queue:
+                batch.extend(self._drain_queue(queue))
+        if not batch:
+            return
+
+        # Sort by actual timestamp (handles out-of-order filenames)
+        ordered: list[tuple[Path, int]] = sorted(
+            ((path, epoch_from_path(path)) for path in batch),
+            key=lambda x: x[1],
+        )
+        if not ordered:
+            return
+
+        # Reuse the same path as the live worker (process → summarize → finalize)
+        await self._analyze_and_finalize(camera_id, ordered)
+
+    def _resolve_camera_from_motion(self, motion_entity_id: str) -> str | None:
+        """
+        Resolve a camera entity ID from a motion sensor ID.
+
+        Resolution order: (1) explicit override map, (2) device-based lookup,
+        (3) name-based heuristics (direct, VMD-strip, _motion-strip).
+        """
+        # 1. Explicit override — options-configured map takes priority over const.
+        camera_id = self._resolve_camera_override(motion_entity_id)
+        if camera_id:
+            return camera_id
+
+        # 2. Device-based resolution: find the camera on the same HA device.
+        camera_id = self._resolve_camera_by_device(motion_entity_id)
+        if camera_id:
+            return camera_id
+
+        # 3. Name-based resolution (fallback for integrations without device links).
+        base = motion_entity_id.replace("binary_sensor.", "")
+        base = re.sub(r"_vmd\d+.*", "", base)
+        inferred_camera_id = f"camera.{base}"
+        if self.hass.states.get(inferred_camera_id):
+            return inferred_camera_id
+
+        # Strip _motion suffix and try bare name + Ring-MQTT _snapshot variant.
+        if base.endswith("_motion"):
+            stripped = base[: -len("_motion")]
+            for candidate in (f"camera.{stripped}", f"camera.{stripped}_snapshot"):
+                if self.hass.states.get(candidate):
+                    return candidate
+
+        return None
+
+    def _resolve_camera_by_device(self, motion_entity_id: str) -> str | None:
+        """
+        Return the camera on the same HA device as the motion sensor.
+
+        Returns None when the sensor has no device, the device has no camera
+        entities, or the device has more than one camera (ambiguous).
+        """
+        ent_reg = er.async_get(self.hass)
+        motion_entry = ent_reg.async_get(motion_entity_id)
+        if motion_entry is None or motion_entry.device_id is None:
+            return None
+
+        camera_entries = [
+            entry
+            for entry in er.async_entries_for_device(ent_reg, motion_entry.device_id)
+            if entry.domain == "camera" and self.hass.states.get(entry.entity_id)
+        ]
+
+        if len(camera_entries) == 1:
+            LOGGER.debug(
+                "[%s] Resolved via device registry → %s",
+                motion_entity_id,
+                camera_entries[0].entity_id,
+            )
+            return camera_entries[0].entity_id
+
+        return None
+
+    def _resolve_camera_override(self, entity_id: str) -> str | None:
+        """Return the camera mapped to entity_id in the override map, if any."""
+        overrides: dict = self.entry.runtime_data.options.get(
+            CONF_VIDEO_ANALYZER_MOTION_CAMERA_MAP, VIDEO_ANALYZER_MOTION_CAMERA_MAP
+        )
+        camera_id = overrides.get(entity_id)
+        if camera_id and self.hass.states.get(camera_id):
+            return camera_id
+        return None
+
+    def _resolve_camera_from_event_select(self, select_entity_id: str) -> str | None:
+        """
+        Resolve a camera entity ID from a ring-mqtt event_select entity.
+
+        Resolution order mirrors _resolve_camera_from_motion: (1) explicit
+        override map, (2) device-based lookup, (3) name-based heuristics
+        (bare name + Ring-MQTT _snapshot variant).
+        """
+        camera_id = self._resolve_camera_override(select_entity_id)
+        if camera_id:
+            return camera_id
+
+        camera_id = self._resolve_camera_by_device(select_entity_id)
+        if camera_id:
+            return camera_id
+
+        base = select_entity_id.removeprefix("select.").removesuffix(
+            _EVENT_SELECT_SUFFIX
+        )
+        for candidate in (f"camera.{base}", f"camera.{base}_snapshot"):
+            if self.hass.states.get(candidate):
+                return candidate
+
+        return None
+
+    async def _get_snapshot_dir(self, camera_id: str) -> Path:
+        if camera_id not in self._initialized_dirs:
+            cam_dir = Path(VIDEO_ANALYZER_SNAPSHOT_ROOT) / camera_id.replace(".", "_")
+            cam_dir.mkdir(parents=True, exist_ok=True)
+            self._initialized_dirs.add(camera_id)
+            dir_not_empty = await self.hass.async_add_executor_job(
+                lambda: any(cam_dir.iterdir()),
+            )
+            if dir_not_empty:
+                msg = (
+                    "[{id}] Folder not empty; pre-existing snapshots were "
+                    "seeded into retention at startup."
+                )
+                LOGGER.info(msg.format(id=camera_id))
+        return Path(VIDEO_ANALYZER_SNAPSHOT_ROOT) / camera_id.replace(".", "_")
+
+    async def _is_unique_enough(
+        self, camera_id: str, path: Path, *, history: deque[int] | None = None
+    ) -> bool:
+        """
+        Gate snapshots by perceptual uniqueness + heartbeat.
+
+        Returns True to enqueue, False to skip. With `history`, the frame is
+        gated against (and recorded in) that deque instead of the camera's
+        window history, always deduped and never heartbeat-bypassed: an
+        event recording's frames dedupe among themselves without touching
+        whichever window currently owns the camera's history.
+        """
+        # Loops the event_select path started always dedupe (issue #489):
+        # battery Ring cameras refresh their snapshot at best every 600 s, so
+        # a capture window would otherwise batch ~10 identical frames (= VLM
+        # calls). The flag is per-loop and survives a motion-sensor takeover —
+        # battery motion sensors commonly fire seconds AFTER the eventId, and
+        # dropping the gate at takeover would reintroduce the duplicate flood
+        # with an even longer window. The heartbeat bypass is skipped for these
+        # loops too — within one window an unchanged frame never becomes worth
+        # re-analyzing.
+        forced = history is not None or camera_id in self._event_select_dedupe
+        if not forced and not self.entry.runtime_data.options.get(
+            CONF_VIDEO_ANALYZER_UNIQUENESS_ENABLED, False
+        ):
+            return True
+
+        # Heartbeat: allow at least one frame every N seconds (disabled for
+        # loops with forced dedupe — see above).
+        now = monotonic()
+        last_ok = self._last_unique_ts.get(camera_id, 0.0)
+        heartbeat_due = not forced and now - last_ok >= _UNIQUENESS_HEARTBEAT_SEC
+
+        # Load bytes async, compute hash off the loop if needed
+        try:
+            async with aiofiles.open(path, "rb") as f:
+                data = await f.read()
+        except (FileNotFoundError, OSError):
+            return True  # if we can't read, don't block processing
+
+        # dhash_bytes does a full PIL decode; keep it off the event loop.
+        # RuntimeError: executor rejects jobs during HA shutdown — fail open
+        # rather than killing the loop task.
+        try:
+            dh = await self.hass.async_add_executor_job(dhash_bytes, data)
+        except (Image.UnidentifiedImageError, OSError, ValueError, RuntimeError):
+            return True  # be permissive on failures
+
+        hist = (
+            history
+            if history is not None
+            else self._last_hashes.setdefault(
+                camera_id, deque(maxlen=_UNIQUENESS_HISTORY)
+            )
+        )
+        # If we have no history, accept and seed
+        if not hist:
+            hist.append(dh)
+            if history is None:
+                self._last_unique_ts[camera_id] = now
+            return True
+
+        # Compute min Hamming distance to recent accepted frames
+        min_h = min(hamming64(dh, prev) for prev in hist)
+
+        if min_h <= _UNIQUENESS_HAMMING_MAX and not heartbeat_due:
+            # Too similar and no heartbeat due → skip
+            return False
+
+        # Accept: update history and last-unique time
+        hist.append(dh)
+        if history is None:
+            self._last_unique_ts[camera_id] = now
+        return True
+
+    async def _take_single_snapshot(
+        self, camera_id: str, now: datetime, *, hold_for_batch: bool = False
+    ) -> Path | None:
+        if camera_id in self._snapshot_inflight:
+            LOGGER.debug(
+                "[%s] Skipping snapshot — previous capture still in flight.",
+                camera_id,
+            )
+            return None
+        self._snapshot_inflight.add(camera_id)
+        try:
+            return await self._capture_snapshot(
+                camera_id, now, hold_for_batch=hold_for_batch
+            )
+        finally:
+            self._snapshot_inflight.discard(camera_id)
+
+    def _retained_frame_is_stale(self, camera_id: str, now: datetime) -> bool:
+        """
+        Detect a frozen ring-mqtt interval snapshot before capturing it.
+
+        ring-mqtt publishes the last frame's epoch seconds as a `timestamp`
+        attribute on the snapshot camera. On battery cameras the frame can
+        stop refreshing (issue #490) — either because the interval snapshot
+        silently stalls, or because ring-mqtt's Auto/Motion snapshot modes
+        never request snapshots from battery devices at all (field data in
+        issue #466) — after which MQTT serves the retained frame
+        indefinitely; capturing it would analyze days-old imagery as if it
+        were current.
+
+        The guard only applies to cameras with a ring-mqtt event_select
+        sibling — other integrations may publish an epoch `timestamp` with
+        different semantics (stream start, boot time), and suppressing their
+        capture on it would silently kill analysis. Values that are not
+        plausible current epochs (non-numeric, non-finite, pre-2001, or more
+        than an hour in the future — e.g. millisecond epochs) never mark the
+        frame stale.
+
+        On the True path this also records a snapshot failure (issue #464
+        streak/metric), rate-limited per staleness episode: recorded when the
+        frozen timestamp value first appears (a changed value is a new
+        episode, so freeze -> unobserved recovery -> freeze is not silent) and
+        re-recorded hourly while the episode persists, so the streak can
+        escalate to ERROR and hourly metrics show the ongoing freeze without
+        emitting a failure per 3-second loop iteration.
+        """
+        state = self.hass.states.get(camera_id)
+        if state is None:
+            return False
+        ts_val = _plausible_epoch(state.attributes.get("timestamp"), now)
+        if ts_val is None or not self._has_event_select_sibling(camera_id):
+            return False
+        age_sec = now.timestamp() - ts_val
+        if age_sec <= _SNAPSHOT_STALE_MAX_AGE_SEC:
+            self._stale_reported.pop(camera_id, None)
+            self._stale_reported_at.pop(camera_id, None)
+            return False
+        mono_now = monotonic()
+        if (
+            self._stale_reported.get(camera_id) != ts_val
+            or mono_now - self._stale_reported_at.get(camera_id, 0.0)
+            >= _STALE_REREPORT_INTERVAL_SEC
+        ):
+            self._stale_reported[camera_id] = ts_val
+            self._stale_reported_at[camera_id] = mono_now
+            self._record_snapshot_failure(
+                camera_id,
+                f"retained snapshot frame is {age_sec / 3600.0:.1f} h old "
+                f"(limit {_SNAPSHOT_STALE_MAX_AGE_SEC} s); ring-mqtt has not "
+                f"published a fresh frame (issue #490). On battery cameras "
+                f"the Auto and Motion snapshot modes never refresh the frame "
+                f"(issue #466) — use snapshot mode 'Interval' or a "
+                f"take_snapshot-on-event automation (see docs/camera-entities"
+                f".md in the home-generative-agent repo); if Interval mode "
+                f"was working and stopped, restarting the ring-mqtt add-on "
+                f"usually clears it",
+            )
+        return True
+
+    def _has_event_select_sibling(self, camera_id: str) -> bool:
+        """
+        Return True when camera_id is a ring-mqtt camera with an event_select.
+
+        Checked by ring-mqtt's naming scheme (`camera.<name>[_snapshot]` pairs
+        with `select.<name>_event_select`), by the user's motion→camera
+        override map, and — mirroring _resolve_camera_by_device for renamed
+        entities — by a select.*_event_select entity on the same HA device.
+        """
+        base = camera_id.removeprefix("camera.")
+        candidates = {base}
+        if base.endswith("_snapshot"):
+            candidates.add(base.removesuffix("_snapshot"))
+        if any(
+            self.hass.states.get(f"select.{name}{_EVENT_SELECT_SUFFIX}") is not None
+            for name in candidates
+        ):
+            return True
+        overrides: dict = self.entry.runtime_data.options.get(
+            CONF_VIDEO_ANALYZER_MOTION_CAMERA_MAP, VIDEO_ANALYZER_MOTION_CAMERA_MAP
+        )
+        if any(
+            key.endswith(_EVENT_SELECT_SUFFIX) and mapped == camera_id
+            for key, mapped in overrides.items()
+        ):
+            return True
+        ent_reg = er.async_get(self.hass)
+        camera_entry = ent_reg.async_get(camera_id)
+        if camera_entry is None or camera_entry.device_id is None:
+            return False
+        return any(
+            entry.domain == "select" and entry.entity_id.endswith(_EVENT_SELECT_SUFFIX)
+            for entry in er.async_entries_for_device(ent_reg, camera_entry.device_id)
+        )
+
+    async def _capture_snapshot(
+        self, camera_id: str, now: datetime, *, hold_for_batch: bool = False
+    ) -> Path | None:
+        if self._retained_frame_is_stale(camera_id, now):
+            return None
+        snapshot_dir = await self._get_snapshot_dir(camera_id)
+        timestamp = dt_util.as_local(now).strftime("%Y%m%d_%H%M%S")
+        path = snapshot_dir / f"snapshot_{timestamp}.jpg"
+
+        start_time = dt_util.utcnow()
+        LOGGER.debug("[%s] Initiating snapshot at %s", camera_id, start_time)
+
+        # Blocking call so platform errors (camera unavailable, disallowed
+        # path, write failure) surface here instead of vanishing in a
+        # fire-and-forget dispatch (issue #464).
+        try:
+            async with asyncio.timeout(_SNAPSHOT_SERVICE_TIMEOUT_SEC):
+                await self.hass.services.async_call(
+                    CAMERA_DOMAIN,
+                    "snapshot",
+                    {"entity_id": camera_id, "filename": str(path)},
+                    blocking=True,
+                )
+        except TimeoutError:
+            self._record_snapshot_failure(
+                camera_id,
+                f"camera.snapshot did not complete within "
+                f"{_SNAPSHOT_SERVICE_TIMEOUT_SEC}s "
+                f"(camera unresponsive or service wedged): {path}",
+            )
+            return None
+        except HomeAssistantError as err:
+            self._record_snapshot_failure(
+                camera_id, f"camera.snapshot service call failed: {err}"
+            )
+            return None
+        LOGGER.debug("[%s] Snapshot service call completed.", camera_id)
+
+        # The service writes the file before returning, so it normally exists
+        # on the first check; poll briefly to absorb filesystem lag.
+        for i in range(_SNAPSHOT_APPEAR_ATTEMPTS):
+            exists = await self.hass.async_add_executor_job(path.exists)
+            if exists:
+                LOGGER.debug(
+                    "[%s] Snapshot appeared after %.2f s.",
+                    camera_id,
+                    (dt_util.utcnow() - start_time).total_seconds(),
+                )
+                break
+            await asyncio.sleep(0.2)
+            LOGGER.debug(
+                "[%s] Waiting for snapshot to appear... attempt %d",
+                camera_id,
+                i + 1,
+            )
+        else:
+            self._record_snapshot_failure(
+                camera_id,
+                f"camera.snapshot succeeded but the file never appeared on "
+                f"disk (check the media mount and permissions): {path}",
+            )
+            return None
+
+        self._m_inc(camera_id, "captured")
+        self._snapshot_fail_streak.pop(camera_id, None)
+
+        # Register the file for retention NOW, while its existence is the only
+        # thing that matters. (A file that appears only after the poll window
+        # above returned None is deliberately left to the next restart's
+        # retention seed.) Deletion is deque-driven and the deque lives in
+        # memory, so any frame that missed registration leaked forever; tying
+        # registration to analysis completing meant every downstream drop path
+        # (all-error batches, summary timeouts, worker crashes, backlog drops,
+        # hold-buffer evictions) was a leak. A registered frame cannot be
+        # pruned while still awaiting analysis: the queue, hold buffer, and
+        # batch bound in-flight frames well below
+        # VIDEO_ANALYZER_SNAPSHOTS_TO_KEEP.
+        await self._prune_old_snapshots(camera_id, [path])
+
+        # --- Uniqueness gate: skip near-duplicate frames (forced for loops
+        # the event_select path started; opt-in with heartbeat otherwise) ---
+        try:
+            should_enqueue = await self._is_unique_enough(camera_id, path)
+        except (OSError, FileNotFoundError, ValueError):
+            should_enqueue = True  # fail-open
+
+        if not should_enqueue:
+            self._m_inc(camera_id, "skipped_duplicate")
+            LOGGER.debug("[%s] Skipping enqueue (near-duplicate): %s", camera_id, path)
+            return None
+
+        if hold_for_batch:
+            # Motion/recording loop owns this camera: hold the frame until
+            # the event ends so the whole window flushes as one batch,
+            # instead of the live worker analyzing (and notifying) per frame.
+            buffer = self._event_snapshot_buffers.setdefault(
+                camera_id, deque(maxlen=_QUEUE_MAXSIZE)
+            )
+            buffer.append(path)  # deque drops oldest when full
+        else:
+            queue = self._get_snapshot_queue(camera_id)
+            await put_with_backpressure(
+                queue, _SnapshotItem(path=path, enqueued=monotonic())
+            )
+        self._m_inc(camera_id, "enqueued")
+        LOGGER.debug(
+            "[%s] Enqueue t=%s held=%s %s",
+            camera_id,
+            dt_util.utcnow().isoformat(),
+            hold_for_batch,
+            path,
+        )
+        return path
+
+    async def _motion_snapshot_loop(self, camera_id: str) -> None:
+        try:
+            while True:
+                now = dt_util.utcnow()
+                await self._take_single_snapshot(camera_id, now, hold_for_batch=True)
+                await asyncio.sleep(VIDEO_ANALYZER_MOTION_SCAN_INTERVAL)
+        except asyncio.CancelledError:
+            LOGGER.debug("Snapshot loop cancelled for camera: %s", camera_id)
+
+    @callback
+    def _handle_motion_event(self, event: Event) -> None:
+        entity_id = event.data.get("entity_id")
+        if not entity_id or not entity_id.startswith("binary_sensor."):
+            return
+
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if new_state is None:
+            return
+
+        camera_id = self._resolve_camera_from_motion(entity_id)
+        if not camera_id:
+            return
+
+        if new_state.state == "on" and (old_state is None or old_state.state != "on"):
+            # If a recording-state loop is running, cancel it and promote to motion loop
+            # so the motion OFF event controls the lifecycle and queue flush.
+            rec_task = self._active_recording_cameras.pop(camera_id, None)
+            if rec_task and not rec_task.done():
+                rec_task.cancel()
+            if camera_id not in self._active_motion_cameras:
+                LOGGER.debug("Motion ON: Starting snapshot loop for %s", camera_id)
+                task = self._create_background_task(
+                    self._motion_snapshot_loop(camera_id),
+                    f"hga video motion snapshot loop {camera_id}",
+                )
+                self._active_motion_cameras[camera_id] = task
+            elif camera_id in self._event_select_owned:
+                # Motion sensor takes over an event_select-started loop: its
+                # OFF edge now owns the lifecycle, so retire the window timer
+                # instead of letting it cut the motion event short. The
+                # dedupe flag (_event_select_dedupe) deliberately survives
+                # the takeover: the underlying frames are still 600 s
+                # interval snapshots (issue #489).
+                LOGGER.debug("Motion ON: taking over event_select loop %s", camera_id)
+                self._event_select_owned.discard(camera_id)
+                self._event_select_window_started.pop(camera_id, None)
+                self._cancel_event_select_window(camera_id)
+
+        elif new_state.state == "off" and camera_id in self._active_motion_cameras:
+            LOGGER.debug("Motion OFF: Stopping snapshot loop for %s", camera_id)
+            # The motion OFF edge owns the lifecycle; retire any pending
+            # event_select window so it can't cut a later event short.
+            self._cancel_event_select_window(camera_id)
+            self._stop_motion_loop_and_flush(camera_id)
+
+    @callback
+    def _stop_motion_loop_and_flush(self, camera_id: str) -> None:
+        """
+        Cancel the camera's motion loop and flush its batch, if running.
+
+        When this window's own event recording is still being fetched, the
+        held snapshots are parked instead and flushed once the clip lands
+        (and displaces them) or RECORDING_FLUSH_GRACE_SEC passes: flushing
+        now would analyze and notify on the retained snapshot — on a battery
+        camera a frame from before the event — ahead of the clip.
+        """
+        closing = self._window_generation.get(camera_id, 0)
+        self._window_generation[camera_id] = closing + 1
+        self._event_select_owned.discard(camera_id)
+        self._event_select_dedupe.discard(camera_id)
+        self._event_select_window_started.pop(camera_id, None)
+        task = self._active_motion_cameras.pop(camera_id, None)
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        # Flush even when the loop crashed (task already done): frames it
+        # captured must not strand in the buffer or leak into the next
+        # event's batch. An empty flush is a no-op.
+        pending = self._pending_recordings(camera_id, closing)
+        if pending:
+            # Take everything now, as an immediate flush would: the next
+            # window reuses the camera's buffer, and the live queue keeps
+            # filling (recording-state polls resume) during the grace.
+            held = list(self._event_snapshot_buffers.pop(camera_id, []))
+            queue = self._snapshot_queues.get(camera_id)
+            if queue:
+                held.extend(self._drain_queue(queue))
+            self._deferred_flush[camera_id, closing] = held
+            LOGGER.debug(
+                "[%s] Window closed with its recording in flight; holding the "
+                "flush up to %.0f s",
+                camera_id,
+                RECORDING_FLUSH_GRACE_SEC,
+            )
+            flush = self._create_background_task(
+                self._flush_after_recordings(camera_id, closing, pending),
+                f"hga video deferred flush {camera_id}",
+            )
+            # Tracked so stop() cancels it through analysis, not only while
+            # it waits.
+            if isinstance(flush, asyncio.Task):
+                self._deferred_flush_tasks.add(flush)
+                flush.add_done_callback(self._deferred_flush_tasks.discard)
+            return
+        self._create_background_task(
+            self._process_snapshot_queue(camera_id),
+            f"hga video process motion queue {camera_id}",
+        )
+
+    async def _flush_after_recordings(
+        self, camera_id: str, generation: int, pending: list[asyncio.Task[Any]]
+    ) -> None:
+        """Flush a parked window once its recordings finish or the grace ends."""
+        try:
+            await asyncio.wait(pending, timeout=RECORDING_FLUSH_GRACE_SEC)
+        finally:
+            held = self._deferred_flush.pop((camera_id, generation), [])
+        if self._stopped:
+            return
+        await self._process_snapshot_queue(camera_id, held=held)
+
+    @callback
+    def _handle_event_select_change(self, event: Event) -> None:
+        """
+        Trigger the motion snapshot loop on ring-mqtt event_select changes.
+
+        Battery-powered Ring cameras publish a new eventId attribute on
+        select.*_event_select for every Ring event, while their motion binary
+        sensor may lag or never fire (issue #466). There is no corresponding
+        "off" signal, so the loop is ended by a fixed window that each new
+        eventId extends.
+        """
+        entity_id = event.data.get("entity_id")
+        if (
+            not entity_id
+            or not entity_id.startswith("select.")
+            or not entity_id.endswith(_EVENT_SELECT_SUFFIX)
+        ):
+            return
+
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if new_state is None or old_state is None:
+            # Entity creation/removal (e.g. HA startup) is not a Ring event.
+            return
+        if old_state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            # Retained-state replay: on HA startup or an MQTT broker/ring-mqtt
+            # reconnect the entity leaves unknown/unavailable carrying the
+            # eventId of the LAST event (possibly hours old). Treating that as
+            # a new event would start a spurious loop on every camera at once
+            # (the issue #460 flood shape).
+            return
+
+        new_event_id = new_state.attributes.get("eventId")
+        if not new_event_id or new_event_id == old_state.attributes.get("eventId"):
+            return
+
+        camera_id = self._resolve_camera_from_event_select(entity_id)
+        if not camera_id:
+            return
+
+        # If a recording-state loop is running, cancel it and promote to the
+        # motion loop, same as the binary-sensor motion path.
+        rec_task = self._active_recording_cameras.pop(camera_id, None)
+        if rec_task and not rec_task.done():
+            rec_task.cancel()
+
+        # An eventId is evidence this camera serves interval snapshots, so the
+        # dedupe requirement applies to the CURRENT loop even when the motion
+        # sensor started it first (motion-first arrival order otherwise
+        # bypasses forced dedupe for the whole 180 s motion window). Whenever
+        # the requirement NEWLY engages, drop stale hash history so the first
+        # frame of the window is always accepted (issue #489) — a hash left
+        # over from a prior event would otherwise reject every frame (forced
+        # mode has no heartbeat) and the window would analyze nothing.
+        if camera_id not in self._event_select_dedupe:
+            self._event_select_dedupe.add(camera_id)
+            self._last_hashes.pop(camera_id, None)
+
+        if camera_id not in self._active_motion_cameras:
+            LOGGER.debug(
+                "Event select %s: starting snapshot loop for %s",
+                entity_id,
+                camera_id,
+            )
+            task = self._create_background_task(
+                self._motion_snapshot_loop(camera_id),
+                f"hga video event_select snapshot loop {camera_id}",
+            )
+            self._active_motion_cameras[camera_id] = task
+            self._event_select_owned.add(camera_id)
+
+        # Read before the extension: at the window cap it flushes (bumping
+        # the generation), and the next window must not inherit this clip.
+        generation = self._window_generation.get(camera_id, 0)
+
+        # Only a loop this path started is subject to the window timer; a
+        # motion-sensor-owned loop keeps running until its OFF edge so the
+        # window can't truncate it mid-event.
+        if camera_id in self._event_select_owned:
+            self._extend_event_select_window(camera_id)
+
+        self._maybe_ingest_event_recording(
+            camera_id, entity_id, new_state, str(new_event_id), generation
+        )
+
+    @callback
+    def _extend_event_select_window(self, camera_id: str) -> None:
+        """
+        (Re)arm the timer that ends an event_select-triggered loop.
+
+        Total window length is capped so continuous eventId churn cannot
+        defer the flush (and grow the frame buffer) forever.
+        """
+        now = monotonic()
+        started = self._event_select_window_started.setdefault(camera_id, now)
+        remaining = VIDEO_ANALYZER_EVENT_SELECT_MAX_WINDOW - (now - started)
+        if remaining <= 0:
+            LOGGER.debug("Event select window cap reached for %s", camera_id)
+            self._cancel_event_select_window(camera_id)
+            self._stop_motion_loop_and_flush(camera_id)
+            return
+        self._cancel_event_select_window(camera_id)
+        self._event_select_window_cancels[camera_id] = async_call_later(
+            self.hass,
+            min(VIDEO_ANALYZER_EVENT_SELECT_WINDOW, remaining),
+            partial(self._close_event_select_window, camera_id),
+        )
+
+    @callback
+    def _cancel_event_select_window(self, camera_id: str) -> None:
+        """Cancel the camera's pending event_select window timer, if any."""
+        cancel = self._event_select_window_cancels.pop(camera_id, None)
+        if cancel:
+            cancel()
+
+    @callback
+    def _close_event_select_window(self, camera_id: str, _now: datetime) -> None:
+        """End the event_select window: stop the loop and flush the batch."""
+        LOGGER.debug("Event select window closed for %s", camera_id)
+        self._event_select_window_cancels.pop(camera_id, None)
+        self._stop_motion_loop_and_flush(camera_id)
+
+    # --- Event-recording ingest (issue #491) ---
+
+    @callback
+    def _maybe_ingest_event_recording(
+        self,
+        camera_id: str,
+        select_entity_id: str,
+        new_state: Any,
+        event_id: str,
+        generation: int | None = None,
+    ) -> None:
+        """
+        Schedule download + frame extraction of the event's recording.
+
+        Opt-in (CONF_VIDEO_ANALYZER_EVENT_RECORDING_ENABLED). A state without
+        a usable `recordingUrl` degrades silently to the snapshot path — that
+        is the no-subscription shape and is documented, not an error. Event
+        ids and URLs come off MQTT: an id that is not shaped like Ring's is
+        ignored (and never logged raw), the id never reaches a path, and the
+        URL is vetted in the task. Bookkeeping: one task per camera+event,
+        recently ingested ids are not fetched again, and a camera with
+        RECORDING_MAX_PENDING_PER_CAMERA ingests in flight drops the new one
+        as a counted failure rather than queueing without bound.
+        """
+        if not self.entry.runtime_data.options.get(
+            CONF_VIDEO_ANALYZER_EVENT_RECORDING_ENABLED, False
+        ):
+            return
+        if not is_valid_event_id(event_id):
+            LOGGER.debug("[%s] Ignoring event id of unexpected shape", camera_id)
+            return
+        url = recording_url_from_state(new_state)
+        if url is None:
+            LOGGER.debug(
+                "[%s] Event %s carries no recordingUrl; using snapshots only "
+                "(event recordings need a Ring Protect subscription)",
+                camera_id,
+                event_id,
+            )
+            return
+        key = f"{camera_id}:{event_id}"
+        recent = self._event_recording_recent.setdefault(camera_id, deque(maxlen=8))
+        if key in self._event_recording_tasks or event_id in recent:
+            return
+        prefix = f"{camera_id}:"
+        pending = sum(1 for k in self._event_recording_tasks if k.startswith(prefix))
+        if pending >= RECORDING_MAX_PENDING_PER_CAMERA:
+            self._record_recording_failure(
+                camera_id,
+                event_id,
+                f"{pending} recordings already in flight for this camera",
+            )
+            return
+        recent.append(event_id)
+        if generation is None:
+            generation = self._window_generation.get(camera_id, 0)
+        task = self._create_background_task(
+            self._ingest_event_recording(
+                camera_id, select_entity_id, event_id, url, dt_util.utcnow(), generation
+            ),
+            f"hga video event recording {key}",
+        )
+        self._event_recording_tasks[key] = task
+        self._event_recording_task_gen[key] = generation
+        task.add_done_callback(partial(self._on_event_recording_done, key))
+
+    def _on_event_recording_done(self, key: str, task: asyncio.Task[Any]) -> None:
+        """Forget a finished ingest task — only if the slot still holds it."""
+        if self._event_recording_tasks.get(key) is task:
+            self._event_recording_tasks.pop(key, None)
+            self._event_recording_task_gen.pop(key, None)
+
+    def _pending_recordings(
+        self, camera_id: str, generation: int
+    ) -> list[asyncio.Task[Any]]:
+        """Return the camera's unfinished ingests scheduled under generation."""
+        prefix = f"{camera_id}:"
+        return [
+            task
+            for key, task in self._event_recording_tasks.items()
+            if key.startswith(prefix)
+            and self._event_recording_task_gen.get(key) == generation
+            and not task.done()
+        ]
+
+    async def _resolve_ffmpeg(self) -> str | None:
+        """
+        Return the ffmpeg binary to run, or None (logged once) when absent.
+
+        The PATH probe is blocking, so it runs in the executor; its result is
+        cached per binary and re-probed hourly, so installing ffmpeg after
+        the warning takes effect without a reload.
+        """
+        binary = ffmpeg_binary(self.hass)
+        now = monotonic()
+        cached = self._event_recording_binary_ok.get(binary)
+        if cached is None or now - cached[1] >= _STALE_REREPORT_INTERVAL_SEC:
+            available = await self.hass.async_add_executor_job(ffmpeg_available, binary)
+            self._event_recording_binary_ok[binary] = (available, now)
+        else:
+            available = cached[0]
+        if available:
+            self._event_recording_ffmpeg_missing_logged = False
+            return binary
+        if not self._event_recording_ffmpeg_missing_logged:
+            self._event_recording_ffmpeg_missing_logged = True
+            LOGGER.warning(
+                "Event-recording analysis is enabled but the ffmpeg binary "
+                "(%s) was not found; falling back to snapshots. The official "
+                "Home Assistant image ships ffmpeg — on other installs, "
+                "install it or configure the ffmpeg integration's ffmpeg_bin",
+                binary,
+            )
+        return None
+
+    async def _ingest_event_recording(  # noqa: PLR0913
+        self,
+        camera_id: str,
+        select_entity_id: str,
+        event_id: str,
+        url: str,
+        started: datetime,
+        generation: int,
+    ) -> None:
+        """
+        Download the event MP4, extract frames, and hand them to the batch.
+
+        Bounded by RECORDING_INGEST_DEADLINE_SEC end to end. The work dir is a
+        mkdtemp under the camera's snapshot dir (the event id never names a
+        path) and is removed whatever happens; a dir orphaned by a crash is
+        swept by the next start's retention seed.
+        """
+        try:
+            async with asyncio.timeout(RECORDING_INGEST_DEADLINE_SEC):
+                await self._ingest_event_recording_bounded(
+                    camera_id, select_entity_id, event_id, url, started, generation
+                )
+        except TimeoutError:
+            self._record_recording_failure(
+                camera_id,
+                event_id,
+                f"ingest exceeded {RECORDING_INGEST_DEADLINE_SEC:.0f} s",
+            )
+
+    async def _ingest_event_recording_bounded(  # noqa: PLR0913
+        self,
+        camera_id: str,
+        select_entity_id: str,
+        event_id: str,
+        url: str,
+        started: datetime,
+        generation: int,
+    ) -> None:
+        binary = await self._resolve_ffmpeg()
+        if binary is None:
+            return
+        lock = self._event_recording_locks.setdefault(camera_id, asyncio.Lock())
+        async with lock, self._event_recording_sem:
+            if self._stopped:
+                return
+            snapshot_dir = await self._get_snapshot_dir(camera_id)
+            try:
+                work_dir = Path(
+                    await self.hass.async_add_executor_job(
+                        partial(
+                            tempfile.mkdtemp, prefix=EVENT_WORK_PREFIX, dir=snapshot_dir
+                        )
+                    )
+                )
+            except OSError as err:
+                self._record_recording_failure(
+                    camera_id, event_id, f"could not create work dir: {err}"
+                )
+                return
+            try:
+                clip = work_dir / "recording.mp4"
+                size = await self._download_recording_with_retry(
+                    select_entity_id, event_id, url, clip
+                )
+                frames = await extract_frames(binary, clip, work_dir)
+                kept = await self._stamp_recording_frames(
+                    camera_id, snapshot_dir, started, len(frames), thin_frames(frames)
+                )
+            except RecordingError as err:
+                self._record_recording_failure(camera_id, event_id, str(err))
+                return
+            except OSError as err:
+                self._record_recording_failure(
+                    camera_id, event_id, f"filesystem error: {err}"
+                )
+                return
+            finally:
+                # RuntimeError: the executor rejects jobs during HA shutdown;
+                # the next start's retention seed removes the dir instead.
+                with contextlib.suppress(RuntimeError):
+                    await self.hass.async_add_executor_job(
+                        partial(shutil.rmtree, work_dir, ignore_errors=True)
+                    )
+            LOGGER.debug(
+                "[%s] Event %s recording: %d bytes, %d frames extracted, %d kept",
+                camera_id,
+                event_id,
+                size,
+                len(frames),
+                len(kept),
+            )
+            await self._admit_recording_frames(camera_id, kept, generation)
+
+    def _current_recording_url(
+        self, select_entity_id: str, event_id: str
+    ) -> str | None:
+        """Return the entity's current recordingUrl if it still names this event."""
+        state = self.hass.states.get(select_entity_id)
+        if state is None or str(state.attributes.get("eventId")) != event_id:
+            return None
+        return recording_url_from_state(state)
+
+    async def _download_recording_with_retry(
+        self, select_entity_id: str, event_id: str, url: str, dest: Path
+    ) -> int:
+        """
+        Download with the not-ready backoff schedule; raise on final failure.
+
+        Before every attempt the URL is re-read from the entity while it still
+        names this event (ring-mqtt re-signs on fetch, so a fresh copy beats
+        the one captured at trigger time); once the entity has moved on to a
+        newer event the trigger-time URL — signed for this event — is used.
+        Every attempt vets the host before fetching.
+        """
+        client = self._httpx_client or get_async_client(self.hass)
+        last: RecordingNotReadyError | None = None
+        for delay in RECORDING_FETCH_BACKOFF_SEC:
+            if delay:
+                await asyncio.sleep(delay)
+            attempt_url = self._current_recording_url(select_entity_id, event_id) or url
+            try:
+                await assert_public_host(attempt_url)
+                return await download_recording(client, attempt_url, dest)
+            except RecordingNotReadyError as err:
+                last = err
+                LOGGER.debug("Recording not ready (%s); retrying", err)
+        msg = f"recording never became fetchable ({last})"
+        raise RecordingError(msg)
+
+    async def _stamp_recording_frames(
+        self,
+        camera_id: str,
+        snapshot_dir: Path,
+        started: datetime,
+        clip_seconds: int,
+        kept: list[tuple[int, Path]],
+    ) -> list[Path]:
+        """
+        Move kept frames into the snapshot dir under analyzer-owned names.
+
+        The clip had already ended when ring-mqtt published its eventId, so
+        frame N of a C-second clip is stamped `started - (C - N)` seconds:
+        every clip frame predates the trigger and therefore sorts ahead of
+        any snapshot the window captured afterwards. Placement never
+        overwrites: if the name is taken (a snapshot in that second, or a
+        second event in the same second) the stamp is bumped by one second
+        until free. Whatever was placed is registered for retention even if
+        a later move fails.
+        """
+        out: list[Path] = []
+        try:
+            for second, src in kept:
+                base = started - timedelta(seconds=max(clip_seconds - second, 0))
+                dst = await self.hass.async_add_executor_job(
+                    _place_recording_frame, src, snapshot_dir, base, second
+                )
+                out.append(dst)
+        finally:
+            if out:
+                await self._prune_old_snapshots(camera_id, out)
+        return out
+
+    async def _admit_recording_frames(
+        self, camera_id: str, frames: list[Path], generation: int
+    ) -> None:
+        """
+        Put recording frames where their own window will analyze them.
+
+        While the window that opened for this event is still running (same
+        generation) or is parked waiting for this clip (a deferred flush),
+        the snapshots it holds were captured BEFORE the clip landed — on a
+        battery camera that is the retained interval snapshot, which
+        predates the event — so they are dropped (already registered for
+        retention, so nothing leaks) and the clip frames take their place.
+        Frames from an earlier recording in the same window are kept: two
+        events close together must not erase each other. Once that window
+        has flushed — or a later window is running — the frames are
+        analyzed as their own ordered batch, never via the live queue, whose
+        backlog rule would keep only the newest of them.
+
+        Dedupe runs among the clip frames alone: the hash history holds the
+        snapshots the clip is about to displace, and a person seen in both
+        would otherwise be rejected from the clip and then deleted with the
+        snapshot. The clip's hashes live in a local history — never the
+        camera's, which a later window may own by the time this clip lands —
+        and the clip is always deduped, whether or not the window's forced
+        dedupe is still engaged. At least one frame is always admitted.
+        Afterwards a still running window's history holds the clip hashes AND
+        the displaced snapshots' hashes (bounded): a battery camera keeps
+        re-serving the same frozen frame, and against clip hashes alone every
+        re-capture would pass the gate and join the batch as if it were
+        current (issue #491 field report: a stale person blended into a
+        passing car's clip).
+        """
+        if self._stopped:
+            return
+        clip_hashes: deque[int] = deque(maxlen=_UNIQUENESS_HISTORY)
+        admitted: list[Path] = []
+        for path in frames:
+            try:
+                unique = await self._is_unique_enough(
+                    camera_id, path, history=clip_hashes
+                )
+            except (OSError, ValueError):
+                unique = True
+            if unique:
+                admitted.append(path)
+            else:
+                self._m_inc(camera_id, "skipped_duplicate")
+        if not admitted and frames:
+            admitted.append(frames[0])
+        same_window = (
+            camera_id in self._active_motion_cameras
+            and self._window_generation.get(camera_id, 0) == generation
+        )
+        parked = self._deferred_flush.get((camera_id, generation))
+        if same_window:
+            buffer = self._event_snapshot_buffers.setdefault(
+                camera_id, deque(maxlen=_QUEUE_MAXSIZE)
+            )
+            kept = self._displace_snapshots(camera_id, list(buffer))
+            buffer.clear()
+            buffer.extend(kept + admitted)
+            # The window's own history (its displaced snapshots) goes on the
+            # right so later accepted captures push the clip's out first.
+            window = list(self._last_hashes.get(camera_id, ()))
+            self._last_hashes[camera_id] = deque(
+                [*clip_hashes, *window[-_UNIQUENESS_HISTORY:]],
+                maxlen=2 * _UNIQUENESS_HISTORY,
+            )
+        elif parked is not None:
+            parked[:] = self._displace_snapshots(camera_id, parked) + admitted
+        else:
+            self._create_background_task(
+                self._analyze_and_finalize(camera_id, order_batch(admitted)),
+                f"hga video event recording batch {camera_id}",
+            )
+        self._m_inc(camera_id, "recording_frames", len(admitted))
+        self._m_inc(camera_id, "enqueued", len(admitted))
+
+    def _displace_snapshots(self, camera_id: str, held: list[Path]) -> list[Path]:
+        """Return `held` without its snapshots; earlier clip frames stay."""
+        keep = [p for p in held if _RECORDING_FRAME_RE.fullmatch(p.name)]
+        dropped = len(held) - len(keep)
+        if dropped:
+            self._m_inc(camera_id, "replaced_by_recording", dropped)
+            LOGGER.debug(
+                "[%s] Dropping %d pre-recording snapshot(s) from the batch",
+                camera_id,
+                dropped,
+            )
+        return keep
+
+    def _record_recording_failure(
+        self, camera_id: str, event_id: str, reason: str
+    ) -> None:
+        """Count a failed recording ingest; WARNING at most hourly per camera."""
+        self._m_inc(camera_id, "recording_failures")
+        now = monotonic()
+        last = self._event_recording_warned_at.get(camera_id)
+        level = (
+            logging.WARNING
+            if last is None or now - last >= _STALE_REREPORT_INTERVAL_SEC
+            else logging.DEBUG
+        )
+        if level == logging.WARNING:
+            self._event_recording_warned_at[camera_id] = now
+        LOGGER.log(
+            level,
+            "[%s] Event %s recording could not be analyzed (%s); the snapshot "
+            "window stands in for it",
+            camera_id,
+            event_id,
+            reason,
+        )
+
+    @callback
+    def _get_recording_cameras(self) -> list[str]:
+        return [
+            state.entity_id
+            for state in self.hass.states.async_all("camera")
+            if state.state == "recording"
+        ]
+
+    async def _take_snapshots_from_recording_cameras(self, now: datetime) -> None:
+        for camera_id in self._get_recording_cameras():
+            if (
+                camera_id in self._active_motion_cameras
+                or camera_id in self._active_recording_cameras
+            ):
+                LOGGER.debug(
+                    "[%s] Skipping recording poll — loop already active.", camera_id
+                )
+                continue
+            try:
+                path = await self._take_single_snapshot(camera_id, now)
+                if path:
+                    LOGGER.debug(
+                        "[%s] Enqueued snapshot for processing: %s", camera_id, path
+                    )
+            except HomeAssistantError:
+                LOGGER.exception("[%s] Failed to take/enqueue snapshot.", camera_id)
+
+    @callback
+    def _handle_camera_recording_state_change(self, event: Event) -> None:
+        entity_id = event.data.get("entity_id")
+        if not entity_id or not entity_id.startswith("camera."):
+            return
+
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        if old_state is None or new_state is None:
+            return
+
+        was_recording = old_state.state == "recording"
+        is_recording = new_state.state == "recording"
+
+        if not was_recording and is_recording:
+            # Camera entered recording state with no associated motion binary sensor.
+            if (
+                entity_id not in self._active_motion_cameras
+                and entity_id not in self._active_recording_cameras
+            ):
+                LOGGER.debug(
+                    "[%s] Recording started: starting snapshot loop", entity_id
+                )
+                task = self._create_background_task(
+                    self._motion_snapshot_loop(entity_id),
+                    f"hga video recording snapshot loop {entity_id}",
+                )
+                self._active_recording_cameras[entity_id] = task
+        elif was_recording and not is_recording:
+            task = self._active_recording_cameras.pop(entity_id, None)
+            if task and not task.done():
+                task.cancel()
+            # A motion/event_select loop owns the camera's lifecycle; don't
+            # flush its held frames mid-window when recording stops early.
+            if entity_id not in self._active_motion_cameras:
+                self._create_background_task(
+                    self._process_snapshot_queue(entity_id),
+                    f"hga video process recording queue {entity_id}",
+                )
+
+    def start(self) -> None:
+        """Start the video analyzer."""
+        # A deferred start can still be in flight when the entry unloads.
+        # async_unload_entry() calls stop() and then awaits several more
+        # times, and Home Assistant runs the entry's on-unload callbacks
+        # only after it returns - so EVENT_HOMEASSISTANT_STARTED landing in
+        # one of those windows would resurrect this instance moments before
+        # HA deletes its runtime_data, leaving a live capture loop and a
+        # retention deque with deletion power over the replacement entry's
+        # snapshot files. The listener cancel cannot close that window; the
+        # latch can, because it is checked here rather than at dispatch.
+        if self._stopped:
+            LOGGER.debug("VideoAnalyzer stopped; refusing to start.")
+            return
+
+        if hasattr(self, "_cancel_track"):
+            LOGGER.warning("VideoAnalyzer already started.")
+            return
+
+        # Build the video model semaphore now that runtime_data.options is set.
+        sem_size = max(
+            1,
+            int(
+                self.entry.runtime_data.options.get(
+                    CONF_VIDEO_MODEL_SEMAPHORE, RECOMMENDED_VIDEO_MODEL_SEMAPHORE
+                )
+            ),
+        )
+        self._video_model_sem = asyncio.Semaphore(sem_size)
+        LOGGER.info(
+            "subsystem=video_analyzer video_model_semaphore=%d uncontended=%s",
+            sem_size,
+            self.entry.runtime_data.options.get(CONF_MODEL_PROVIDER_UNCONTENDED, False),
+        )
+
+        # Create a reusable httpx client for face API
+        if self._httpx_client is None:
+            self._httpx_client = get_async_client(self.hass)
+
+        # Fold snapshot files that predate this start into retention before
+        # they can be orphaned (deques are in-memory; issue: restart leak).
+        self._retention_seed_task = self.hass.async_create_task(
+            self._seed_retention_from_disk(), "hga video retention seed"
+        )
+
+        self._cancel_track = async_track_time_interval(
+            self.hass,
+            self._take_snapshots_from_recording_cameras,
+            timedelta(seconds=VIDEO_ANALYZER_SCAN_INTERVAL),
+        )
+
+        self._cancel_listen = self.hass.bus.async_listen(
+            "state_changed", self._handle_camera_recording_state_change
+        )
+
+        if VIDEO_ANALYZER_TRIGGER_ON_MOTION:
+            self._cancel_motion_listen = self.hass.bus.async_listen(
+                "state_changed", self._handle_motion_event
+            )
+            self._cancel_event_select_listen = self.hass.bus.async_listen(
+                "state_changed", self._handle_event_select_change
+            )
+
+        # hourly metrics reporting
+        self._metrics_job_cancel = async_track_time_interval(
+            self.hass,
+            self._metrics_flush_report,
+            timedelta(seconds=_METRICS_REPORT_INTERVAL_SEC),
+        )
+
+        LOGGER.info("Video analyzer started.")
+
+    def _unsubscribe(self, attr: str, what: str) -> None:
+        """Invoke a stored listener-cancel callback if it was ever set."""
+        cancel = getattr(self, attr, None)
+        if cancel is None:
+            return
+        try:
+            cancel()
+        except HomeAssistantError:
+            LOGGER.warning("Error unsubscribing %s", what, exc_info=True)
+
+    async def stop(self) -> None:
+        """Stop the video analyzer."""
+        # Latch before the not-started early return, not after: the entry
+        # that never started is exactly the one whose deferred start is
+        # still armed.
+        self._stopped = True
+
+        if not hasattr(self, "_cancel_track"):
+            LOGGER.warning("VideoAnalyzer not started.")
+            return
+
+        tasks_to_await: list[asyncio.Task[Any]] = []
+
+        if self._retention_seed_task is not None:
+            self._retention_seed_task.cancel()
+            tasks_to_await.append(self._retention_seed_task)
+            self._retention_seed_task = None
+
+        for task_dict in (
+            self._active_motion_cameras,
+            self._active_recording_cameras,
+            self._active_queue_tasks,
+            self._event_recording_tasks,
+        ):
+            for task in task_dict.values():
+                task.cancel()
+                tasks_to_await.append(task)
+            task_dict.clear()
+        for task in self._deferred_flush_tasks:
+            task.cancel()
+            tasks_to_await.append(task)
+        self._deferred_flush_tasks.clear()
+
+        self._event_snapshot_buffers.clear()
+
+        for cancel in self._event_select_window_cancels.values():
+            cancel()
+        self._event_select_window_cancels.clear()
+        self._event_select_owned.clear()
+        self._event_select_dedupe.clear()
+        self._event_select_window_started.clear()
+        self._event_recording_recent.clear()
+        self._event_recording_locks.clear()
+        self._event_recording_warned_at.clear()
+        self._event_recording_binary_ok.clear()
+        self._window_generation.clear()
+        self._event_recording_task_gen.clear()
+        self._deferred_flush.clear()
+        self._stale_reported.clear()
+        self._stale_reported_at.clear()
+
+        # Orphan the semaphore reference; tasks already cancelled above will
+        # absorb CancelledError and exit — not released by this None assignment.
+        self._video_model_sem = None
+
+        self._unsubscribe("_cancel_track", "time interval listener")
+        self._unsubscribe("_cancel_listen", "recording state listener")
+        self._unsubscribe("_cancel_motion_listen", "motion event listener")
+        self._unsubscribe("_cancel_event_select_listen", "event_select listener")
+
+        if tasks_to_await:
+            _, pending = await asyncio.wait(tasks_to_await, timeout=5)
+            for task in pending:
+                LOGGER.warning("Task did not cancel in time: %s", task)
+
+        # Shared Home Assistant httpx client is closed by Home Assistant.
+        self._httpx_client = None
+
+        # cancel hourly metrics reporting
+        if self._metrics_job_cancel is not None:
+            try:
+                self._metrics_job_cancel()
+            except HomeAssistantError:
+                LOGGER.warning("Error unsubscribing metrics reporter", exc_info=True)
+            finally:
+                self._metrics_job_cancel = None
+
+        LOGGER.info("Video analyzer stopped.")
+
+    def is_running(self) -> bool:
+        """Check if the video analyzer is running."""
+        return hasattr(self, "_cancel_track") and hasattr(self, "_cancel_listen")

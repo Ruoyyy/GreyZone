@@ -1,0 +1,668 @@
+# Constants Reference
+
+This document covers the named constants that affect integration behaviour, organized by subsystem. It tracks all `RECOMMENDED_*` defaults from `custom_components/home_generative_agent/const.py` and the most relevant module-level tuning knobs; see the source file directly for the authoritative list. Module-level tuning constants that live outside `const.py` are documented in the [Module Tuning Constants](#module-tuning-constants) section.
+
+**Two tiers:**
+- **UI-configurable** — exposed in the HA config/options flow; `const.py` defines the default (`RECOMMENDED_*`). Change these in the UI without touching code.
+- **Code-only** — no UI entry; change by editing the source file directly and reloading the integration.
+
+---
+
+## Database
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `RECOMMENDED_DB_USERNAME` | `ha_user` | PostgreSQL username |
+| `RECOMMENDED_DB_PASSWORD` | `ha_password` | PostgreSQL password |
+| `RECOMMENDED_DB_HOST` | `localhost` | PostgreSQL host |
+| `RECOMMENDED_DB_PORT` | `5432` | PostgreSQL port |
+| `RECOMMENDED_DB_NAME` | `ha_db` | PostgreSQL database name |
+| `RECOMMENDED_DB_PARAMS` | `[{"key": "sslmode", "value": "disable"}]` | Extra connection parameters |
+
+---
+
+## Chat Model
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `RECOMMENDED_CHAT_MODEL_PROVIDER` | `ollama` | Default provider for conversation |
+| `RECOMMENDED_OLLAMA_CHAT_MODEL` | `gpt-oss` | Ollama chat model |
+| `RECOMMENDED_OPENAI_CHAT_MODEL` | `gpt-5` | OpenAI chat model |
+| `RECOMMENDED_GEMINI_CHAT_MODEL` | `gemini-3.5-flash-lite` | Gemini chat model |
+| `RECOMMENDED_ANTHROPIC_CHAT_MODEL` | `claude-sonnet-4-6` | Anthropic chat model |
+| `RECOMMENDED_OPENAI_COMPATIBLE_CHAT_MODEL` | `gpt-4o` | OpenAI-compatible chat model |
+| `RECOMMENDED_CHAT_MODEL_TEMPERATURE` | `0.2` | Sampling temperature for chat responses. Gemini 3 models replace a still-default `0.2` with `1.0` (see `GEMINI_3_RECOMMENDED_TEMPERATURE`) |
+| `RECOMMENDED_OLLAMA_CHAT_KEEPALIVE` | `300` (s) | Seconds to keep Ollama chat model loaded between requests |
+| `RECOMMENDED_OLLAMA_REASONING` | `False` | Enable extended reasoning mode for supported Ollama models |
+
+**Code-only** (cannot be changed from the UI):
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `CHAT_MODEL_TOP_P` | `const.py` | `1.0` | nucleus sampling p for chat |
+| `GEMINI_3_RECOMMENDED_TEMPERATURE` | `const.py` | `1.0` | Temperature bound to Gemini 3-family models (all features) when the feature temperature is still the recommended default; `top_p` is left unset in that case. An explicitly customized temperature is honored, with a logged warning |
+| `CHAT_MODEL_MAX_TOKENS` | `const.py` | `None` | Ollama max tokens. `None` is dropped by langchain-ollama/ollama, so the server applies its own default (local: fill-context; Cloud: model default). Was `-2`, rejected by Ollama Cloud (issue #614). |
+| `CHAT_MODEL_REPEAT_PENALTY` | `const.py` | `1.05` | Ollama repeat penalty |
+| `OLLAMA_GPT_EFFORT` | `const.py` | `"low"` | Effort hint for `gpt-oss` reasoning tag |
+| `LANGCHAIN_LOGGING_LEVEL` | `const.py` | `"disable"` | LangChain debug verbosity (`disable`, `verbose`, `debug`) |
+
+**Supported model lists** (defines what appears in the UI dropdowns):
+
+| Constant | Allowed values |
+|---|---|
+| `CHAT_MODEL_OLLAMA_SUPPORTED` | `gpt-oss`, `qwen2.5:32b`, `qwen3:32b`, `qwen3:8b` |
+| `CHAT_MODEL_OPENAI_SUPPORTED` | `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-4o`, `gpt-4.1`, `o4-mini` |
+| `CHAT_MODEL_GEMINI_SUPPORTED` | `gemini-3.7-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` |
+| `CHAT_MODEL_ANTHROPIC_SUPPORTED` | `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` |
+
+---
+
+## Vision Model (VLM)
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `RECOMMENDED_VLM_PROVIDER` | `ollama` | Default provider for image/camera analysis |
+| `RECOMMENDED_OLLAMA_VLM` | `qwen3-vl:8b` | Ollama VLM model |
+| `RECOMMENDED_OPENAI_VLM` | `gpt-5-nano` | OpenAI VLM model |
+| `RECOMMENDED_GEMINI_VLM` | `gemini-3.5-flash-lite` | Gemini VLM model |
+| `RECOMMENDED_ANTHROPIC_VLM` | `claude-sonnet-4-6` | Anthropic VLM model |
+| `RECOMMENDED_OPENAI_COMPATIBLE_VLM` | `gpt-4o` | OpenAI-compatible VLM model |
+| `RECOMMENDED_VLM_TEMPERATURE` | `0.2` | Sampling temperature for vision responses. Gemini 3 models replace a still-default `0.2` with `1.0` |
+| `RECOMMENDED_OLLAMA_VLM_KEEPALIVE` | `300` (s) | Seconds to keep Ollama VLM loaded |
+| `RECOMMENDED_VLM_RESPONSE_LANGUAGE` | `""` (empty) | Language for VLM camera descriptions; empty = English. The `Scene unchanged.` sentinel always stays in English |
+| `RECOMMENDED_VLM_PROMPT_EXTRA` | `""` (empty) | Extra instructions appended to the VLM system prompt; never replaces built-in rules |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `VLM_TOP_P` | `const.py` | `1.0` | Nucleus sampling p for VLM |
+| `VLM_NUM_PREDICT` | `const.py` | `None` | Ollama token budget for agent image analysis. `None` lets the server apply its own default. Was `-2`, rejected by Ollama Cloud (issue #614). |
+| `VIDEO_VLM_NUM_PREDICT` | `const.py` | `256` | Token budget for proactive video frame descriptions. Capped intentionally to prevent video from monopolizing context. |
+| `VLM_REPEAT_PENALTY` | `const.py` | `1.05` | Ollama repeat penalty |
+| `VLM_MIRO_STAT` | `const.py` | `0` | Ollama mirostat setting |
+| `VLM_IMAGE_WIDTH` | `const.py` | `1920` | Image resize width before sending to VLM |
+| `VLM_IMAGE_HEIGHT` | `const.py` | `1080` | Image resize height before sending to VLM |
+
+**Supported model lists:**
+
+| Constant | Allowed values |
+|---|---|
+| `VLM_OLLAMA_SUPPORTED` | `qwen2.5vl:7b`, `qwen3-vl:8b`, `gemma3:4b` |
+| `VLM_OPENAI_SUPPORTED` | `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-nano` |
+| `VLM_GEMINI_SUPPORTED` | `gemini-3.7-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` |
+| `VLM_ANTHROPIC_SUPPORTED` | `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` |
+
+---
+
+## Summarization Model
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `RECOMMENDED_SUMMARIZATION_MODEL_PROVIDER` | `ollama` | Default provider for context summarization |
+| `RECOMMENDED_OLLAMA_SUMMARIZATION_MODEL` | `qwen3:8b` | Ollama summarization model |
+| `RECOMMENDED_OPENAI_SUMMARIZATION_MODEL` | `gpt-5-nano` | OpenAI summarization model |
+| `RECOMMENDED_GEMINI_SUMMARIZATION_MODEL` | `gemini-3.5-flash-lite` | Gemini summarization model |
+| `RECOMMENDED_ANTHROPIC_SUMMARIZATION_MODEL` | `claude-haiku-4-5-20251001` | Anthropic summarization model |
+| `RECOMMENDED_OPENAI_COMPATIBLE_SUMMARIZATION_MODEL` | `gpt-4o` | OpenAI-compatible summarization model |
+| `RECOMMENDED_SUMMARIZATION_MODEL_TEMPERATURE` | `0.2` | Sampling temperature for summaries. Gemini 3 models replace a still-default `0.2` with `1.0` |
+| `RECOMMENDED_OLLAMA_SUMMARIZATION_KEEPALIVE` | `300` (s) | Seconds to keep Ollama summarization model loaded |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `SUMMARIZATION_MODEL_TOP_P` | `const.py` | `1.0` | Nucleus sampling p |
+| `SUMMARIZATION_MODEL_PREDICT` | `const.py` | `None` | Ollama token budget for conversation summaries. `None` lets the server apply its own default. Was `-2`, rejected by Ollama Cloud (issue #614). |
+| `VIDEO_SUMMARY_NUM_PREDICT` | `const.py` | `128` | Token budget for video batch summaries. Capped to prevent video from blocking other callers. |
+| `SUMMARIZATION_MODEL_REPEAT_PENALTY` | `const.py` | `1.05` | Ollama repeat penalty |
+| `SUMMARIZATION_MIRO_STAT` | `const.py` | `0` | Ollama mirostat setting |
+
+**Supported model lists:**
+
+| Constant | Allowed values |
+|---|---|
+| `SUMMARIZATION_MODEL_OLLAMA_SUPPORTED` | `qwen3:1.7b`, `qwen3:8b` |
+| `SUMMARIZATION_MODEL_OPENAI_SUPPORTED` | `gpt-5-nano`, `gpt-4.1`, `gpt-4.1-nano` |
+| `SUMMARIZATION_MODEL_GEMINI_SUPPORTED` | `gemini-3.7-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` |
+| `SUMMARIZATION_MODEL_ANTHROPIC_SUPPORTED` | `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` |
+
+---
+
+## Embeddings
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `RECOMMENDED_EMBEDDING_MODEL_PROVIDER` | `ollama` | Default provider for embeddings |
+| `RECOMMENDED_OLLAMA_EMBEDDING_MODEL` | `mxbai-embed-large` | Ollama embedding model |
+| `RECOMMENDED_OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model |
+| `RECOMMENDED_GEMINI_EMBEDDING_MODEL` | `gemini-embedding-001` | Gemini embedding model |
+| `RECOMMENDED_OPENAI_COMPATIBLE_EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI-compatible embedding model |
+| `RECOMMENDED_OPENAI_COMPATIBLE_EMBEDDING_DIMS` | `768` | Vector dimensions for OpenAI-compatible embedding models |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `EMBEDDING_MODEL_DIMS` | `const.py` | `1024` | Default vector dimensions for Ollama/OpenAI/Gemini embeddings |
+| `EMBEDDING_MODEL_CTX` | `const.py` | `512` | Maximum input token length for embedding queries |
+| `EMBEDDING_INDEX_TEXT_MAX_CHARS` | `agent/rag_embedding_text.py` | `1200` | Maximum characters embedded per vector-store content row (tool index) |
+
+**Supported model lists:**
+
+| Constant | Allowed values |
+|---|---|
+| `EMBEDDING_MODEL_OLLAMA_SUPPORTED` | `mxbai-embed-large` |
+| `EMBEDDING_MODEL_OPENAI_SUPPORTED` | `text-embedding-3-large`, `text-embedding-3-small` |
+| `EMBEDDING_MODEL_GEMINI_SUPPORTED` | `gemini-embedding-001` |
+
+---
+
+## Ollama Global Options
+
+**File:** `const.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `RECOMMENDED_OLLAMA_URL` | `http://localhost:11434` | Default Ollama server URL (UI-configurable); also the initial value for the three per-category URL overrides below |
+| `RECOMMENDED_OLLAMA_CHAT_URL` | `http://localhost:11434` | Ollama server URL for the chat model (UI-configurable; overrides `RECOMMENDED_OLLAMA_URL` for chat only) |
+| `RECOMMENDED_OLLAMA_VLM_URL` | `http://localhost:11434` | Ollama server URL for the VLM (UI-configurable; lets VLM traffic target a separate server) |
+| `RECOMMENDED_OLLAMA_SUMMARIZATION_URL` | `http://localhost:11434` | Ollama server URL for the summarization model (UI-configurable; lets summarization traffic target a separate server) |
+| `RECOMMENDED_OLLAMA_CONTEXT_SIZE` | `32000` | Context window size passed to Ollama models |
+| `KEEPALIVE_MIN_SECONDS` | `0` | Minimum allowable keepalive (0 = unload immediately) |
+| `KEEPALIVE_MAX_SECONDS` | `900` | Maximum allowable keepalive (15 minutes) |
+| `KEEPALIVE_SENTINEL` | `-1` | Special value meaning "never unload" |
+| `OLLAMA_EXACT_TOKEN_COUNT` | `False` | Use exact token counting for context trimming. `False` = fast approximate counting. Enable only if trim precision matters more than latency. |
+
+---
+
+## Context Management
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_MANAGE_CONTEXT_WITH_TOKENS` | `manage_context_with_tokens` | `"true"` | `"true"` = trim by token count; `"false"` = trim by message count |
+| `RECOMMENDED_MAX_TOKENS_IN_CONTEXT` | `max_tokens_in_context` | `32000` | Token ceiling before trimming. Should be ≤ the Ollama model's context size. |
+| `RECOMMENDED_MAX_MESSAGES_IN_CONTEXT` | `max_messages_in_context` | `60` | Message count ceiling (used when token-based trimming is disabled) |
+
+---
+
+## Tool Retrieval (RAG)
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_TOOL_RETRIEVAL_LIMIT` | `tool_retrieval_limit` | `5` | Maximum tools injected into the agent's context per turn. Raise if the agent misses tools on multi-step requests; lower to reduce prompt size. |
+| `RECOMMENDED_TOOL_RELEVANCE_THRESHOLD` | `tool_relevance_threshold` | `0.15` | Cosine similarity cutoff. Lower to include more tools; raise to tighten selectivity. |
+| `CONF_TOOL_EXCLUSIONS` | `tool_exclusions` | *(unset)* | Per-API excluded tool names, `{api_id: [tool_name, ...]}`. Subtractive, with no `RECOMMENDED_` default on purpose: an API absent from the map exposes all its tools, so "unset" is the only spelling of "exclude nothing" — the pre-feature behaviour, and the reason a tool a server adds later is available without revisiting the form. |
+| `CONF_TOOL_INCLUSIONS` | `tool_inclusions` | *(unset)* | Per-API always-included tool names, same `{api_id: [tool_name, ...]}` shape. Additive: every listed tool is appended after vector retrieval, outside the retrieval limit, so general-purpose tools (e.g. web search) stay available on queries their embedding never ranks. An exclusion always beats an inclusion. |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `ACTUATION_KEYWORDS_REGEX` | `const.py` | (regex) | Keywords that force-attach entity control tools regardless of similarity score. Prevents the agent from missing control tools when the user issues a command verb. |
+| `TOOL_KEY_SEP` | `agent/helpers.py` | `::` | Separator joining an API id to a tool name in a composite tool key. Shared by `tool_index_key` and `split_tool_index_key` so the join and the split cannot drift; the options form round-trips these keys through its picker values, so a one-sided change would void every stored exclusion. Not escaped — see the delimiter-safe-keys entry in TODOS.md. |
+| `TOOL_TEXT_MAX_LEN` | `agent/helpers.py` | `120` | Length cap applied by `sanitize_tool_text` to any rendered tool string. Long enough for real MCP tool names, short enough that one hostile name cannot flood a log line or a form label. Applied before the per-character pass, so the work is bounded rather than just the result. |
+| `AUTOMATION_INTENT_MARKERS_REGEX` | `const.py` | (regex) | Standalone automation-intent vocabulary ("automate", "remind me", recurring schedules like "every 30 minutes") that force-binds the `add_automation` tool during retrieval. English-only; non-matching languages fall back to similarity ranking. |
+| `AUTOMATION_TRIGGER_CLAUSE_REGEX` | `const.py` | (regex) | Trigger-clause words (when/whenever/always/if). Combined with an action verb it signals conditional-actuation automation intent ("turn on the porch light when motion is detected"). |
+| `AUTOMATION_ACTION_KEYWORDS_REGEX` | `const.py` | (regex) | Action verbs for the conditional-actuation signal. Mirrors `ACTUATION_KEYWORDS_REGEX` plus notification verbs (notify, tell, warn, text); the two must stay in sync when verbs are added. |
+| `HISTORY_INTENT_REGEX` | `const.py` | (regex) | Past-state question signals ("when did", "since when", "how many times", "how long has", "last time", "history", a span such as "in the last hour" or "past 24 hours", or a past-tense auxiliary and a time reference such as "today", "last week" or "at 8 pm" in the same sentence, either order) that force-bind the `get_entity_history` tool during retrieval, outside the retrieval limit. English-only; non-matching languages fall back to similarity ranking. |
+| `_HISTORY_CONTEXT_HUMAN_TURNS` | `agent/graph.py` | `2` | Trailing human turns checked for history context (a history question or a `get_entity_history` call), so a bare follow-up ("and yesterday?") keeps the history tool bound. |
+| `_MAX_INTENT_SCAN_CHARS` | `agent/graph.py` | `20000` | Cap on message characters scanned by the intent regexes so a pathologically long chat message cannot stall the event loop. |
+| `_AUTOMATION_CONTEXT_HUMAN_TURNS` | `agent/graph.py` | `3` | Trailing human turns checked for automation-creation context, so short follow-ups ("yes") keep `add_automation` bound. |
+| `_LC_TOOL_TIMEOUT_S` | `agent/graph.py` | `30.0` (s) | Per-tool execution timeout. Tools that do not return within this window are cancelled and the agent receives an error. Affects VLM and any slow external tool. |
+| `_TOOL_INDEX_DELTA_TIMEOUT_S` | `conversation.py` | `30.0` (s) | Timeout on the per-turn tool-index top-up write (newly discovered device-gated or MCP tools). A stalled store write gives up instead of hanging the voice turn; the existing index keeps serving and the next turn retries. |
+
+---
+
+## Video Analyzer
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_VIDEO_ANALYZER_MODE` | `video_analyzer_mode` | `disable` | Operating mode: `disable`, `notify_on_anomaly`, or `always_notify` |
+| `RECOMMENDED_VIDEO_MODEL_SEMAPHORE` | `video_model_semaphore` | `1` | Concurrent VLM + summary model calls per integration entry. Increase only if the GPU server has spare capacity. |
+| `RECOMMENDED_MODEL_PROVIDER_UNCONTENDED` | `model_provider_uncontended` | `False` | Bypass all local GPU gates (video semaphore, video foreground session, Sentinel deferral) for dedicated high-capacity servers. |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `VIDEO_ANALYZER_SCAN_INTERVAL` | `const.py` | `1.5` (s) | Queue polling interval for the video analysis loop |
+| `VIDEO_ANALYZER_SNAPSHOT_ROOT` | `const.py` | `/media/snapshots` | Root directory for saved camera snapshots |
+| `VIDEO_ANALYZER_TIME_OFFSET` | `const.py` | `15` (min) | Lookback window for fetching recent camera activity when building a video batch |
+| `VIDEO_ANALYZER_CAPTION_DEDUPE_WINDOW_SEC` | `const.py` | `1800` (s, 30 min) | Caption deduplication window. A caption of a real subject in action is suppressed when a match at or above the similarity threshold was sent as a notification within this window, and notifies again otherwise. Artifact captions within this window are suppressed even when the vector score is below threshold. |
+| `VIDEO_ANALYZER_SIMILARITY_THRESHOLD` | `const.py` | `0.85` | Cosine similarity threshold for caption deduplication. Captions above this score are considered duplicates and suppressed. |
+| `RECOMMENDED_VIDEO_ANALYZER_NOTIFICATION_COOLDOWN_S` | `const.py` | `0` (s, off) | Default for the per-camera notification cooldown option (`video_analyzer_notification_cooldown_s`). |
+| `VIDEO_ANALYZER_NOTIFICATION_COOLDOWN_MAX_S` | `const.py` | `600` (s) | Largest value the notification cooldown option accepts. Kept short because push delivery cannot be confirmed: it bounds how long quiet updates can follow a lost alert. |
+| `RECOMMENDED_VIDEO_ANALYZER_HOUSE_NOTIFICATION_COOLDOWN_S` | `const.py` | `0` (s, off) | Default for the house notification cooldown option (`video_analyzer_house_notification_cooldown_s`). |
+| `VIDEO_ANALYZER_HOUSE_NOTIFICATION_COOLDOWN_MAX_S` | `const.py` | `60` (s) | Largest value the house notification cooldown option accepts. It groups one event crossing cameras, so only a few seconds are useful. |
+| `VIDEO_ANALYZER_DELETE_SNAPSHOTS` | `const.py` | `False` | Currently unused. Snapshot deletion is governed by the retention budget (`VIDEO_ANALYZER_SNAPSHOTS_TO_KEEP`) regardless of this value |
+| `VIDEO_ANALYZER_SNAPSHOTS_TO_KEEP` | `const.py` | `200` | Rolling snapshot retention budget per camera. Files register at capture time; on startup, analyzer-written snapshots that predate the restart are seeded into retention as the oldest entries. Cleanup pauses at protected files (`_latest/` assets, recently notified images), so the on-disk count can temporarily exceed the budget |
+| `VIDEO_ANALYZER_TRIGGER_ON_MOTION` | `const.py` | `True` | Trigger analysis on HA motion sensor state changes (also gates the ring-mqtt `event_select` trigger) |
+| `VIDEO_ANALYZER_EVENT_SELECT_WINDOW` | `const.py` | `30` (s) | Snapshot-loop window after a ring-mqtt `event_select` eventId change; each new eventId extends it |
+| `VIDEO_ANALYZER_EVENT_SELECT_MAX_WINDOW` | `const.py` | `300` (s) | Cap on total event_select window length across extensions; hitting it flushes the batch |
+| `VIDEO_ANALYZER_FACE_CROP` | `const.py` | `False` | Crop detected faces before sending to face recognition |
+| `VIDEO_ANALYZER_FACE_MERGE_THRESHOLD` | `const.py` | `0.85` | Max cosine distance for merging a batch-local "Unknown Person" face into the batch's single known identity (issue #543). Deliberately looser than `FACE_RECOGNITION_THRESHOLD` because the merge also requires exactly one known person in the batch and no frame with two or more faces — see [Batch Identity Consolidation](camera-entities.md#batch-identity-consolidation) |
+| `VIDEO_ANALYZER_SAVE_LATEST` | `const.py` | `True` | Publish a stable `_latest/latest.jpg` alongside each snapshot |
+| `_MAX_BATCH` | `core/video_analyzer.py` | `5` | Frames pulled per batch by the live analysis worker; a motion/`event_select` window flush processes the entire held buffer as one batch |
+| `_QUEUE_MAXSIZE` | `core/video_analyzer.py` | `50` | Per-camera frame backlog capacity before drops |
+| `_FRAME_DEADLINE_SEC` | `core/video_analyzer.py` | `600` (s) | Skip frames older than this; prevents stale results from backlog buildup |
+| `_SUMMARY_TIMEOUT_SEC` | `core/video_analyzer.py` | `60` (s) | Timeout for the summarization model call during batch synthesis |
+| `_FACE_TIMEOUT_SEC` | `core/video_analyzer.py` | `10` (s) | Timeout for a face-recognition request |
+| `_MERGE_DB_TIMEOUT_SEC` | `core/video_analyzer.py` | `5` (s) | Per-lookup timeout for identity-merge gallery queries; a timeout refuses that face's merge instead of stalling the camera worker |
+| `_MERGE_DB_BUDGET_SEC` | `core/video_analyzer.py` | `15` (s) | Total identity-merge database budget per batch; when exhausted — or after the first database failure — remaining lookups are skipped and those faces keep their "Unknown Person" label |
+| `_COOCCURRENT_FACES` | `core/video_analyzer.py` | `2` | Shared two-faces-in-one-frame threshold with two consumers that count differently: the unknown-face merge refuses a frame with this many *detected* names (Indeterminate placeholders don't count, so a known face plus an Indeterminate one still merges), while the single-person summary verdict refuses on this many *raw* identity entries — the no-face sentinel is only ever a lone entry, so two entries mean a second real face box even when its embedding degraded to Indeterminate (issue #543) |
+| `_SAFE_CONSTRAINT_NAME_MAX_LEN` | `core/video_analyzer.py` | `64` (chars) | Max person-name length allowed into the single-person summarizer constraint. Longer names — or names failing the strict character grammar (`_SAFE_CONSTRAINT_NAME_RE`) — suppress the constraint instead of being interpolated; a passing name is still quoted as data inside the verified-name tag, never spliced into instruction prose |
+| `_VISION_TIMEOUT_SEC` | `core/video_analyzer.py` | `90` (s) | Timeout for a VLM frame-description call |
+| `_VIDEO_MODEL_SEMAPHORE_WAIT_SEC` | `core/video_analyzer.py` | `30` (s) | Max wait for the video semaphore before dropping the frame |
+| `_VIDEO_QUEUE_BACKLOG_THRESHOLD` | `core/video_analyzer.py` | `2` | Drop stale queued frames when the backlog exceeds this count |
+| `_METRICS_REPORT_INTERVAL_SEC` | `core/video_analyzer.py` | `3600` (s) | How often the per-camera metrics line is logged (counters such as analyzed / dropped / `sentinel_dropped`, plus latency percentiles) |
+| `_SNAPSHOT_STALE_MAX_AGE_SEC` | `core/video_analyzer.py` | `1800` (s) | Skip capture and count a snapshot failure (once per staleness episode) when a ring-mqtt camera's `timestamp` attribute shows the retained frame is older than this (stalled interval snapshot, or a snapshot mode that never refreshes battery cameras — issue #466; issue #490); 3x the slowest known ring-mqtt Interval-mode refresh (600 s on battery). Only applies to cameras with an `event_select` sibling |
+| `_SNAPSHOT_TS_EPOCH_MIN` | `core/video_analyzer.py` | `1_000_000_000` | `timestamp` attribute values below this are not epoch seconds and never trigger the stale guard |
+| `_SNAPSHOT_TS_FUTURE_SLACK_SEC` | `core/video_analyzer.py` | `3600` (s) | `timestamp` values further in the future than this (e.g. millisecond epochs) are not plausible epoch seconds and never trigger the stale guard |
+| `_STALE_REREPORT_INTERVAL_SEC` | `core/video_analyzer.py` | `3600` (s) | Re-record an ongoing staleness episode this often so the failure streak can escalate and hourly metrics reflect a persistent freeze |
+
+---
+
+## Sentinel Core
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_SENTINEL_ENABLED` | `sentinel_enabled` | `True` | Master switch for the Sentinel detection loop |
+| `RECOMMENDED_SENTINEL_INTERVAL_SECONDS` | `sentinel_interval_seconds` | `300` (s) | How often the detection cycle runs (5 minutes) |
+| `RECOMMENDED_SENTINEL_COOLDOWN_MINUTES` | `sentinel_cooldown_minutes` | `30` | Per-rule-type suppression window after a notification. Prevents alert flooding for the same rule. |
+| `RECOMMENDED_SENTINEL_ENTITY_COOLDOWN_MINUTES` | `sentinel_entity_cooldown_minutes` | `15` | Per-entity suppression window. Shorter than the rule cooldown to allow related entities to re-alert sooner. |
+| `RECOMMENDED_SENTINEL_PENDING_PROMPT_TTL_MINUTES` | `sentinel_pending_prompt_ttl_minutes` | `240` (4 h) | How long a pending action prompt waits for a user response before expiring |
+| `RECOMMENDED_EXPLAIN_ENABLED` | `explain_enabled` | `False` | Generate LLM explanations for findings before notification |
+| `RECOMMENDED_SENTINEL_STALENESS_THRESHOLD_SECONDS` | `sentinel_staleness_threshold_seconds` | `1800` (s) | Snapshot entity data older than this is considered stale and may reduce finding confidence |
+| `RECOMMENDED_AUDIT_HOT_MAX_RECORDS` | `audit_hot_max_records` | `500` | Maximum records kept in the in-memory audit hot store. User-visible findings are preserved in preference to suppressed records when at capacity. A home that notifies more often than the cap holds fills it with notified findings, and from then on the oldest one is dropped as each new one arrives; that is the steady state, logged once at INFO. Raise the cap to keep a longer history. |
+| `AUDIT_SAVE_DELAY_SECS` | `audit/store.py` | `15` (s) | Longest an audit change waits before the store is written to disk. The first unsaved change opens the window and later ones share its write, so a steady stream of findings cannot postpone it. Records of an actuation and user responses are written immediately. A pending write is flushed on shutdown, and entry unload writes and closes the store so a late write cannot overwrite the reloaded entry's file. |
+| `RECOMMENDED_SENTINEL_CAMERA_ENTRY_LINKS` | `sentinel_camera_entry_links` | `{}` | Maps camera `entity_id` → list of entry/lock `entity_id`s in other HA areas. Used by the `camera_entry_unsecured` rule for cameras that physically overlook entries not in the same HA area (e.g. `{"camera.driveway": ["lock.front_door"]}`). |
+| `RECOMMENDED_SENTINEL_RULE_ENTITY_EXCLUSIONS` | `sentinel_rule_entity_exclusions` | `{}` | Maps an anomaly type (or `"*"` for all types) → list of `entity_id`s or glob patterns (`*` and `?` wildcards only) to exclude from that rule. The settings form splits this one stored map across two fields — an entity picker for literal all-rules entity IDs, and an advanced JSON field for per-rule keys and glob patterns — and recombines them on save; the stored shape is unchanged. Type keys are exact; entries may use only lowercase entity-ID characters plus the wildcards, must contain a dot and at least one literal character, and be at most 256 characters (match-all entries like `"*"`, `"*.*"`, or character-class tricks like `"[!.]*.*"` are rejected). Applied to all finding sources (static rules, dynamic rules, baseline) before correlation and dispatch; exclusions under the entity's domain-mapped anomaly type or `"*"` also suppress event-driven triggering — those entities' state changes do not enqueue triggers (e.g. `{"appliance_power_duration": ["sensor.living_room_ac_power"], "camera_entry_unsecured": ["camera.map_*"]}`). |
+| `RECOMMENDED_SENTINEL_APPLIANCE_POWER_THRESHOLD_W` | `sentinel_appliance_power_threshold_w` | `100.0` (W) | Power level the `appliance_power_duration` rule treats as "appliance running". Sensor readings are normalized to watts from any HA power unit (W, kW, MW, GW, TW, mW, BTU/h) before comparison; power sensors reporting a non-power unit (e.g. VA) are skipped. |
+| `RECOMMENDED_SENTINEL_APPLIANCE_DURATION_MIN` | `sentinel_appliance_duration_min` | `60` (min) | Continuous minutes above the power threshold before `appliance_power_duration` fires |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `SENTINEL_CAMERA_ACTIVITY_STALENESS_MINUTES` | `const.py` | `10` | Staleness gate for the camera-evidence rules (`alarm_disarmed_during_external_threat` and the unknown-person rules). Camera evidence must be within this window of the snapshot to fire; for unknown-person sightings the window is measured against the face-recognition event itself, not camera motion that can refresh long after the labels went stale. |
+| `SENTINEL_OCCUPANCY_ARMED_STATES` | `const.py` | `{"armed_home", "armed_night"}` | Alarm states treated as occupancy-compatible. These states never trigger an `alarm_state_mismatch` finding when `expected_presence=home`. |
+| `_POWER_OFF_W` | `sentinel/power_enrichment.py` | `10.0` (W) | At or below this wattage a power sensor is treated as "appliance off" when walking recorder history for the last off→on transition. Only affects the enriched `last_changed` consumed downstream (dynamic rules, triage context, and the baseline cycle-completion recency window); the `appliance_power_duration` rule measures duration by direct observation and does not use it. |
+| `_LOOKBACK_DAYS` | `sentinel/power_enrichment.py` | `30` (days) | Recorder history window searched for a power sensor's last off→on transition. |
+| `SENTINEL_ADMISSION_TIMEOUT_S` | `core/utils.py` | `2.0` (s) | How long a Sentinel LLM call waits for the chat/video foreground to become idle before deferring. Keeps interactive latency unaffected by Sentinel background work. |
+| `_SENTINEL_STARVATION_WARN_S` | `core/utils.py` | `300.0` (s) | Consecutive deferral duration that triggers a `degraded` sentinel health state and a WARNING log. |
+| `_SENTINEL_CANCEL_WAIT_S` | `core/utils.py` | `2.0` (s) | Grace period given to a Sentinel task to cancel cleanly when a chat turn begins. |
+
+---
+
+## Sentinel Autonomy Level
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_SENTINEL_AUTONOMY_LEVEL` | `sentinel_autonomy_level` | `1` | `0` = passive (no notifications); `1` = notify only; `2` = suggest actions; `3` = act autonomously |
+| `RECOMMENDED_SENTINEL_RUNTIME_OVERRIDE_TTL_MINUTES` | `sentinel_runtime_override_ttl_minutes` | `60` | How long a runtime autonomy-level override lasts before reverting to the configured value |
+| `RECOMMENDED_SENTINEL_REQUIRE_PIN_FOR_LEVEL_INCREASE` | `sentinel_require_pin_for_level_increase` | `False` | Require the Sentinel PIN to increase autonomy level via the `sentinel_set_autonomy_level` service |
+
+---
+
+## Sentinel Auto-Execution (Level 2+)
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_SENTINEL_AUTO_EXECUTION_ENABLED` | `sentinel_auto_execution_enabled` | `False` | Allow Sentinel to execute suggested actions autonomously (requires autonomy level ≥ 2) |
+| `RECOMMENDED_SENTINEL_AUTO_EXECUTE_DEFAULT_MIN_CONFIDENCE` | `sentinel_auto_execute_default_min_confidence` | `0.70` | Minimum finding confidence score required for auto-execution |
+| `RECOMMENDED_SENTINEL_AUTO_EXECUTE_MAX_ACTIONS_PER_HOUR` | `sentinel_auto_execute_max_actions_per_hour` | `5` | Rate cap on autonomous actions to prevent runaway execution |
+| `RECOMMENDED_SENTINEL_EXECUTION_IDEMPOTENCY_WINDOW_MINUTES` | `sentinel_execution_idempotency_window_minutes` | `15` | Duplicate-execution suppression window; the same action on the same finding will not fire twice within this period |
+| `RECOMMENDED_SENTINEL_AUTO_EXEC_CANARY_MODE` | `sentinel_auto_exec_canary_mode` | `False` | Log what auto-execution *would* do without actually executing. Useful for validating policy before enabling live execution. |
+| `RECOMMENDED_SENTINEL_AUTO_EXECUTE_ALLOWED_SERVICES` | `sentinel_auto_execute_allowed_services` | `[]` | Explicit allowlist of HA service calls Sentinel may invoke autonomously. Empty = no services permitted. |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `_MIN_AUTO_EXECUTE_LEVEL` | `sentinel/execution.py` | `2` | Minimum autonomy level required for any auto-execution attempt |
+
+---
+
+## Sentinel Triage
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_SENTINEL_TRIAGE_ENABLED` | `sentinel_triage_enabled` | `False` | Enable LLM triage pass before notification (requires autonomy ≥ 1) |
+| `RECOMMENDED_SENTINEL_TRIAGE_TIMEOUT_SECONDS` | `sentinel_triage_timeout_seconds` | `10` (s) | Max wait for triage LLM response. On timeout the decision defaults to `notify`. |
+
+---
+
+## Sentinel Baseline
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_SENTINEL_BASELINE_ENABLED` | `sentinel_baseline_enabled` | `False` | Enable rolling statistical baseline collection |
+| `RECOMMENDED_SENTINEL_BASELINE_UPDATE_INTERVAL_MINUTES` | `sentinel_baseline_update_interval_minutes` | `15` | How often baselines are recalculated and written to PostgreSQL |
+| `RECOMMENDED_SENTINEL_BASELINE_FRESHNESS_THRESHOLD_SECONDS` | `sentinel_baseline_freshness_threshold_seconds` | `3600` (1 h) | Age after which a baseline is considered stale |
+| `RECOMMENDED_SENTINEL_BASELINE_MIN_SAMPLES` | `sentinel_baseline_min_samples` | `20` | Minimum observations before a global baseline produces findings |
+| `RECOMMENDED_SENTINEL_BASELINE_MAX_SAMPLES` | `sentinel_baseline_max_samples` | `500` | Rolling window size; the oldest sample is dropped when this is exceeded |
+| `RECOMMENDED_SENTINEL_BASELINE_DRIFT_THRESHOLD_PCT` | `sentinel_baseline_drift_threshold_pct` | `30.0` | Percent deviation from rolling average that triggers a `baseline_deviation` or `time_of_day_anomaly` finding |
+| `RECOMMENDED_SENTINEL_BASELINE_WEEKLY_PATTERNS` | `sentinel_baseline_weekly_patterns` | `False` | Enable per-(day-of-week, hour) baselines for `time_of_day_anomaly`. Requires more data to warm up. |
+| `RECOMMENDED_SENTINEL_BASELINE_DOW_MIN_SAMPLES` | `sentinel_baseline_dow_min_samples` | `4` | Observations per DOW-hour slot before the DOW blend weight reaches 1.0. Lower than global min because DOW slots update at most once per week. |
+| `RECOMMENDED_SENTINEL_BASELINE_SUSTAINED_MINUTES` | `sentinel_baseline_sustained_minutes` | `45` | For cyclic loads (fridge, compressor), the deviation must persist this long before firing. Set `0` to disable the sustained gate. |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `COMPLETION_THRESHOLD_PCT` | `sentinel/baseline.py` | `0.10` | Appliance cycle-completion threshold: power must drop below 10% of baseline to be considered complete |
+| `COMPLETION_MIN_ACTIVE_WATTS` | `sentinel/baseline.py` | `100.0` (W) | Minimum baseline wattage to consider cycle-completion detection meaningful. The native baseline is normalized to watts first (1.2 kW = 1200 W). |
+| `COMPLETION_RECENCY_SECS` | `sentinel/baseline.py` | `900` (s) | Recency window for completion detection |
+| `MINIMUM_POWER_DEVIATION_WATTS` | `sentinel/baseline.py` | `50.0` (W) | Absolute minimum power deviation required to fire a baseline anomaly, even if percent threshold is met. The deviation is normalized to watts from any HA power unit; power sensors in a non-power unit (e.g. VA) skip this guard rather than compare raw. |
+
+---
+
+## Sentinel Notifications and Suppression
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `CONF_SENTINEL_QUIET_HOURS_START` | `sentinel_quiet_hours_start` | unset (disabled) | Local hour (0–23) the quiet-hours window opens. Both start and end must be set for suppression to take effect. |
+| `CONF_SENTINEL_QUIET_HOURS_END` | `sentinel_quiet_hours_end` | unset (disabled) | Local hour (0–23) the window closes. Windows may wrap midnight (e.g. 22:00–07:00); start = end suppresses all day. |
+| `RECOMMENDED_SENTINEL_QUIET_HOURS_SEVERITIES` | `sentinel_quiet_hours_severities` | `["low"]` | Which finding severities are suppressed during configured quiet hours |
+| `RECOMMENDED_SENTINEL_PRESENCE_GRACE_MINUTES` | `sentinel_presence_grace_minutes` | `10` | After everyone leaves home, suppress `open_entry_while_away` and `unknown_person_camera_no_home` for this many minutes to allow time for departure actions to settle |
+| `RECOMMENDED_SENTINEL_DAILY_DIGEST_ENABLED` | `sentinel_daily_digest_enabled` | `False` | Send a daily push summary of the past 24 hours |
+| `RECOMMENDED_SENTINEL_DAILY_DIGEST_TIME` | `sentinel_daily_digest_time` | `08:00:00` | Local delivery time for the daily digest |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `MAX_MOBILE_MESSAGE_CHARS` | `sentinel/notifier.py` | `220` | Hard character cap on mobile push notification text. Longer explanation text is truncated or replaced with a deterministic fallback. |
+| `MAX_COOLDOWN_MULTIPLIER` | `sentinel/suppression.py` | `8` | Maximum factor by which learned feedback (dismiss/snooze) can extend the base cooldown for a rule |
+| `PENDING_PROMPT_DEFAULT_TTL` | `sentinel/suppression.py` | `4 h` | Default TTL for pending action prompts in the suppression store (matches `RECOMMENDED_SENTINEL_PENDING_PROMPT_TTL_MINUTES`) |
+
+---
+
+## Sentinel Network Security Audit
+
+**File:** `const.py` | **UI-configurable** (Sentinel subentry, Advanced setup)
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_SENTINEL_NETWORK_ENABLED` | `sentinel_network_enabled` | `True` | Master switch for the snapshot's `network` section and the Home Assistant & network security rules. Off = the rules are reported as inactive on the health sensor. |
+| `RECOMMENDED_SENTINEL_NETWORK_OFFLINE_DEVICE_MIN` | `sentinel_network_offline_device_min` | `30` | Minutes a lock, alarm panel, or camera may be `unavailable` before `security_device_unavailable` fires |
+| `RECOMMENDED_SENTINEL_NETWORK_GUEST_IDLE_DAYS` | `sentinel_network_guest_idle_days` | `7` | Days the guest Wi-Fi may sit enabled with no guest connected before `network_guest_network_idle` fires |
+| `RECOMMENDED_SENTINEL_NETWORK_AUDIT_SHARE_DETAILS` | `sentinel_network_audit_share_details` | `True` | Whether `audit_home_security` gives the conversation model the findings' details; off returns a deterministic digest and posts the full report as a persistent notification (`NETWORK_AUDIT_REPORT_NOTIFICATION_ID`, capped at `NETWORK_AUDIT_REPORT_MAX_CHARS` = 12000) |
+| `RECOMMENDED_SENTINEL_NETWORK_UNKNOWN_DEVICE_GRACE_MIN` | `sentinel_network_unknown_device_grace_min` | `5` | Minutes a router client new to the device inventory must stay on the network before `network_unknown_device_joined` fires; `0` alerts on first sight |
+| `RECOMMENDED_SENTINEL_HA_TOKEN_STALE_DAYS` | `sentinel_ha_token_stale_days` | `90` | Age in days past which `ha_long_lived_token_stale` reports a long-lived access token (Home Assistant does not record long-lived token use, so age is the only observable fact) |
+| `RECOMMENDED_SENTINEL_AUTH_IP_RETENTION_DAYS` | `sentinel_auth_ip_retention_days` | `90` | How long a pseudonymized token address stays in the auth inventory |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `SENTINEL_POSTURE_RULE_COOLDOWN_MINUTES` | `const.py` | `1440` (24 h) | Cooldown floor for posture rules (standing conditions such as a stale token or an exposed add-on port); the engine uses the larger of this and `sentinel_cooldown_minutes` |
+| `SENTINEL_NETWORK_USAGE_THRESHOLD_PCT` | `const.py` | `300.0` | `network_client_usage_anomaly`: how far above its hourly baseline a device's traffic today must be |
+| `USAGE_ENTITY_COOLDOWN_MINUTES` | `sentinel/rules/network_client_usage_anomaly.py` | `1440` (24 h) | Per-device cooldown floor of `network_client_usage_anomaly`, keyed on the pseudo entity `network.client.<key>.<direction>`, so one device's alert never hides another's |
+| `FIRST_DAY_HOLDOFF` | `sentinel/rules/network_guest_client_present.py` | `1 day` | Age a client's inventory row must reach before `network_guest_client_present` judges it; the first day belongs to `network_unknown_device_joined` |
+| `MAX_LISTED_ITEMS` | `sentinel/rules/network_common.py` | `10` | Devices named in one aggregated network finding's summary before "and N more" |
+| `SENTINEL_NETWORK_USAGE_MIN_EXCESS_BYTES` | `const.py` | `262144000` (250 MB) | `network_client_usage_anomaly`: the byte floor the excess must also clear, so an idle device's few megabytes never read as a multiple |
+| `MAX_SEEN_IPS` | `sentinel/auth_inventory.py` | `20` | Pseudonymized addresses kept per token in the auth inventory |
+| `SEEN_IP_REFRESH` | `sentinel/auth_inventory.py` | `1 h` | How often an address's `last_seen` stamp is refreshed, so steady use does not rewrite the store every cycle |
+| `MAX_LABEL_CHARS` | `snapshot/network.py` | `64` | Cap on labels copied from untrusted sources (mDNS names, add-on titles, token client names) into evidence and notifications |
+| `ROUTER_PLATFORMS` | `snapshot/network.py` | `fritz, unifi, eero, asuswrt, tplink_omada, keenetic_ndms2, mikrotik, netgear, freebox, upnp` | Entity-registry platforms whose `update.*` entities count as router firmware |
+| `KEY_LENGTH` | `sentinel/pseudonymizer.py` | `8` | Hex characters of the HMAC-SHA256 kept as a pseudonymized identifier |
+| `MAC_REDACTED`, `LAN_IP_REDACTED`, `PUBLIC_IP_REDACTED`, `HOSTNAME_REDACTED` | `sentinel/redaction.py` | `[mac]`, `[lan ip]`, `[public ip]`, `[hostname]` | Tokens that replace MAC/Bluetooth/IEEE addresses (separated or bare 12/16-hex), IP addresses (subnet class kept), and local-suffix hostnames in anything rendered into a model prompt |
+| `MAX_DEPTH` | `sentinel/redaction.py` | `64` | Nesting depth beyond which the redaction walk cuts a structure with a marker instead of recursing |
+| `IGD_SEARCH_TARGETS` | `snapshot/upnp.py` | IGD:1, IGD:2 URNs | SSDP search targets whose presence in Home Assistant's discovery cache proves the router accepts UPnP |
+| `EERO_SWITCHES` | `snapshot/router.py` | `upnp, wpa3, guest_network_enabled, ipv6_upstream, ddns_enabled, block_malware, ad_block` → posture keys | eero network-level switch keys (entity unique id `<network id>-<key>`) read as router posture; each posture key gets a `<key>_entity_id` twin |
+| `EERO_SENSORS` | `snapshot/router.py` | `public_ip, connected_guest_clients_count, blocked_day` | eero network-level sensors feeding the public-IP change check, `guest_client_count`, and the `network.threats_day` counter |
+| `NETWORK_ATTRS`, `CLIENT_ATTRS` | `snapshot/eero.py` | allowlists of eero object attributes | The only attributes the eero runtime adapter reads from the integration's network and client objects |
+| `FORBIDDEN_ATTRS` | `snapshot/eero.py` | `password, guest_network_password, thread_master_key, …` | eero object attributes the adapter must never read; asserted disjoint from the allowlists |
+| `EERO_INTEGRATION_VERSION` | `snapshot/eero.py` | `1.8.1` | The eero integration version whose objects the runtime adapter was written against |
+| `COUNTER_CLIENT_COUNT`, `COUNTER_THREATS_DAY` | `snapshot/router.py` | `network.client_count`, `network.threats_day` | Baseline-input counters: connected router clients, and threats the router blocked today |
+| `ROUTER_ROW_RETENTION` | `sentinel/network_inventory.py` | `30 days` | How long a router client's inventory row is kept after its last sighting before it goes, so one router integration reloading never turns its clients into new devices |
+| `COUNTER_ROW_RETENTION_DAYS` | `sentinel/baseline.py` | `30` | Days after its last update a `network.*` counter baseline row is kept before the updater prunes it |
+| `_MAX_NETWORK_CLIENTS` | `snapshot/discovery_reducer.py` | `40` | Router clients the discovery model is shown (connected first, then by name); when the reduced snapshot still exceeds its character budget the whole client list is the first thing dropped |
+| `POSTURE_MEMORY_KEYS` | `snapshot/upnp.py` | `public_ip_key, public_ip_entity_id, upnp_port_mapping_count, upnp_port_mapping_entity_id` | Posture values the Sentinel engine remembers between runs (in the device inventory file) for `network_public_ip_changed` and `network_upnp_port_mapping_added`, each with the sensor it was read from |
+
+---
+
+## Sentinel Discovery
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_SENTINEL_DISCOVERY_ENABLED` | `sentinel_discovery_enabled` | `False` | Enable LLM-based rule candidate discovery |
+| `RECOMMENDED_SENTINEL_DISCOVERY_INTERVAL_SECONDS` | `sentinel_discovery_interval_seconds` | `3600` (1 h) | How often a discovery cycle runs |
+| `RECOMMENDED_SENTINEL_DISCOVERY_MAX_RECORDS` | `sentinel_discovery_max_records` | `200` | Maximum stored discovery records (older records are pruned) |
+| `RECOMMENDED_SENTINEL_RESPONSE_LANGUAGE` | `sentinel_response_language` | `""` (English) | Optional language override for the LLM-authored finding explanation shown in notifications (`explain/llm_explain.LLMExplainer`). Also read by `sentinel/notifier.py` so that finding types with deterministic English mobile formatters defer to the translated explanation instead of overriding it. Notification chrome (titles, subtitles, type labels, batch/digest strings) does not follow this setting — it follows the HA server language instead, currently English and Czech with English fallback ([#565](https://github.com/goruck/home-generative-agent/pull/565)). Discovery candidate `title`/`summary` and Sentinel Triage `decision`/`reason_code`/`summary` are unaffected and still stay in English; away/home/night context resolves from structured `derived.*` evidence paths rather than English wording (#524). |
+
+---
+
+## Critical Action PIN
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `CRITICAL_PIN_MIN_LEN` | `4` | Minimum PIN length (digits) |
+| `CRITICAL_PIN_MAX_LEN` | `10` | Maximum PIN length (digits) |
+
+The `RECOMMENDED_CRITICAL_ACTIONS` list defines which actions require PIN confirmation. By default this covers `lock.unlock`, `lock.open`, `lock.toggle`, and every cover service that opens a closed door — `open_cover`, `open`, `toggle`, and `set_cover_position` — for entities whose `entity_id` contains `door`, `gate`, or `garage`.
+
+The same rules screen two surfaces: direct tool calls from the conversation agent, and the *contents* of automations the agent writes with `add_automation` (see [Critical Action PIN](configuration.md#critical-action-pin)). In the automation path an `entity_match` rule also fires when the call's real targets cannot be resolved at write time — an area, device, label, floor, group, entity registry ID, or template — because the substring cannot be checked against entities that are only resolved when the automation runs.
+
+---
+
+## Face Recognition
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_FACE_RECOGNITION` | `face_recognition` | `False` | Enable face recognition in camera analysis |
+| `RECOMMENDED_FACE_API_URL` | `face_api_url` | `http://face-recog-server.local:8000` | Base URL of the [face-service](https://github.com/goruck/face-service) instance |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `FACE_RECOGNITION_THRESHOLD` | `core/person_gallery.py` | `0.7` | Max cosine distance for a gallery row to count as a positive identification |
+| `UNKNOWN_PERSON_LABEL` | `const.py` | `Unknown Person` | The label the recognition pipeline assigns to a face it saw but could not match to an enrolled person. Flows through the `recognized_people` attribute into snapshots, where Sentinel's unknown-person rules fire on its presence |
+| `RESERVED_IDENTITY_LABELS` | `const.py` | `unknown person`, `indeterminate`, `none`, empty | Identity labels the recognition pipeline reserves for non-matches (lowercase-normalized). Enrollment refuses them (any casing), gallery rows already carrying such names are never treated as a mergeable identity, and Sentinel filters them out wherever "an enrolled person was recognized" is meant |
+
+---
+
+## Speech-to-Text (STT)
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_OPENAI_STT_MODEL` | `model_name` | `gpt-4o-mini-transcribe` | Default OpenAI Whisper model for the STT provider. Supported values: `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`. |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `STT_REQUEST_TIMEOUT_S` | `stt.py` | `120.0` (s) | Timeout for a transcription or translation request (connect timeout 5 s). Matches the chat provider timeout in `__init__.py`. Pinned on the OpenAI client rather than inherited from Home Assistant's shared httpx client, so a future HA change to that client cannot silently retime transcription. One attempt per utterance (`max_retries=0`), like TTS. |
+
+---
+
+## Text-to-Speech (TTS)
+
+**File:** `const.py` | **UI-configurable**
+
+| Constant | Config key | Default | Purpose |
+|---|---|---|---|
+| `RECOMMENDED_OPENAI_TTS_MODEL` | `model_name` | `gpt-4o-mini-tts` | Default OpenAI speech model for the TTS provider. Supported values: `gpt-4o-mini-tts`, `tts-1`, `tts-1-hd`. |
+| `RECOMMENDED_OPENAI_TTS_VOICE` | `voice` | `alloy` | Default OpenAI voice; any of the 13 built-in voices in `OPENAI_TTS_VOICES` can be chosen, and the configured one leads the Assist pipeline's voice list. |
+| `RECOMMENDED_LOCAL_TTS_MODEL` | `model_name` | `speaches-ai/Kokoro-82M-v1.0-ONNX` | Default model for a local OpenAI-compatible TTS server (Speaches). Any model ID the server serves can be typed in. |
+| `RECOMMENDED_LOCAL_TTS_VOICE` | `voice` | `af_heart` | Default voice for the local model. |
+| `TTS_SPEED_DEFAULT` | `speed` | `1.0` (range `TTS_SPEED_MIN`–`TTS_SPEED_MAX`, 0.25–4.0) | Playback speed multiplier; the default is not sent to the backend. |
+
+**Code-only:**
+
+| Constant | File | Value | Purpose |
+|---|---|---|---|
+| `TTS_INSTRUCTIONS_MODEL_PREFIX` | `const.py` | `gpt-4o-mini-tts` | Only models with this prefix on the OpenAI provider receive the optional voice instructions; the API rejects the parameter for `tts-1`/`tts-1-hd`, and local servers never get it. |
+| `TTS_OPENAI_RESPONSE_FORMATS` / `TTS_LOCAL_RESPONSE_FORMATS` | `const.py` | mp3, opus, aac, flac, wav, pcm / mp3, flac, wav, pcm | Containers each backend can produce; a pipeline preference outside the set is served as mp3 and converted by Home Assistant. |
+| `TTS_REQUEST_TIMEOUT_S` | `tts.py` | `60.0` (s) | Timeout for one speech request (connect timeout 5 s), pinned on the OpenAI client rather than inherited from Home Assistant's shared httpx client. The client makes one attempt (`max_retries=0`), as does the STT client, so a wedged server costs one timeout of silence rather than three. |
+| `LOCAL_KEYLESS_API_KEY` | `const.py` | `sk-hga-keyless-local` | Placeholder key for keyless local STT/TTS servers; satisfies the SDK constructor and is stripped from every request with the SDK's `Omit` sentinel. |
+
+---
+
+## HTTP Endpoint
+
+**File:** `http.py` | **Code-only**
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `MAX_UPLOAD_BYTES` | `10 485 760` (10 MB) | Maximum file size accepted by the face enrollment endpoint |
+| `ALLOWED_EXTENSIONS` | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp` | File extensions permitted for face enrollment uploads |
+
+---
+
+## Module Tuning Constants
+
+These constants live outside `const.py` in individual modules. They affect runtime behaviour but have no UI entry. Changing them requires editing the source file and reloading the integration.
+
+### `agent/graph.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `_LC_TOOL_TIMEOUT_S` | `30.0` (s) | Per-tool execution timeout. LangChain tools that do not respond within this window are cancelled. Raise only if slow external tools (e.g. a slow VLM) are routinely timing out. |
+
+### `agent/rag_embedding_text.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `EMBEDDING_INDEX_TEXT_MAX_CHARS` | `1200` | Maximum characters embedded per tool in the tool index. Controls how much of each tool's description is stored in the vector DB. |
+
+### `agent/tools.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `_AVAILABLE_CAMERA_NAMES_MAX` | `25` | Maximum camera names listed in the "available cameras" hint returned when a chat-requested camera name cannot be resolved. Larger installs get a truncated list with an `and N more` marker. |
+
+### `conversation.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `_STREAM_ERROR_REASON_MAX_CHARS` | `280` | Maximum characters of the failure reason appended to the fallback chat message when a streaming turn fails (only `HomeAssistantError` messages are shown verbatim; other exceptions surface their class name only). |
+| `_TOOL_INDEX_DELTA_TIMEOUT_S` | `30.0` (s) | Timeout on the per-turn tool-index top-up write (newly discovered device-gated or MCP tools). A stalled store write gives up instead of hanging the voice turn; the existing index keeps serving and the next turn retries. |
+
+### `stt.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `STT_REQUEST_TIMEOUT_S` | `120.0` (s) | Transcription/translation request timeout (connect timeout 5 s). Each STT entity caches one OpenAI client built on Home Assistant's shared httpx client, so this timeout is pinned on the SDK client instead of inherited from the shared one. |
+
+### `tts.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `TTS_REQUEST_TIMEOUT_S` | `60.0` (s) | Speech request timeout (connect timeout 5 s). Each TTS entity caches one OpenAI client built on Home Assistant's shared httpx client, so this timeout is pinned on the SDK client instead of inherited from the shared one. |
+
+### `core/person_gallery.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `FACE_RECOGNITION_THRESHOLD` | `0.7` | Max cosine distance for a positive identification in `recognize_person` |
+
+(`RESERVED_IDENTITY_LABELS` and `UNKNOWN_PERSON_LABEL` moved to `const.py` — see [Face Recognition](#face-recognition) above.)
+
+### `core/video_analyzer.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `_MAX_BATCH` | `5` | Frames pulled per batch by the live analysis worker; motion/`event_select` window flushes process the whole held buffer |
+| `_QUEUE_MAXSIZE` | `50` | Per-camera frame queue capacity. Frames are dropped when full. |
+| `_FRAME_DEADLINE_SEC` | `600` (s) | Frames older than this are skipped to avoid processing stale data |
+| `_SUMMARY_TIMEOUT_SEC` | `60` (s) | Timeout for the summarization model call in a video batch |
+| `_FACE_TIMEOUT_SEC` | `10` (s) | Timeout for a face-recognition API call |
+| `_MERGE_DB_TIMEOUT_SEC` | `5` (s) | Per-lookup timeout for identity-merge gallery queries |
+| `_MERGE_DB_BUDGET_SEC` | `15` (s) | Total identity-merge DB budget per batch; exhaustion or a DB failure skips the remaining lookups |
+| `_COOCCURRENT_FACES` | `2` | Two-faces-in-one-frame threshold; the unknown-face merge counts detected names only, while the single-person summary verdict counts raw identity entries |
+| `_SAFE_CONSTRAINT_NAME_MAX_LEN` | `64` (chars) | Max person-name length allowed into the single-person summarizer constraint; longer or grammar-failing names suppress the constraint |
+| `_VISION_TIMEOUT_SEC` | `90` (s) | Timeout for a VLM frame description call |
+| `_VIDEO_MODEL_SEMAPHORE_WAIT_SEC` | `30` (s) | Max time a video frame waits for the concurrency semaphore before being dropped |
+| `_VIDEO_QUEUE_BACKLOG_THRESHOLD` | `2` | Drop oldest queued frames when the backlog exceeds this depth |
+| `_SUMMARY_MAX_FRAMES` | `8` | Maximum deduplicated frame descriptions fed to the summary model (newest kept). The notification reference image is chosen from these frames. |
+| `_NOTIFY_PROTECT_TTL_SEC` | `1800` (s) | How long a snapshot attached to a notification is protected from retention pruning. Also the fresh protection window granted at startup to pre-restart snapshots younger than this when they are seeded into retention. |
+| `_CAPTION_SEARCH_LIMIT` | `10` | The camera's best-scoring stored captions the caption-deduplication check considers. |
+| `_CAPTION_SEARCH_WIDE_LIMIT` | `50` | Rows the similarity search asks the store for. The store matches camera names by prefix (`side` also returns `side_gate`); only the camera's own captions are kept, and the extra rows make it less likely that another camera's crowd them out (they still can when that camera has many closer matches; the notification is then sent). |
+| `_RECENT_CAPTION_SCAN_PAGE` | `50` | Page size of the recent-caption scan ([#704](https://github.com/goruck/home-generative-agent/issues/704)). When a caption with a real subject in action would re-notify as a stale match and no match inside the dedupe window is among the similarity search's results, the camera's stored captions are read newest first and those notified inside the window are compared with it directly, so a recent near-duplicate outranked or crowded out by older captions still suppresses (`recent_match`). |
+| `_RECENT_CAPTION_SCAN_MAX_PAGES` | `4` | Upper bound on pages read by the recent-caption scan (200 notified captions, counted across cameras whose names share this camera's name as a prefix). The scan stops earlier at the first page that reaches past the dedupe window. |
+| `_RECENT_CAPTION_SCAN_TIMEOUT_SEC` | `10` (s) | Budget for the recent-caption scan (store read plus one embedding call). On timeout or any error the notification is sent. |
+| `_METRICS_REPORT_INTERVAL_SEC` | `3600` (s) | How often the per-camera metrics line (counters plus latency percentiles) is logged |
+
+### `core/video_helpers.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `_MAX_SENTENCES` | `2` | Maximum sentences in a video caption |
+| `_MAX_CHARS` | `300` | Maximum characters in a video caption |
+| `_MAX_NAMES` | `2` | Maximum person names included in a single caption |
+| `_UNIQUENESS_HASH_SIZE` | `8` | dHash grid size (8 → 64-bit perceptual hash) for frame deduplication |
+| `_NO_CHANGE_MAX_CHARS` | `120` | Maximum reply length considered for `Scene unchanged.` sentinel detection (issue #493); longer VLM replies are always treated as real descriptions |
+
+### `core/utils.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `SENTINEL_ADMISSION_TIMEOUT_S` | `2.0` (s) | How long Sentinel waits for the chat/video foreground to idle before deferring its LLM call |
+| `_SENTINEL_STARVATION_WARN_S` | `300.0` (s) | Consecutive deferral duration that transitions `sentinel_health` to `degraded` |
+| `_SENTINEL_CANCEL_WAIT_S` | `2.0` (s) | Grace period for Sentinel task cancellation when a chat turn begins |
+
+### `sentinel/notifier.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `MAX_MOBILE_MESSAGE_CHARS` | `220` | Hard character limit for mobile push text. Findings whose explanation exceeds this are replaced with a deterministic fallback message. |
+
+### `sentinel/suppression.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `MAX_COOLDOWN_MULTIPLIER` | `8` | Maximum multiplier applied to a rule's base cooldown based on accumulated snooze/dismiss feedback |
+
+### `sentinel/baseline.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `COMPLETION_THRESHOLD_PCT` | `0.10` | Appliance power must drop below 10% of its baseline to be treated as cycle-complete |
+| `COMPLETION_MIN_ACTIVE_WATTS` | `100.0` (W) | Minimum active wattage for cycle-completion detection to be meaningful |
+| `MINIMUM_POWER_DEVIATION_WATTS` | `50.0` (W) | Minimum absolute deviation (regardless of percent) before a baseline anomaly fires |
+
+### `sentinel/execution.py`
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `_MIN_AUTO_EXECUTE_LEVEL` | `2` | Autonomy level floor for any auto-execution attempt |
