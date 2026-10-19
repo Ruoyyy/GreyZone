@@ -5,8 +5,8 @@ Usage (from sim/):
 
 Defaults: binary_sensor.demo_camera_motion, 6 seconds on.
 Reads HA_TOKEN from secrets.env. After motion clears, HGA runs the VLM over the
-captured frames (mock-vlm returns caption.txt) and writes the result to the
-camera's image.*_last_event summary attribute, which this script prints.
+captured frames and writes the result to the camera's image.*_last_event summary
+attribute, which this script prints.
 """
 
 import json
@@ -63,4 +63,4 @@ if __name__ == "__main__":
         st = call("GET", f"/api/states/{camera}")
         print(f"{camera}: {st['attributes'].get('summary')}")
     except urllib.error.HTTPError:
-        print(f"{camera}: no result (check: docker compose logs mock-vlm)")
+        print(f"{camera}: no result (check: docker compose logs homeassistant)")

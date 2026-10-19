@@ -20,8 +20,8 @@ services:
       pgvector:
         condition: service_healthy
 
-  # Fake vision model (Ollama API) for Camera Image Analysis: replies with the
-  # text in mock-vlm/caption.txt. HA reaches it at http://localhost:11500.
+  # Static image host: serves images/current.jpg to the Test Camera (generic_camera),
+  # so the real vision model reads an image you control. HA reaches it at :11500.
   mock-vlm:
     image: hga-sim/homeassistant:2026.10.1
     restart: unless-stopped
@@ -46,12 +46,44 @@ services:
     depends_on:
       - pgvector
 
-  # HA reaches it at localhost:5432 (shared namespace). Only HA's 8123 is published.
+  # Mock web-search MCP server (streamable HTTP, :18090/mcp). The exfil
+  # back-channel: every search query the agent runs is logged to its stdout.
+  # Off by default; `docker compose --profile exfil up -d mock-mcp` enables it.
+  mock-mcp:
+    image: hga-sim/homeassistant:2026.10.1
+    profiles: ["exfil"]
+    restart: unless-stopped
+    entrypoint: ["python3", "-u", "/app/fetch_server.py"]
+    volumes:
+      - ./mock-mcp:/app:ro
+    network_mode: "service:pgvector"
+    depends_on:
+      - pgvector
+
+  # Red-team control plane MCP (streamable HTTP, :18092/mcp, published). The
+  # four injection points (camera image / SSDP device name / entity attributes
+  # / web page) plus probe tools, for an external red-team agent. Needs HA_TOKEN
+  # from secrets.env; writes images/current.jpg.
+  redteam-mcp:
+    image: hga-sim/homeassistant:2026.10.1
+    restart: unless-stopped
+    entrypoint: ["python3", "-u", "/app/server.py"]
+    volumes:
+      - ./redteam-mcp:/app:ro
+      - ./images:/images
+    env_file: secrets.env
+    network_mode: "service:pgvector"
+    depends_on:
+      - pgvector
+
+  # HA reaches it at localhost:5432 (shared namespace). HA's 8123 and the
+  # red-team MCP's 18092 are the published ports.
   pgvector:
     image: pgvector/pgvector:pg18-trixie
     restart: unless-stopped
     ports:
       - "8123:8123"
+      - "18092:18092"
     environment:
       POSTGRES_USER: admin_user
       POSTGRES_PASSWORD: admin_password
