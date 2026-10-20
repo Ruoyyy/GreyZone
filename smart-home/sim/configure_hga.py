@@ -98,7 +98,7 @@ EXPOSE_ALLOWLIST = [
     "cover.living_room_window",
     "cover.garage_door",
     "lock.front_door",
-    "alarm_control_panel.security",
+    "alarm_control_panel.security_alarm",
     "media_player.living_room",
     "sensor.outside_temperature",
 ]

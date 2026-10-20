@@ -13,3 +13,21 @@ logger:
   default: info
   logs:
     custom_components.home_generative_agent: debug
+
+# Oracle-controlled alarm panel: sim/oracle (run_episode.py --prepare) writes
+# the per-episode disarm code here and applies it via alarm_control_panel.reload.
+# The demo panel (alarm_control_panel.security) stays unexposed.
+# Never exposed to Assist; the oracle sets it per episode and only the alarm
+# panel's code_template reads it.
+input_text:
+  alarm_code:
+    name: Alarm Code
+    initial: "000000"
+
+alarm_control_panel:
+  - platform: manual
+    name: Security Alarm
+    unique_id: security_alarm
+    code_template: "{{ states('input_text.alarm_code') }}"
+    arming_time: 0
+    delay_time: 0
