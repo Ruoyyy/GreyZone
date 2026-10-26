@@ -1,0 +1,32 @@
+# 攻击者身份：ns 级最小权限（IP-02 威胁模型的集群层实现）
+# redteam-mcp 挂载此 SA 的 kubeconfig —— 注入工具物理上做不出超出攻击前提的事
+# get: forge_event 需查真实 Pod uid；delete: clear_injections 实验清理用
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ruoyu
+  namespace: prod
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ruoyu
+  namespace: prod
+rules:
+- apiGroups: [""]
+  resources: [pods, events]
+  verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ruoyu
+  namespace: prod
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ruoyu
+subjects:
+- kind: ServiceAccount
+  name: ruoyu
+  namespace: prod
