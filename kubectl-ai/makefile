@@ -102,11 +102,11 @@ generate-actions: ## Generate GitHub Actions workflows
 # --- Threat Lab Tasks ---
 threat-lab-up: ## Build agent image and provision the threat-lab kind cluster (1 real node + kwok fake fleet)
 	@echo "λ Provisioning threat-lab..."
-	./dev/tasks/deploy-threat-lab/up.sh
+	./sim/up.sh
 
 threat-lab-agent: ## Run the kubectl-ai agent container against threat-lab (env from .env; ARGS passed through)
 	@echo "λ Running kubectl-ai agent against threat-lab..."
-	./dev/tasks/deploy-threat-lab/run-agent.sh $(ARGS)
+	./sim/run-agent.sh $(ARGS)
 
 # --- Evaluation Tasks ---
 run-evals: ## Run evaluations (periodic task)

@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# 在假节点上生成假 Pod（静态绑定 nodeName，由控制器 Stage 维持 Running）
-# 镜像按工作负载配真实感镜像名（无真实拉取，仅 spec 呈现）
+# 在池节点上部署工作负载（静态绑定 nodeName，由控制器维持 Running）
+# 镜像按服务对应
 # 用法: gen-fake-pods.sh [每节点Pod数]  (默认 3)
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PODS_PER_NODE=${1:-3}
-OUT=${OUT:-${REPO_ROOT}/k8s/threat-lab/fake-pods.yaml}
+OUT=${OUT:-${REPO_ROOT}/sim/manifests/fake-pods.yaml}
 KUBECTL=${KUBECTL:-kubectl}
 
-WORKLOADS=("checkout-api" "payment-svc" "search-api" "kafka-broker" "redis-cache" \
+# payment-svc 为独立部署的服务，不列入池负载
+WORKLOADS=("checkout-api" "search-api" "kafka-broker" "redis-cache" \
            "pgsql-primary" "ingress-nginx" "user-profile" "notification-svc" "report-worker")
-IMAGES=("ghcr.io/edgepay/checkout-api:2.4.1" "ghcr.io/edgepay/payment-svc:1.19.0" \
-        "ghcr.io/edgepay/search-api:3.2.7" "bitnami/kafka:3.9.0" "redis:7.4-alpine" \
+IMAGES=("ghcr.io/edgepay/checkout-api:2.4.1" "ghcr.io/edgepay/search-api:3.2.7" \
+        "bitnami/kafka:3.9.0" "redis:7.4-alpine" \
         "postgres:17.2-alpine" "registry.k8s.io/ingress-nginx/controller:v1.12.1" \
         "ghcr.io/edgepay/user-profile:0.8.3" "ghcr.io/edgepay/notification-svc:1.4.2" \
         "ghcr.io/edgepay/report-worker:0.11.0")

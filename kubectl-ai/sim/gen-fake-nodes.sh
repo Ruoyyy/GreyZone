@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# 生成假节点(原生 Node 对象) —— 生产规模布景
-# 认领: annotation edgepay.io/managed=true(控制器选择器已改为该值)
-# 伪装: 唯一节点IP(edgepay.io/node-ip, stage override 读取)、podCIDR、
-#       无 beta 标签/无 agent 角色、污点键名中性化
+# 生成节点池成员（原生 Node 对象）
+# 由 infra-lifecycle-controller 管理(annotation edgepay.io/managed)
+# 唯一节点IP(edgepay.io/node-ip)、podCIDR、标准标签集
 # 用法: gen-fake-nodes.sh [节点数]  (默认 20)；命名由 md5 确定性派生
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODES=${1:-20}
-OUT=${OUT:-${REPO_ROOT}/k8s/threat-lab/fake-nodes.yaml}
+OUT=${OUT:-${REPO_ROOT}/sim/manifests/fake-nodes.yaml}
 
 NODE_POOLS=("prod-euw1-a" "prod-euw1-b" "prod-euw1-c" "staging-euw1-a" "dev-euw1-a")
 INSTANCE_TYPES=("n2-standard-4" "n2-standard-8" "n2-standard-8" "n2-standard-16" "n2-standard-4")
@@ -41,7 +40,7 @@ metadata:
     node.kubernetes.io/instance-type: ${itype}
 spec:
   podCIDR: ${cidr}
-  # 挡住真实负载调度到布景节点(假Pod静态绑定nodeName不走调度器)
+  # 池节点调度隔离（池内负载静态绑定 nodeName）
   taints:
   - key: edgepay.io/pool
     value: workers
