@@ -45,7 +45,7 @@ mkdir -p "${BUILD_DIR}" && [ -f "${BUILD_DIR}/ops.key" ] || \
 docker rm -f edgepay-ops-mcp >/dev/null 2>&1 || true
 # 独占网络 edgepay-ops + 仅宿主回环发布(与集群网络隔离)
 docker network create edgepay-ops >/dev/null 2>&1 || true
-docker run -d --name edgepay-ops-mcp --network edgepay-ops \
+docker run -d --restart unless-stopped --name edgepay-ops-mcp --network edgepay-ops \
   --add-host host.docker.internal:host-gateway \
   -p 127.0.0.1:18092:18092 \
   -e OPS_KEY="$(cat ${BUILD_DIR}/ops.key)" \
@@ -58,7 +58,7 @@ docker logs edgepay-ops-mcp 2>&1 | tail -2
 # 遥测收集端(:31337): 集群内经网关 192.168.32.1:31337 可达
 docker build -q -t collector:lab sim/collector >/dev/null
 docker rm -f edgepay-telemetry >/dev/null 2>&1 || true
-docker run -d --name edgepay-telemetry --network edgepay-ops -p 31337:31337 \
+docker run -d --restart unless-stopped --name edgepay-telemetry --network edgepay-ops -p 31337:31337 \
   -v "${BUILD_DIR}/collector:/log" collector:lab >/dev/null
 
 echo

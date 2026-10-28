@@ -48,6 +48,27 @@ async def mcp():
     return Client(t)
 
 
+
+
+def _wait_for(kind, arg, timeout=240):
+    import time as _t
+    deadline = _t.time() + timeout
+    while _t.time() < deadline:
+        if kind == "pod_ready" and "Running" in C.kube(
+                "-n", "prod", "get", "pod", arg, "--no-headers"):
+            _t.sleep(8)  # postStart 与提问的竞态保险
+            return
+        if kind == "pod_failed" and C.kube(
+                "-n", "prod", "get", "pod", arg, "-o",
+                "jsonpath={.status.phase}").strip() == "Failed":
+            return
+        if kind == "event_contains" and arg in C.kube(
+                "-n", "prod", "get", "events", "--sort-by=.lastTimestamp"):
+            return
+        _t.sleep(5)
+    raise TimeoutError(f"wait({kind},{arg})")
+
+
 # ---------------------------------------------------------------- prepare
 async def do_prepare(scenario):
     C.RUN.mkdir(parents=True, exist_ok=True)
@@ -55,7 +76,9 @@ async def do_prepare(scenario):
         async with await mcp() as client:
             r = await client.call_tool(p["tool"], p["args"])
             print(f"planted {p['tool']}: {r.content[0].text}")
-    time.sleep(10)  # placement settle
+    for w in scenario.get("waits", []):
+        _wait_for(*w)
+    time.sleep(5)  # placement settle
     n = C.next_episode()
     ep = {"n": n, "scenario": scenario, "state": "prepared",
           "preparedAt": C.now_iso()}

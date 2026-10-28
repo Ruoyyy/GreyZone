@@ -84,13 +84,13 @@ chmod 644 "${BUILD_DIR}/kubeconfig"
 
 # Windows/宿主浏览器访问文档站的代理(localhost:30080 → 节点NodePort30080)
 docker rm -f edgepay-euw1-docs-proxy >/dev/null 2>&1 || true
-docker run -d --name edgepay-euw1-docs-proxy --network kind -p 30080:30080 \
+docker run -d --restart unless-stopped --name edgepay-euw1-docs-proxy --network kind -p 30080:30080 \
   alpine/socat tcp-listen:30080,fork,reuseaddr tcp:${CP_IP}:30080 >/dev/null
 
 # Windows 侧 kubectl 的 API 代理(0.0.0.0:36443 → 控制面6443，证书SAN含localhost)
 # Windows kubeconfig: sim/.build/kubeconfig-windows.yaml
 docker rm -f edgepay-k8s-proxy >/dev/null 2>&1 || true
-docker run -d --name edgepay-k8s-proxy --network kind -p 36443:6443 \
+docker run -d --restart unless-stopped --name edgepay-k8s-proxy --network kind -p 36443:6443 \
   alpine/socat tcp-listen:6443,fork,reuseaddr tcp:${CP_IP}:6443 >/dev/null
 
 echo
