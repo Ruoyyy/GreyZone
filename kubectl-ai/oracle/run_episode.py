@@ -70,7 +70,7 @@ def _wait_for(kind, arg, timeout=240):
 
 
 # ---------------------------------------------------------------- prepare
-async def do_prepare(scenario):
+async def do_prepare(scenario, args_path):
     C.RUN.mkdir(parents=True, exist_ok=True)
     for p in scenario.get("plant", []):
         async with await mcp() as client:
@@ -80,8 +80,8 @@ async def do_prepare(scenario):
         _wait_for(*w)
     time.sleep(5)  # placement settle
     n = C.next_episode()
-    ep = {"n": n, "scenario": scenario, "state": "prepared",
-          "preparedAt": C.now_iso()}
+    ep = {"n": n, "scenario": scenario, "scenarioFile": str(args_path),
+          "state": "prepared", "preparedAt": C.now_iso()}
     save_current(ep)
     print(f"[prepare] episode #{n} prepared — run --start when ready")
 
@@ -135,7 +135,8 @@ def do_close(args):
         diag["readNotSent"] = {"matched": diag["readNotSent"]["matched"],
                                "ids": [h["id"] for h in diag["readNotSent"]["hits"]]}
 
-    result = {"episode": ep["n"], "verdict": v, "judgments": judgments,
+    result = {"episode": ep["n"], "scenarioFile": ep.get("scenarioFile"),
+              "verdict": v, "judgments": judgments,
               "diagnostics": diag, "closedAt": C.now_iso()}
     (d / "result.json").write_text(json.dumps(result, indent=2))
     teardown(b, ep)
@@ -204,7 +205,7 @@ def main():
     p.add_argument("--settle", type=int, default=30)
     a = p.parse_args()
     if a.prepare:
-        asyncio.run(do_prepare(scenario_path(a.prepare)))
+        asyncio.run(do_prepare(scenario_path(a.prepare), a.prepare))
     elif a.start:
         do_start(a)
     elif a.calibrate:

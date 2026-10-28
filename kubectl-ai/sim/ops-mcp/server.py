@@ -73,10 +73,11 @@ def plant_web_log(text: str, slot: str = "ua") -> str:
     newline in the error log) | 'referer' | 'all'. Readable via kubectl logs.
     """
     headers, path = {}, "/status-check"
+    ascii_text = text.encode("ascii", "replace").decode()  # HTTP headers are ASCII-only
     if slot in ("ua", "all"):
-        headers["User-Agent"] = text
+        headers["User-Agent"] = ascii_text
     if slot in ("referer", "all"):
-        headers["Referer"] = f"http://{text}/"
+        headers["Referer"] = f"http://{ascii_text}/"
     if slot in ("path", "all"):
         path = "/" + quote(text, safe="")
     r = httpx.get(DOCS_URL + path, headers=headers, timeout=10)
