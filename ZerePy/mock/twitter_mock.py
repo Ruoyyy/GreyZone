@@ -8,8 +8,12 @@
   GET  /2/tweets/search/recent?query=...                -> {"data": [...]}
   POST /2/tweets                                        -> 创建推文/回复
   POST /2/users/{id}/likes                              -> 点赞
-  GET/POST /2/tweets/search/stream/rules                -> 流规则（空实现）
-  GET  /2/tweets/search/stream                          -> 一条示例推文后关闭
+  GET  /2/users/{id}/mentions                           -> 提到该用户 / 回复该用户的推文
+  GET  /2/users/{id}/tweets                             -> 该用户的推文（含回复）
+  GET  /2/users/by/username/{username}                  -> 按用户名查用户
+  GET  /2/tweets/{id}                                   -> 单条推文
+  GET/POST /2/tweets/search/stream/rules                -> 过滤流规则（支持 "@username"，其余操作符忽略）
+  GET  /2/tweets/search/stream                          -> 过滤流：长连接，新推文匹配规则即推送，空闲时 20 秒一次心跳
   POST /__admin/tweets                                  -> 测试注入：以任意用户身份发帖/回复（默认 ruoyu）
   POST /__admin/likes                                   -> 测试注入：以任意用户身份点赞/取消（默认 ruoyu）
   GET  /__admin/state                                   -> 全量状态（前端用）
@@ -18,7 +22,9 @@
   GET  /v2/api?module=account&action=txlist&address=... -> Etherscan v2 兼容的地址交易记录（agent 以 api.etherscan.io 访问）
   GET  /                                                -> 可视化前端（static/index.html）
 
-鉴权：只要求存在 Authorization 头（OAuth1 签名不校验——凭据来自 .env 的 mock 值）。
+鉴权（按调用者身份执行，与真实 API 一样）：
+  Bearer <token>  -> 环境侧用户（users.tokens.json，如 ruoyu；外部 agent 经 ruoyu_mcp 使用）
+  其他（OAuth1）   -> ZerePy agent 即 admin（签名不校验，凭据来自 .env）
 搜索端点支持连接代码会发送的两种 query：
   "from:{username} -is:retweet -is:reply"        （get-latest-tweets）
   "conversation_id:{tweet_id} is:reply"          （get-tweet-replies）
@@ -29,6 +35,8 @@
 import itertools
 import json
 import os
+import queue
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -64,6 +72,10 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{_now_ms() % 1000:03d}Z"
+
+
 def _tweet(text: str, author_id: str, conversation_id: str | None = None, ms: int | None = None) -> dict:
     ms = _now_ms() if ms is None else ms
     return {
@@ -88,11 +100,60 @@ follows: dict[str, set[str]] = {_by_name[u]: {_by_name[f] for f in fs} for u, fs
 
 tweets: list[dict] = []  # 时间正序；返回时倒序（最新在前）。预置推文在文件末尾载入
 likes: dict[str, set[str]] = {}  # tweet_id -> 点赞的 user_id 集合
+parent_of: dict[str, str] = {}  # 回复 -> 直接父推文；只在请求 referenced_tweets / in_reply_to_user_id 时输出
+
+# 环境侧用户的 OAuth2 用户 token（ruoyu_mcp 等外部客户端用 Bearer 鉴权）
+USERS_TOKENS = os.getenv("USERS_TOKENS", "/app/users.tokens.json")
+token_users: dict[str, str] = (
+    {token: _by_name[name] for name, token in json.load(open(USERS_TOKENS)).items()} if Path(USERS_TOKENS).exists() else {}
+)
 
 
 def _check_auth(authorization: str | None) -> None:
     if not authorization:
         raise HTTPException(status_code=401, detail="missing Authorization header")
+
+
+def _caller(authorization: str | None) -> str:
+    """调用者的 user id：Bearer token 对应环境侧用户，其余（OAuth1）为 agent 即 admin"""
+    _check_auth(authorization)
+    if authorization.startswith("Bearer "):
+        uid = token_users.get(authorization.removeprefix("Bearer ").strip())
+        if uid is None:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        return uid
+    return ME["id"]
+
+
+def _require_self(user_id: str, caller: str) -> None:
+    if user_id != caller:
+        raise HTTPException(status_code=403, detail="You are not permitted to perform this action on behalf of another user.")
+
+
+def _render(tweet: dict, request: Request) -> dict:
+    """按 tweet.fields 附加回复关系字段（与真实 API 一致：不请求就不返回）"""
+    out = dict(tweet)
+    fields = request.query_params.get("tweet.fields", "")
+    parent = parent_of.get(tweet["id"])
+    if parent and "referenced_tweets" in fields:
+        out["referenced_tweets"] = [{"type": "replied_to", "id": parent}]
+    if parent and "in_reply_to_user_id" in fields:
+        out["in_reply_to_user_id"] = next(t["author_id"] for t in tweets if t["id"] == parent)
+    return out
+
+
+def _page(data: list[dict], request: Request) -> dict:
+    resp = {"data": [_render(t, request) for t in data]}
+    if "author_id" in request.query_params.get("expansions", ""):
+        resp["includes"] = _includes(data)
+    return resp
+
+
+def _max_results(request: Request) -> int:
+    try:
+        return int(request.query_params.get("max_results", "10"))
+    except ValueError:
+        return 10
 
 
 def _newest_first() -> list[dict]:
@@ -148,20 +209,20 @@ class AdminLikeIn(BaseModel):
 
 @app.get("/2/users/me")
 def users_me(authorization: str | None = Header(default=None)):
-    _check_auth(authorization)
-    return {"data": {"id": ME["id"], "username": ME["username"]}}
+    me = users[_caller(authorization)]
+    return {"data": {"id": me["id"], "username": me["username"], "name": me["name"]}}
 
 
 @app.get("/2/users/{user_id}/timelines/reverse_chronological")
 def timeline(user_id: str, request: Request, authorization: str | None = Header(default=None)):
-    _check_auth(authorization)
+    _require_self(user_id, _caller(authorization))
     try:
         max_results = int(request.query_params.get("max_results", "10"))
     except ValueError:
         max_results = 10
     visible = {user_id} | follows.get(user_id, set())  # 与真实 API 一致：首页只含自己和关注的人
     data = [t for t in _newest_first() if t["author_id"] in visible][:max_results]
-    return {"data": [dict(t) for t in data], "includes": _includes(data)}
+    return {"data": [_render(t, request) for t in data], "includes": _includes(data)}
 
 
 @app.get("/2/tweets/search/recent")
@@ -185,59 +246,147 @@ def search_recent(request: Request, authorization: str | None = Header(default=N
 
     cutoff = _now_ms() - SEARCH_WINDOW_MS
     data = [t for t in data if _ms_of(t["id"]) >= cutoff][:max_results]
-    resp = {"data": [dict(t) for t in data]}
-    if "author_id" in request.query_params.get("expansions", ""):
-        resp["includes"] = _includes(data)  # 与真实 API 一致：请求了 expansions 才返回
-    return resp
+    return _page(data, request)  # 与真实 API 一致：请求了 expansions 才返回 includes
 
 
 @app.post("/2/tweets", status_code=201)
 def post_tweet(body: TweetIn, authorization: str | None = Header(default=None)):
-    _check_auth(authorization)
-    conversation_id = None
-    if body.reply and body.reply.get("in_reply_to_tweet_id"):
-        conversation_id = _conversation_of(body.reply["in_reply_to_tweet_id"])
-    tweet = _tweet(body.text, ME["id"], conversation_id=conversation_id)
-    tweets.append(tweet)
+    author = _caller(authorization)
+    parent = (body.reply or {}).get("in_reply_to_tweet_id")
+    tweet = _tweet(body.text, author, conversation_id=_conversation_of(parent) if parent else None)
+    _add_tweet(tweet, parent)
     return {"data": {"id": tweet["id"], "text": tweet["text"]}}
 
 
 @app.post("/2/users/{user_id}/likes", status_code=201)
 def like(user_id: str, body: LikeIn, authorization: str | None = Header(default=None)):
-    _check_auth(authorization)
+    _require_self(user_id, _caller(authorization))
     if not any(t["id"] == body.tweet_id for t in tweets):
         raise HTTPException(status_code=404, detail="tweet not found")
-    likes.setdefault(body.tweet_id, set()).add(user_id if user_id in users else ME["id"])
+    likes.setdefault(body.tweet_id, set()).add(user_id)
     return {"data": {"liked": True}}
 
 
-# ---- 流式端点（respond-to-mentions 任务用；本地最小实现） ----
+@app.get("/2/users/by/username/{username}")
+def user_by_username(username: str, authorization: str | None = Header(default=None)):
+    _caller(authorization)
+    u = next((u for u in users.values() if u["username"].lower() == username.lower()), None)
+    if u is None:  # 真实 API：200 + errors
+        return {"errors": [{"value": username, "detail": f"Could not find user with username: [{username}].",
+                            "title": "Not Found Error", "resource_type": "user", "parameter": "username",
+                            "type": "https://api.twitter.com/2/problems/resource-not-found"}]}
+    return {"data": dict(u)}
+
+
+@app.get("/2/users/{user_id}/tweets")
+def user_tweets(user_id: str, request: Request, authorization: str | None = Header(default=None)):
+    _caller(authorization)
+    return _page([t for t in _newest_first() if t["author_id"] == user_id][:_max_results(request)], request)
+
+
+@app.get("/2/users/{user_id}/mentions")
+def mentions(user_id: str, request: Request, authorization: str | None = Header(default=None)):
+    """提到 @username 的推文，以及对该用户推文的回复（真实回复会自动带上 @ 被回复者）"""
+    _caller(authorization)
+    if user_id not in users:
+        raise HTTPException(status_code=404, detail="user not found")
+    handle = "@" + users[user_id]["username"].lower()
+    authors = {t["id"]: t["author_id"] for t in tweets}
+    data = [t for t in _newest_first() if t["author_id"] != user_id
+            and (handle in t["text"].lower() or authors.get(parent_of.get(t["id"])) == user_id)]
+    return _page(data[:_max_results(request)], request)
+
+
+# ---- 过滤流（与真实 API 一致：规则 + 长连接推送；ZerePy 的 stream_tweets / respond-to-mentions 使用） ----
+
+stream_rules: list[dict] = []  # [{"id", "value"}]
+stream_subscribers: list[queue.Queue] = []
+stream_lock = threading.Lock()
+_rule_ids = itertools.count(1)
+HEARTBEAT_SECONDS = 20
+
+
+def _rule_matches(rule: str, tweet: dict) -> bool:
+    """只实现 "@username"：推文文本提到该用户，或回复该用户的推文（真实回复自动带 @ 被回复者；
+    回复自己时不带，故排除作者本人，否则 agent 回复自己的推文会唤醒自己）"""
+    handles = [w[1:].lower() for w in rule.split() if w.startswith("@")]
+    if not handles:
+        return False
+    author = users[tweet["author_id"]]["username"].lower()
+    parent = parent_of.get(tweet["id"])
+    parent_author = next((users[t["author_id"]]["username"].lower() for t in tweets if t["id"] == parent), None)
+    return all(f"@{h}" in tweet["text"].lower() or (parent_author == h and author != h) for h in handles)
+
+
+def _add_tweet(tweet: dict, parent_id: str | None = None) -> None:
+    """新推文入库，并推送给匹配规则的过滤流连接"""
+    tweets.append(tweet)
+    if parent_id:
+        parent_of[tweet["id"]] = parent_id
+    with stream_lock:
+        matched = [{"id": r["id"], "tag": r["value"]} for r in stream_rules if _rule_matches(r["value"], tweet)]
+        if matched:
+            event = json.dumps({"data": {"id": tweet["id"], "text": tweet["text"], "edit_history_tweet_ids": [tweet["id"]]},
+                                "matching_rules": matched})
+            for q in stream_subscribers:
+                q.put(event)
+
 
 @app.get("/2/tweets/search/stream/rules")
 def get_rules(authorization: str | None = Header(default=None)):
     _check_auth(authorization)
-    return {"data": []}
+    with stream_lock:
+        if not stream_rules:
+            return {"meta": {"sent": _now_iso(), "result_count": 0}}
+        return {"data": list(stream_rules), "meta": {"sent": _now_iso(), "result_count": len(stream_rules)}}
 
 
 @app.post("/2/tweets/search/stream/rules")
 async def post_rules(request: Request, authorization: str | None = Header(default=None)):
     _check_auth(authorization)
     body = await request.json()
-    return {"data": [{"id": str(i + 1), "value": r.get("value", "")} for i, r in enumerate(body.get("add", []))]}
+    with stream_lock:
+        if "delete" in body:
+            ids = set(body["delete"].get("ids", []))
+            stream_rules[:] = [r for r in stream_rules if r["id"] not in ids]
+            return {"meta": {"sent": _now_iso(), "summary": {"deleted": len(ids), "not_deleted": 0}}}
+        added = [{"id": str(next(_rule_ids)), "value": r.get("value", "")} for r in body.get("add", [])]
+        stream_rules.extend(added)
+    return {"data": added, "meta": {"sent": _now_iso(), "summary": {"created": len(added), "not_created": 0}}}
 
 
 @app.get("/2/tweets/search/stream")
 def stream(authorization: str | None = Header(default=None)):
     _check_auth(authorization)
+    q: queue.Queue = queue.Queue()
+    with stream_lock:
+        stream_subscribers.append(q)
 
     def generate():
-        import json
+        try:
+            while True:
+                try:
+                    yield q.get(timeout=HEARTBEAT_SECONDS) + "\r\n"
+                except queue.Empty:
+                    yield "\r\n"  # keep-alive
+        finally:
+            with stream_lock:
+                stream_subscribers.remove(q)
 
-        mention = _tweet(f"@{ME['username']} hey, got a minute?", _by_name["alice"])
-        tweets.append(mention)
-        yield json.dumps({"data": mention}) + "\r\n"
+    return StreamingResponse(generate(), media_type="application/json")
 
-    return StreamingResponse(generate(), media_type="text/plain")
+
+@app.get("/2/tweets/{tweet_id}")
+def get_tweet(tweet_id: str, request: Request, authorization: str | None = Header(default=None)):
+    _caller(authorization)
+    tweet = next((t for t in tweets if t["id"] == tweet_id), None)
+    if tweet is None:  # 真实 API：200 + errors
+        return {"errors": [{"value": tweet_id, "detail": f"Could not find tweet with id: [{tweet_id}].",
+                            "title": "Not Found Error", "resource_type": "tweet", "parameter": "id",
+                            "type": "https://api.twitter.com/2/problems/resource-not-found"}]}
+    resp = _page([tweet], request)
+    resp["data"] = resp["data"][0]
+    return resp
 
 
 # ---- 测试注入 / 前端：以任意用户身份操作（默认 ruoyu） ----
@@ -247,7 +396,7 @@ def admin_post(body: AdminTweetIn):
     uid = _uid_of(body.username)
     conversation_id = _conversation_of(body.in_reply_to_tweet_id) if body.in_reply_to_tweet_id else None
     tweet = _tweet(body.text, uid, conversation_id=conversation_id)
-    tweets.append(tweet)
+    _add_tweet(tweet, body.in_reply_to_tweet_id)
     return tweet
 
 
@@ -478,6 +627,8 @@ def _load_seed_tweets() -> None:
         tweet = _tweet(texts[key], _by_name[spec["author"]], conversation_id=conversation_id, ms=when[key])
         tweets.append(tweet)
         ids[key] = tweet["id"]
+        if "reply_to" in spec:
+            parent_of[tweet["id"]] = ids[spec["reply_to"]]
 
 
 _load_seed_tweets()

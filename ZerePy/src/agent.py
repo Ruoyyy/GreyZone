@@ -1,5 +1,7 @@
 import json
+import queue
 import random
+import threading
 import time
 import logging
 import os
@@ -8,7 +10,7 @@ from dotenv import load_dotenv
 from src.connection_manager import ConnectionManager
 from src.helpers import print_h_bar
 from src.action_handler import execute_action
-from src.prompts import AGENT_OPERATING_PROMPT, AGENT_CYCLE_PROMPT
+from src.prompts import AGENT_OPERATING_PROMPT, AGENT_CYCLE_PROMPT, AGENT_MENTION_NOTE
 from src.tools import ToolRegistry
 from src.run_log import RunLog
 import src.actions.twitter_actions  
@@ -77,6 +79,10 @@ class ZerePyAgent:
             self._cycle_history = []  # past cycles' messages, oldest first
             self._run_log = None  # created on the first cycle
             self._cycle_no = 0
+
+            # Wake up early when mentioned (Twitter filtered stream), in addition to the loop_delay timer
+            self.wake_on_mention = agent_dict.get("wake_on_mention", False)
+            self._mentions = queue.Queue()
 
         except Exception as e:
             logger.error("Could not load ZerePy agent")
@@ -168,11 +174,14 @@ class ZerePyAgent:
         
         return random.choices(self.tasks, weights=task_weights, k=1)[0]
 
-    def run_cycle(self) -> None:
+    def run_cycle(self, mentioned_ids: list = None) -> None:
         """One tool-driven cycle: the LLM observes via tools and acts until it stops calling them"""
         llm = self.connection_manager.connections[self.model_provider]
         system = {"role": "system", "content": self._construct_system_prompt() + "\n\n" + AGENT_OPERATING_PROMPT}
-        cycle = [{"role": "user", "content": AGENT_CYCLE_PROMPT.format(now=datetime.now().strftime("%Y-%m-%d %H:%M"))}]
+        trigger = AGENT_CYCLE_PROMPT.format(now=datetime.now().strftime("%Y-%m-%d %H:%M"))
+        if mentioned_ids:
+            trigger += AGENT_MENTION_NOTE.format(tweet_ids=", ".join(mentioned_ids))
+        cycle = [{"role": "user", "content": trigger}]
 
         if self._run_log is None:
             self._run_log = RunLog(self.name)
@@ -183,7 +192,8 @@ class ZerePyAgent:
                                 system_prompt=system["content"])
         self._cycle_no += 1
         log = lambda event, **fields: self._run_log.event(event, cycle=self._cycle_no, **fields)
-        log("cycle_start", trigger=cycle[0]["content"], memory_cycles_held=len(self._cycle_history))
+        log("cycle_start", wake="mention" if mentioned_ids else "timer", trigger=trigger,
+            memory_cycles_held=len(self._cycle_history))
 
         try:
             for step in range(1, self.max_tool_steps + 1):
@@ -283,21 +293,51 @@ class ZerePyAgent:
             logger.info("\n🛑 Agent loop stopped by user.")
             return
 
+    def _listen_for_mentions(self):
+        """Feed mention tweet ids into the queue via ZerePy's own filtered-stream client; reconnect on drop"""
+        twitter = self.connection_manager.connections["twitter"]
+        rule = f"@{os.getenv('TWITTER_USERNAME', '').lower()} -is:retweet"  # same rule as respond-to-mentions
+        while True:
+            try:
+                for tweet in twitter.stream_tweets(rule):
+                    logger.info(f"\n🔔 Mentioned in tweet {tweet['id']}")
+                    self._mentions.put(tweet["id"])
+            except Exception as e:
+                logger.warning(f"Mention stream dropped ({e}); reconnecting in 10s")
+            time.sleep(10)
+
+    def _wait_for_next_cycle(self) -> list:
+        """Sleep until loop_delay elapses or a mention arrives; returns the mentioned tweet ids (empty on timer)"""
+        if not self.wake_on_mention:
+            time.sleep(self.loop_delay)
+            return []
+        try:
+            ids = [self._mentions.get(timeout=self.loop_delay)]
+        except queue.Empty:
+            return []
+        while not self._mentions.empty():  # mentions that arrived together wake the agent once
+            ids.append(self._mentions.get_nowait())
+        return ids
+
     def _tool_loop(self):
         logger.info("\n🚀 Starting agent loop...")
         logger.info("Press Ctrl+C at any time to stop the loop.")
         print_h_bar()
 
+        if self.wake_on_mention:
+            threading.Thread(target=self._listen_for_mentions, daemon=True).start()
+
         try:
+            mentioned_ids = []
             while True:
                 try:
-                    self.run_cycle()
+                    self.run_cycle(mentioned_ids)
                 except Exception as e:
                     logger.error(f"\n❌ Error in agent cycle: {e}")
 
-                logger.info(f"\n⏳ Waiting {self.loop_delay} seconds before next cycle...")
+                logger.info(f"\n⏳ Waiting up to {self.loop_delay} seconds before next cycle...")
                 print_h_bar()
-                time.sleep(self.loop_delay)
+                mentioned_ids = self._wait_for_next_cycle()
 
         except KeyboardInterrupt:
             logger.info("\n🛑 Agent loop stopped by user.")

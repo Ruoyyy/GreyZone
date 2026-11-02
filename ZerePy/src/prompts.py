@@ -18,6 +18,7 @@ AGENT_OPERATING_PROMPT = ("You act only through the tools you are given. Each cy
                           "Don't reply to or like your own tweets, and don't reply to the same tweet twice.")
 
 AGENT_CYCLE_PROMPT = "New cycle. Current time: {now}."
+AGENT_MENTION_NOTE = " Notification: you were mentioned in tweet(s) {tweet_ids}."
 
 
 #Echochamber prompts
