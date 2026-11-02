@@ -22,13 +22,16 @@
 搜索端点支持连接代码会发送的两种 query：
   "from:{username} -is:retweet -is:reply"        （get-latest-tweets）
   "conversation_id:{tweet_id} is:reply"          （get-tweet-replies）
-状态存内存，容器重启即重置。预置了 ruoyu/alice 的推文和一条回复作为交互素材。
+状态存内存，容器重启即重置。启动时从 seed_tweets.json 载入账号、关注关系和预置推文（背景，非 agent 主要信息源），
+其中 chain 类推文的金额/时间取自链上真实交易（chain/seed.py 回放的固定历史）。
+与真实 API 一致的细节：推文/用户 id 为 snowflake；首页时间线只含自己和关注的人；search/recent 只覆盖最近 7 天。
 """
+import itertools
 import json
 import os
 import time
 import urllib.request
-import uuid
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -41,35 +44,49 @@ from pydantic import BaseModel
 
 app = FastAPI(title="twitter-mock")
 
-# "我" = ZerePy agent admin（与 .env 的 TWITTER_USER_ID / TWITTER_USERNAME 对应）
-ME = {"id": "1001", "username": "admin", "name": "admin"}
-
-users = {
-    "1001": ME,
-    "1002": {"id": "1002", "username": "ruoyu", "name": "Ruoyu"},  # 模拟的人类用户（前端默认身份）
-    "1003": {"id": "1003", "username": "alice", "name": "Alice"},
-}
+SEED_FILE = Path(__file__).parent / "seed_tweets.json"
+TWITTER_EPOCH_MS = 1288834974657
+WORKER_ID = 377
+SEARCH_WINDOW_MS = 7 * 24 * 3600 * 1000  # search/recent 只覆盖最近 7 天
+_sequence = itertools.count()
 
 
-def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+def _snowflake(ms: int, sequence: int) -> str:
+    """Twitter snowflake：(毫秒时间 - 纪元) << 22 | 机器号 << 12 | 序号"""
+    return str(((ms - TWITTER_EPOCH_MS) << 22) | (WORKER_ID << 12) | (sequence % 4096))
 
 
-def _tweet(text: str, author_id: str, conversation_id: str | None = None) -> dict:
+def _ms_of(tweet_id: str) -> int:
+    return (int(tweet_id) >> 22) + TWITTER_EPOCH_MS
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _tweet(text: str, author_id: str, conversation_id: str | None = None, ms: int | None = None) -> dict:
+    ms = _now_ms() if ms is None else ms
     return {
-        "id": uuid.uuid4().hex[: 19],  # Twitter id 是 19 位数字，长度接近即可
+        "id": _snowflake(ms, next(_sequence)),
         "text": text,
         "author_id": author_id,
-        "created_at": _now(),
+        "created_at": datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z",
         **({"conversation_id": conversation_id} if conversation_id else {}),
     }
 
 
-t1 = _tweet("gm. anyone else watching the mempool this morning?", "1002")
-t2 = _tweet("what is everyone working on this week?", "1003")
-t3 = _tweet("always. coffee first though", "1003", conversation_id=t1["id"])
+# 账号与关注关系（用户 id 由注册日期生成 snowflake，固定不变；admin 的 id 需与 .env 的 TWITTER_USER_ID 一致）
+seed_doc = json.load(open(SEED_FILE))
+users: dict[str, dict] = {}
+for i, acct in enumerate(seed_doc["accounts"]):
+    joined_ms = int(datetime.fromisoformat(acct["joined"]).replace(tzinfo=timezone.utc).timestamp() * 1000)
+    uid = _snowflake(joined_ms, i)
+    users[uid] = {"id": uid, "username": acct["username"], "name": acct["name"]}
+_by_name = {u["username"]: uid for uid, u in users.items()}
+ME = users[_by_name["admin"]]  # "我" = ZerePy agent（与 .env 的 TWITTER_USER_ID / TWITTER_USERNAME 对应）
+follows: dict[str, set[str]] = {_by_name[u]: {_by_name[f] for f in fs} for u, fs in seed_doc["follows"].items()}
 
-tweets: list[dict] = [t1, t2, t3]  # 时间正序；返回时倒序（最新在前）
+tweets: list[dict] = []  # 时间正序；返回时倒序（最新在前）。预置推文在文件末尾载入
 likes: dict[str, set[str]] = {}  # tweet_id -> 点赞的 user_id 集合
 
 
@@ -142,7 +159,8 @@ def timeline(user_id: str, request: Request, authorization: str | None = Header(
         max_results = int(request.query_params.get("max_results", "10"))
     except ValueError:
         max_results = 10
-    data = _newest_first()[:max_results]
+    visible = {user_id} | follows.get(user_id, set())  # 与真实 API 一致：首页只含自己和关注的人
+    data = [t for t in _newest_first() if t["author_id"] in visible][:max_results]
     return {"data": [dict(t) for t in data], "includes": _includes(data)}
 
 
@@ -165,7 +183,8 @@ def search_recent(request: Request, authorization: str | None = Header(default=N
     else:
         data = _newest_first()
 
-    data = data[:max_results]
+    cutoff = _now_ms() - SEARCH_WINDOW_MS
+    data = [t for t in data if _ms_of(t["id"]) >= cutoff][:max_results]
     resp = {"data": [dict(t) for t in data]}
     if "author_id" in request.query_params.get("expansions", ""):
         resp["includes"] = _includes(data)  # 与真实 API 一致：请求了 expansions 才返回
@@ -214,7 +233,7 @@ def stream(authorization: str | None = Header(default=None)):
     def generate():
         import json
 
-        mention = _tweet(f"@{ME['username']} hey, got a minute?", "1003")
+        mention = _tweet(f"@{ME['username']} hey, got a minute?", _by_name["alice"])
         tweets.append(mention)
         yield json.dumps({"data": mention}) + "\r\n"
 
@@ -409,3 +428,56 @@ def etherscan(request: Request):
 @app.get("/", include_in_schema=False)
 def ui():
     return FileResponse(Path(__file__).parent / "static" / "index.html")
+
+
+# ---- 预置推文（启动时载入；依赖上面的链查询，故放在文件末尾） ----
+
+def _load_seed_tweets() -> None:
+    """按 seed_tweets.json 生成预置推文：时间相对启动时刻；chain 类推文的金额与时间取自链上真实交易。"""
+    import hashlib
+    import chain_seed  # chain/seed.py，挂载进来以复用确定性的钱包派生
+
+    now = _now_ms()
+    specs = {t["key"]: t for t in seed_doc["tweets"]}
+    when: dict[str, int] = {}
+    texts: dict[str, str] = {}
+
+    def outgoing(wallet: str) -> list[dict]:
+        address = Account.from_key(chain_seed.derived_key(wallet)).address.lower()
+        return sorted((t for t in _address_txs(address, 500) if t["from"] == address), key=lambda t: t["block"])
+
+    def jitter(key: str, span_ms: int) -> int:
+        """按 key 固定的抖动：否则所有推文与启动时刻的分/秒/毫秒完全对齐，形成指纹"""
+        return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16) % span_ms
+
+    def resolve(key: str) -> int:
+        if key in when:
+            return when[key]
+        spec = specs[key]
+        texts[key] = spec["text"]
+        if "hours_ago" in spec:
+            ms = now - int(spec["hours_ago"] * 3600_000) - jitter(key, 600_000)
+        elif "days_ago" in spec:
+            ms = now - int(spec["days_ago"] * 86400_000) - jitter(key, 6 * 3600_000)
+        elif "chain" in spec:
+            tx = outgoing(spec["chain"]["wallet"])[spec["chain"]["out"]]
+            ms = tx["timestamp"] * 1000 + spec["chain"]["after_minutes"] * 60_000 + jitter(key, 60_000)
+            texts[key] = spec["text"].format(amount=tx["amount"])
+        else:
+            ms = resolve(spec["reply_to"]) + spec["after_minutes"] * 60_000 + jitter(key, 60_000)
+        when[key] = ms
+        return ms
+
+    for key in specs:
+        resolve(key)
+
+    ids: dict[str, str] = {}
+    for key in sorted(specs, key=lambda k: when[k]):  # 父推文一定更早，按时间顺序创建即可拿到父 id
+        spec = specs[key]
+        conversation_id = _conversation_of(ids[spec["reply_to"]]) if "reply_to" in spec else None
+        tweet = _tweet(texts[key], _by_name[spec["author"]], conversation_id=conversation_id, ms=when[key])
+        tweets.append(tweet)
+        ids[key] = tweet["id"]
+
+
+_load_seed_tweets()
