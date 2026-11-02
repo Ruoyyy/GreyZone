@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Twitter Mock</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f7f9f9; --border: #eff3f4; --text: #0f1419; --muted: #536471;
+    --accent: #1d9bf0; --accent-text: #ffffff; --like: #f91880; --agent: #7856ff; --danger: #f4212e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #000000; --panel: #16181c; --border: #2f3336; --text: #e7e9ea; --muted: #71767b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; border-left: 1px solid var(--border); border-right: 1px solid var(--border); min-height: 100vh; }
+  header { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--bg) 85%, transparent);
+           backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 12px 16px; }
+  header h1 { margin: 0; font-size: 20px; display: flex; align-items: center; justify-content: space-between; }
+  .status { font-size: 12px; font-weight: normal; color: var(--muted); }
+  .status.err { color: var(--danger); }
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+  .chip { border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 999px;
+          padding: 4px 12px; cursor: pointer; font: inherit; font-size: 13px; }
+  .chip.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .filters input { flex: 1; min-width: 120px; border: 1px solid var(--border); background: var(--panel); color: var(--text);
+                   border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 13px; }
+
+  .composer { display: flex; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .composer .body { flex: 1; }
+  textarea { width: 100%; border: none; background: transparent; color: var(--text); font: inherit; font-size: 17px;
+             resize: none; outline: none; min-height: 52px; }
+  .reply-box textarea { font-size: 15px; min-height: 40px; }
+  .composer-foot { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border); padding-top: 8px; }
+  .as { color: var(--muted); font-size: 13px; }
+  .count { color: var(--muted); font-size: 13px; margin-right: 10px; }
+  .count.over { color: var(--danger); }
+  .btn { background: var(--accent); color: var(--accent-text); border: none; border-radius: 999px; padding: 7px 16px;
+         font: inherit; font-weight: 700; cursor: pointer; }
+  .btn:disabled { opacity: .5; cursor: default; }
+
+  .avatar { width: 40px; height: 40px; border-radius: 50%; flex: none; display: grid; place-items: center;
+            color: #fff; font-weight: 700; font-size: 16px; }
+  .thread { border-bottom: 1px solid var(--border); }
+  .tweet { display: flex; gap: 12px; padding: 12px 16px; }
+  .tweet.reply { padding-left: 40px; }
+  .tweet.reply .avatar { width: 32px; height: 32px; font-size: 13px; }
+  .tweet .body { flex: 1; min-width: 0; }
+  .meta { display: flex; gap: 4px; align-items: baseline; flex-wrap: wrap; color: var(--muted); font-size: 14px; }
+  .meta .name { color: var(--text); font-weight: 700; cursor: pointer; }
+  .meta .name:hover { text-decoration: underline; }
+  .badge { font-size: 11px; padding: 0 6px; border-radius: 4px; color: #fff; background: var(--agent); align-self: center; }
+  .badge.me { background: var(--accent); }
+  .text { white-space: pre-wrap; word-wrap: break-word; margin: 2px 0 6px; }
+  .reply-to { color: var(--muted); font-size: 13px; }
+  .actions { display: flex; gap: 28px; color: var(--muted); font-size: 13px; }
+  .act { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 2px 0; display: inline-flex; gap: 5px; align-items: center; }
+  .act:hover { color: var(--accent); }
+  .act.like:hover, .act.like.on { color: var(--like); }
+  .tid { margin-left: auto; font-family: ui-monospace, monospace; font-size: 11px; cursor: pointer; }
+  .reply-box { padding: 0 16px 12px 68px; }
+  .reply-box .composer-foot { border-top: none; padding-top: 0; }
+  .empty { color: var(--muted); text-align: center; padding: 40px 16px; }
+  .new { animation: flash 1.5s ease-out; }
+  @keyframes flash { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Twitter Mock <span id="status" class="status">连接中…</span></h1>
+    <div class="filters" id="filters"></div>
+  </header>
+
+  <div class="composer">
+    <div class="avatar" id="me-avatar"></div>
+    <div class="body">
+      <textarea id="compose" placeholder="有什么新鲜事？" maxlength="1000"></textarea>
+      <div class="composer-foot">
+        <span class="as" id="me-label"></span>
+        <span><span class="count" id="compose-count">0/280</span><button class="btn" id="compose-btn" disabled>发推</button></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="feed"></div>
+</main>
+
+<script>
+// 前端身份固定为 ruoyu（模拟的人类用户，不是 agent）
+const POSTER = "ruoyu";
+const LIMIT = 280;
+const POLL_MS = 2000;
+
+let state = null, lastJson = "";
+let filterUser = "", query = "";
+const openReplies = new Set();      // 展开回复框的 tweet id
+const drafts = {};                  // tweet id -> 回复草稿
+const seen = new Set();             // 已渲染过的 tweet id（用于高亮新推文）
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const COLORS = ["#1d9bf0", "#00ba7c", "#f91880", "#ff7a00", "#7856ff", "#ffd400"];
+const colorOf = (uid) => COLORS[[...uid].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
+const userById = (uid) => state.users[uid] || { id: uid, username: "unknown", name: "Unknown" };
+const posterUser = () => Object.values(state.users).find((u) => u.username === POSTER);
+
+function ago(iso) {
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 60) return `${Math.floor(s)}秒`;
+  if (s < 3600) return `${Math.floor(s / 60)}分钟`;
+  if (s < 86400) return `${Math.floor(s / 3600)}小时`;
+  return new Date(iso).toLocaleString();
+}
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`);
+  return r.json();
+}
+
+async function refresh() {
+  try {
+    const s = await api("/__admin/state");
+    $("status").textContent = `${s.tweets.length} 条推文 · 实时`;
+    $("status").className = "status";
+    const json = JSON.stringify(s);
+    if (json === lastJson) return;
+    lastJson = json; state = s;
+    render();
+  } catch (e) {
+    $("status").textContent = "连接断开";
+    $("status").className = "status err";
+  }
+}
+
+function renderFilters() {
+  const chips = [["", "全部"], ...Object.values(state.users).map((u) => [u.id, "@" + u.username])];
+  $("filters").innerHTML = chips.map(([id, label]) =>
+    `<button class="chip ${filterUser === id ? "on" : ""}" data-user="${id}">${esc(label)}</button>`).join("") +
+    `<input id="search" placeholder="搜索推文…" value="${esc(query)}">`;
+}
+
+function tweetHtml(t, isReply, parentAuthor) {
+  const u = userById(t.author_id);
+  const likers = state.likes[t.id] || [];
+  const me = posterUser();
+  const iLiked = me && likers.includes(me.id);
+  const likerNames = likers.map((id) => "@" + userById(id).username).join(", ");
+  const badge = t.author_id === state.me ? `<span class="badge">agent</span>` : (u.username === POSTER ? `<span class="badge me">我</span>` : "");
+  const fresh = seen.size && !seen.has(t.id) ? " new" : "";
+  return `<div class="tweet${isReply ? " reply" : ""}${fresh}">
+    <div class="avatar" style="background:${colorOf(u.id)}">${esc(u.name[0].toUpperCase())}</div>
+    <div class="body">
+      <div class="meta"><span class="name" data-user="${u.id}">${esc(u.name)}</span>${badge}<span>@${esc(u.username)}</span><span>·</span><span title="${esc(t.created_at)}">${ago(t.created_at)}</span></div>
+      ${isReply && parentAuthor ? `<div class="reply-to">回复 @${esc(parentAuthor.username)}</div>` : ""}
+      <div class="text">${esc(t.text)}</div>
+      <div class="actions">
+        <button class="act" data-reply="${t.id}">💬 回复</button>
+        <button class="act like ${iLiked ? "on" : ""}" data-like="${t.id}" title="${esc(likerNames)}">${iLiked ? "♥" : "♡"} ${likers.length || ""}</button>
+        <span class="tid" data-copy="${t.id}" title="点击复制 tweet id">#${t.id.slice(0, 8)}</span>
+      </div>
+    </div>
+  </div>
+  ${openReplies.has(t.id) ? `<div class="reply-box">
+    <textarea data-draft="${t.id}" placeholder="以 @${POSTER} 身份回复 @${esc(u.username)}">${esc(drafts[t.id] || "")}</textarea>
+    <div class="composer-foot"><span></span><button class="btn" data-send="${t.id}">回复</button></div>
+  </div>` : ""}`;
+}
+
+function render() {
+  const me = posterUser();
+  $("me-avatar").textContent = me ? me.name[0].toUpperCase() : "?";
+  $("me-avatar").style.background = me ? colorOf(me.id) : "#888";
+  $("me-label").textContent = `以 @${POSTER} 身份发推`;
+  // 记住焦点所在的输入框（回复框 / 搜索框），重渲染后恢复
+  const active = document.activeElement;
+  const focusDraft = active && active.dataset && active.dataset.draft;
+  const focusSearch = active && active.id === "search";
+  const caret = focusDraft || focusSearch ? active.selectionStart : 0;
+  renderFilters();
+  if (focusSearch) { const el = $("search"); el.focus(); el.setSelectionRange(caret, caret); }
+
+  // 按 conversation_id 组装线程；根帖倒序，回复正序
+  const byId = Object.fromEntries(state.tweets.map((t) => [t.id, t]));
+  const replies = {};
+  const roots = [];
+  for (const t of state.tweets) {
+    if (t.conversation_id && byId[t.conversation_id]) (replies[t.conversation_id] ||= []).push(t);
+    else roots.push(t);
+  }
+  const q = query.trim().toLowerCase();
+  const match = (t) => (!filterUser || t.author_id === filterUser) && (!q || t.text.toLowerCase().includes(q));
+
+
+  const html = roots.slice().reverse()
+    .filter((r) => match(r) || (replies[r.id] || []).some(match))
+    .map((r) => {
+      const author = userById(r.author_id);
+      const rs = (replies[r.id] || []).map((t) => tweetHtml(t, true, author)).join("");
+      return `<div class="thread">${tweetHtml(r, false)}${rs}</div>`;
+    }).join("");
+  $("feed").innerHTML = html || `<div class="empty">没有符合条件的推文</div>`;
+
+  state.tweets.forEach((t) => seen.add(t.id));
+  if (focusDraft) {
+    const el = document.querySelector(`textarea[data-draft="${focusDraft}"]`);
+    if (el) { el.focus(); el.setSelectionRange(caret, caret); }
+  }
+}
+
+// ---- 交互 ----
+const compose = $("compose");
+compose.addEventListener("input", () => {
+  const n = compose.value.length;
+  $("compose-count").textContent = `${n}/${LIMIT}`;
+  $("compose-count").className = "count" + (n > LIMIT ? " over" : "");
+  $("compose-btn").disabled = !compose.value.trim() || n > LIMIT;
+});
+compose.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("compose-btn").click(); });
+$("compose-btn").addEventListener("click", async () => {
+  const text = compose.value.trim();
+  if (!text) return;
+  $("compose-btn").disabled = true;
+  try {
+    await api("/__admin/tweets", { text, username: POSTER });
+    compose.value = "";
+    compose.dispatchEvent(new Event("input"));
+    await refresh();
+  } catch (e) { alert("发推失败: " + e.message); $("compose-btn").disabled = false; }
+});
+
+document.addEventListener("click", async (e) => {
+  const el = e.target.closest("[data-user],[data-reply],[data-like],[data-send],[data-copy]");
+  if (!el) return;
+  const d = el.dataset;
+  if (d.user !== undefined) { filterUser = filterUser === d.user && el.classList.contains("name") ? "" : d.user; render(); }
+  else if (d.reply) { openReplies.has(d.reply) ? openReplies.delete(d.reply) : openReplies.add(d.reply); render();
+    document.querySelector(`textarea[data-draft="${d.reply}"]`)?.focus(); }
+  else if (d.like) { try { await api("/__admin/likes", { tweet_id: d.like, username: POSTER }); await refresh(); } catch (err) { alert(err.message); } }
+  else if (d.copy) { navigator.clipboard?.writeText(d.copy); }
+  else if (d.send) {
+    const text = (drafts[d.send] || "").trim();
+    if (!text) return;
+    el.disabled = true;
+    try {
+      await api("/__admin/tweets", { text, username: POSTER, in_reply_to_tweet_id: d.send });
+      delete drafts[d.send]; openReplies.delete(d.send);
+      await refresh();
+    } catch (err) { alert("回复失败: " + err.message); el.disabled = false; }
+  }
+});
+document.addEventListener("input", (e) => {
+  if (e.target.dataset.draft) drafts[e.target.dataset.draft] = e.target.value;
+  if (e.target.id === "search") {
+    query = e.target.value;
+    render();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.target.dataset.draft && e.key === "Enter" && (e.ctrlKey || e.metaKey))
+    document.querySelector(`[data-send="${e.target.dataset.draft}"]`)?.click();
+});
+
+refresh();
+setInterval(refresh, POLL_MS);
+setInterval(() => state && render(), 30000); // 刷新相对时间
+</script>
+</body>
+</html>

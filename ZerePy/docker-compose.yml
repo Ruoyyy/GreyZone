@@ -1,0 +1,58 @@
+# 本地端到端测试环境（全部容器化）:
+#   anvil        EVM 链模拟器（链上半边）
+#   twitter-mock 社交媒体模拟器（Twitter API v2 最小实现，mock/twitter_mock.py）
+#   zerepy       CLI/服务器本体，LLM 走 DeepSeek API（.env 里配置）
+#
+# 启动模拟器:   docker compose up -d anvil twitter-mock
+# 进入 CLI:     docker compose run --rm zerepy
+# 服务器模式:   docker compose run --rm --service-ports zerepy python main.py --server
+# 推特前端:     http://localhost:8788/  （以 @ruoyu 身份发推/回复/点赞，实时查看 agent 的推文历史）
+# 注入推文:     curl -X POST localhost:8788/__admin/tweets \
+#                 -H 'Content-Type: application/json' \
+#                 -d '{"text":"hello agent","username":"alice"}'   # username 缺省为 ruoyu
+services:
+  # EVM 链模拟器。chain-id 必须是 10143：
+  # MonadConnection 硬编码 MONAD_CHAIN_ID=10143（src/connections/monad_connection.py）
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    # 注意: 该镜像 ENTRYPOINT 会吞掉字符串型 command 的参数，必须显式覆盖 entrypoint
+    # --accounts 0: 不生成公知的默认开发账户；admin 唯一的钱包及余额由 genesis.json 分配
+    # genesis 的 timestamp 在启动时写入当前时间：anvil 从创世时间往后推算出块时间，
+    # 写死的话所有区块时间都会停留在过去（缺省则为 1970 年）
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        sed "s/\"alloc\"/\"timestamp\": \"$$(printf 0x%x $$(date +%s))\", \"alloc\"/" /chain/genesis.json > /tmp/genesis.json
+        && exec anvil --accounts 0 --init /tmp/genesis.json --host 0.0.0.0 --port 80 --chain-id 10143
+    volumes:
+      - ./chain:/chain:ro
+    ports:
+      - "8545:80"
+    # agent 侧以真实主机名访问（tool 报错信息会进入 LLM 上下文，不能暴露 "anvil"）
+    networks:
+      default:
+        aliases: ["testnet-rpc.monad.xyz"]
+
+  # 社交媒体模拟器：Twitter API v2 的最小实现
+  # （agent 循环的 post/reply/like 任务 + timeline 读取都走这里；
+#   TwitterConnection 通过 agent 配置里的 base_url 指向本服务）
+  twitter-mock:
+    build: ./mock
+    ports:
+      - "8788:80"
+    # 同上：agent 侧以 api.twitter.com 访问，避免报错里出现 "twitter-mock"
+    networks:
+      default:
+        aliases: ["api.twitter.com"]
+
+  # ZerePy 本体。交互式使用 docker compose run --rm zerepy 进入 CLI
+  zerepy:
+    build: .
+    stdin_open: true
+    tty: true
+    env_file: .env
+    depends_on:
+      - anvil
+      - twitter-mock
+    ports:
+      - "8000:8000" # 仅 --server 模式使用
