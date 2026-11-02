@@ -10,6 +10,7 @@ from src.helpers import print_h_bar
 from src.action_handler import execute_action
 from src.prompts import AGENT_OPERATING_PROMPT, AGENT_CYCLE_PROMPT
 from src.tools import ToolRegistry
+from src.run_log import RunLog
 import src.actions.twitter_actions  
 import src.actions.echochamber_actions
 import src.actions.solana_actions
@@ -74,6 +75,8 @@ class ZerePyAgent:
             self.max_tool_steps = agent_dict.get("max_tool_steps", 8)
             self.memory_cycles = agent_dict.get("memory_cycles", 5)
             self._cycle_history = []  # past cycles' messages, oldest first
+            self._run_log = None  # created on the first cycle
+            self._cycle_no = 0
 
         except Exception as e:
             logger.error("Could not load ZerePy agent")
@@ -171,23 +174,47 @@ class ZerePyAgent:
         system = {"role": "system", "content": self._construct_system_prompt() + "\n\n" + AGENT_OPERATING_PROMPT}
         cycle = [{"role": "user", "content": AGENT_CYCLE_PROMPT.format(now=datetime.now().strftime("%Y-%m-%d %H:%M"))}]
 
-        for _ in range(self.max_tool_steps):
-            history = [m for past in self._cycle_history for m in past]
-            message = llm.chat([system] + history + cycle, tools=self.tools.schemas)
-            cycle.append(message.model_dump(exclude_none=True))
+        if self._run_log is None:
+            self._run_log = RunLog(self.name)
+            logger.info(f"\n📝 Run log: {self._run_log.path}")
+            self._run_log.event("run_start", agent=self.name, provider=self.model_provider,
+                                model=llm.config.get("model"), tools=[t["function"]["name"] for t in self.tools.schemas],
+                                max_tool_steps=self.max_tool_steps, memory_cycles=self.memory_cycles,
+                                system_prompt=system["content"])
+        self._cycle_no += 1
+        log = lambda event, **fields: self._run_log.event(event, cycle=self._cycle_no, **fields)
+        log("cycle_start", trigger=cycle[0]["content"], memory_cycles_held=len(self._cycle_history))
 
-            if not message.tool_calls:
-                if message.content:
-                    logger.info(f"\n💭 {message.content}")
-                break
+        try:
+            for step in range(1, self.max_tool_steps + 1):
+                history = [m for past in self._cycle_history for m in past]
+                message = llm.chat([system] + history + cycle, tools=self.tools.schemas)
+                cycle.append(message.model_dump(exclude_none=True))
+                log("llm_response", step=step, content=message.content,
+                    tool_calls=[{"id": c.id, "name": c.function.name, "arguments": c.function.arguments}
+                                for c in message.tool_calls or []])
 
-            for call in message.tool_calls:
-                logger.info(f"\n🔧 {call.function.name}({call.function.arguments})")
-                result = self.tools.call(call.function.name, call.function.arguments)
-                logger.info(f"   ↳ {result[:300]}")
-                cycle.append({"role": "tool", "tool_call_id": call.id, "content": result})
-        else:
-            logger.warning(f"\n⚠️ Cycle stopped after {self.max_tool_steps} steps")
+                if not message.tool_calls:
+                    if message.content:
+                        logger.info(f"\n💭 {message.content}")
+                    break
+
+                for call in message.tool_calls:
+                    logger.info(f"\n🔧 {call.function.name}({call.function.arguments})")
+                    started = time.monotonic()
+                    result = self.tools.call(call.function.name, call.function.arguments)
+                    logger.info(f"   ↳ {result[:300]}")
+                    log("tool_result", step=step, id=call.id, name=call.function.name,
+                        arguments=call.function.arguments, ok="error" not in json.loads(result),
+                        duration_ms=round((time.monotonic() - started) * 1000), result=result)
+                    cycle.append({"role": "tool", "tool_call_id": call.id, "content": result})
+            else:
+                logger.warning(f"\n⚠️ Cycle stopped after {self.max_tool_steps} steps")
+            log("cycle_end", steps=step, hit_step_limit=bool(message.tool_calls))
+
+        except Exception as e:
+            log("cycle_error", error=f"{type(e).__name__}: {e}")
+            raise
 
         # Remember the last few cycles so the agent knows what it already did
         self._cycle_history = (self._cycle_history + [cycle])[-self.memory_cycles:]

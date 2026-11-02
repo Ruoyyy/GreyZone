@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-RUN pip install --no-cache-dir fastapi uvicorn
+RUN pip install --no-cache-dir fastapi uvicorn eth-account
 
 WORKDIR /app
 COPY twitter_mock.py .

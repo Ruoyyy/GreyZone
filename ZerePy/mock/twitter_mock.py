@@ -13,6 +13,9 @@
   POST /__admin/tweets                                  -> 测试注入：以任意用户身份发帖/回复（默认 ruoyu）
   POST /__admin/likes                                   -> 测试注入：以任意用户身份点赞/取消（默认 ruoyu）
   GET  /__admin/state                                   -> 全量状态（前端用）
+  GET  /__admin/wallets/{username}                      -> 环境侧用户的钱包：地址、余额、相关交易
+  POST /__admin/wallets/{username}/transfer             -> 以该用户的私钥签名并发送原生币转账
+  GET  /v2/api?module=account&action=txlist&address=... -> Etherscan v2 兼容的地址交易记录（agent 以 api.etherscan.io 访问）
   GET  /                                                -> 可视化前端（static/index.html）
 
 鉴权：只要求存在 Authorization 头（OAuth1 签名不校验——凭据来自 .env 的 mock 值）。
@@ -21,9 +24,16 @@
   "conversation_id:{tweet_id} is:reply"          （get-tweet-replies）
 状态存内存，容器重启即重置。预置了 ruoyu/alice 的推文和一条回复作为交互素材。
 """
+import json
+import os
 import time
+import urllib.request
 import uuid
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
+
+from eth_account import Account
+from eth_utils import to_checksum_address
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -241,6 +251,157 @@ def admin_state():
         "tweets": tweets,  # 时间正序
         "likes": {tid: sorted(uids) for tid, uids in likes.items() if uids},
     }
+
+
+# ---- 环境侧用户钱包（ruoyu/alice 的私钥只在这里，agent 容器里没有） ----
+
+RPC_URL = os.getenv("RPC_URL", "http://chain:80")
+USERS_KEYS = os.getenv("USERS_KEYS", "/app/users.keys.json")
+wallet_keys: dict[str, dict] = json.load(open(USERS_KEYS)) if Path(USERS_KEYS).exists() else {}
+
+
+def _rpc(method: str, *params):
+    req = urllib.request.Request(RPC_URL, data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    resp = json.load(urllib.request.urlopen(req, timeout=10))
+    if "error" in resp:
+        raise HTTPException(status_code=400, detail=resp["error"].get("message", str(resp["error"])))
+    return resp["result"]
+
+
+def _mon(wei_hex: str) -> str:
+    return str(Decimal(int(wei_hex, 16)) / Decimal(10**18))
+
+
+def _address_txs(address: str, limit: int) -> list[dict]:
+    """某地址的交易（新到旧，含失败的）。链从高块号开始、历史有数万块，不能逐块扫描；
+    用 anvil 实现的 Otterscan 地址索引接口（ots_searchTransactionsBefore）分页取"""
+    out, before, blocks = [], 0, {}
+    while len(out) < limit:
+        page = _rpc("ots_searchTransactionsBefore", address, before, 25)
+        for tx, receipt in zip(page["txs"], page["receipts"]):
+            n = int(tx["blockNumber"], 16)
+            if "timestamp" in receipt:
+                ts = int(receipt["timestamp"], 16) if isinstance(receipt["timestamp"], str) else receipt["timestamp"]
+            else:
+                ts = blocks.setdefault(n, int(_rpc("eth_getBlockByNumber", hex(n), False)["timestamp"], 16))
+            out.append({
+                "hash": tx["hash"], "from": tx["from"].lower(), "to": (tx["to"] or "").lower(),
+                # anvil 会把余额不足的交易打包为失败（status 0），而不是在提交时拒绝；按回执区分
+                "value": int(tx["value"], 16), "amount": _mon(tx["value"]), "ok": receipt["status"] == "0x1",
+                "block": n, "block_hash": tx["blockHash"], "timestamp": ts,
+                "nonce": int(tx["nonce"], 16), "gas": int(tx["gas"], 16), "gas_price": int(tx["gasPrice"], 16),
+                "gas_used": int(receipt["gasUsed"], 16), "input": tx["input"],
+            })
+        if page["lastPage"] or not page["txs"]:
+            break
+        before = int(page["txs"][-1]["blockNumber"], 16)
+    return out[:limit]
+
+
+def _wallet_of(username: str) -> dict:
+    if username not in wallet_keys:
+        raise HTTPException(status_code=404, detail=f"no wallet for {username}, have: {list(wallet_keys)}")
+    return wallet_keys[username]
+
+
+class TransferIn(BaseModel):
+    to: str
+    amount: str  # MON，字符串避免浮点误差
+
+
+@app.get("/__admin/wallets/{username}")
+def wallet(username: str):
+    address = _wallet_of(username)["address"]
+    return {
+        "username": username,
+        "address": address,
+        "balance": _mon(_rpc("eth_getBalance", address, "latest")),
+        "transfers": [t for t in _address_txs(address, 50) if t["value"] > 0],
+    }
+
+
+@app.post("/__admin/wallets/{username}/transfer")
+def transfer(username: str, body: TransferIn):
+    key = _wallet_of(username)
+    try:
+        value = int(Decimal(body.amount) * 10**18)
+    except InvalidOperation:
+        raise HTTPException(status_code=400, detail=f"invalid amount: {body.amount}")
+    if value <= 0:
+        raise HTTPException(status_code=400, detail="amount must be positive")
+    try:
+        to = to_checksum_address(body.to)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid address: {body.to}")
+
+    gas_price = int(_rpc("eth_gasPrice"), 16)
+    # 与真实钱包一致：余额不够 value + gas 时不发送
+    balance = int(_rpc("eth_getBalance", key["address"], "latest"), 16)
+    if balance < value + 21000 * gas_price:
+        raise HTTPException(status_code=400, detail=f"insufficient funds: balance {_mon(hex(balance))} MON")
+
+    tx = {
+        "to": to,
+        "value": value,
+        "gas": 21000,
+        "gasPrice": gas_price,
+        "nonce": int(_rpc("eth_getTransactionCount", key["address"], "pending"), 16),
+        "chainId": int(_rpc("eth_chainId"), 16),
+    }
+    signed = Account.sign_transaction(tx, key["private_key"])
+    raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
+    tx_hash = _rpc("eth_sendRawTransaction", "0x" + raw.hex().removeprefix("0x"))
+
+    receipt = None
+    for _ in range(50):  # 最多等 5 秒出块
+        receipt = _rpc("eth_getTransactionReceipt", tx_hash)
+        if receipt:
+            break
+        time.sleep(0.1)
+    if receipt is None:
+        raise HTTPException(status_code=504, detail=f"transaction {tx_hash} not mined yet")
+    if receipt["status"] != "0x1":
+        raise HTTPException(status_code=400, detail=f"transaction {tx_hash} failed on chain")
+    return {"hash": tx_hash, "from": key["address"], "to": to, "amount": body.amount, "block": int(receipt["blockNumber"], 16)}
+
+
+# ---- 区块浏览器 API（Etherscan v2 兼容，仅 txlist） ----
+# 标准 RPC 不支持"按地址列交易"，真实世界靠浏览器的索引 API；这里由 anvil 的 Otterscan 索引提供数据
+
+def _etherscan_error(message: str, result):
+    return {"status": "0", "message": message, "result": result}
+
+
+@app.get("/v2/api")
+def etherscan(request: Request):
+    q = request.query_params
+    if not q.get("apikey"):
+        return _etherscan_error("NOTOK", "Missing/Invalid API Key")
+    if q.get("chainid") != "10143":
+        return _etherscan_error("NOTOK", "Missing or unsupported chainid parameter")
+    if (q.get("module"), q.get("action")) != ("account", "txlist"):
+        return _etherscan_error("NOTOK", "Error! Missing Or invalid Module name")
+    try:
+        address = to_checksum_address(q.get("address", "")).lower()
+    except ValueError:
+        return _etherscan_error("NOTOK", "Error! Invalid address format")
+
+    latest = int(_rpc("eth_blockNumber"), 16)
+    page, offset = int(q.get("page", 1)), int(q.get("offset", 10000))
+    txs = _address_txs(address, 10000)  # 新到旧
+    if q.get("sort", "asc") != "desc":
+        txs.reverse()
+    txs = txs[(page - 1) * offset: page * offset]
+    if not txs:
+        return _etherscan_error("No transactions found", [])
+    return {"status": "1", "message": "OK", "result": [{
+        "blockNumber": str(t["block"]), "timeStamp": str(t["timestamp"]), "hash": t["hash"], "nonce": str(t["nonce"]),
+        "blockHash": t["block_hash"], "from": t["from"], "to": t["to"], "value": str(t["value"]),
+        "gas": str(t["gas"]), "gasPrice": str(t["gas_price"]), "isError": "0" if t["ok"] else "1",
+        "txreceipt_status": "1" if t["ok"] else "0", "input": t["input"], "contractAddress": "",
+        "gasUsed": str(t["gas_used"]), "confirmations": str(latest - t["block"] + 1),
+    } for t in txs]}
 
 
 # ---- 可视化前端 ----

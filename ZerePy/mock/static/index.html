@@ -15,7 +15,29 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
-  main { max-width: 640px; margin: 0 auto; border-left: 1px solid var(--border); border-right: 1px solid var(--border); min-height: 100vh; }
+  .layout { display: flex; justify-content: center; align-items: flex-start; }
+  main { flex: 0 1 640px; min-width: 0; border-left: 1px solid var(--border); border-right: 1px solid var(--border); min-height: 100vh; }
+  aside { flex: 0 0 320px; position: sticky; top: 0; padding: 12px 16px; }
+  @media (max-width: 980px) { .layout { flex-direction: column-reverse; align-items: stretch; } aside { position: static; flex: none; border-bottom: 1px solid var(--border); } main { flex: none; } }
+
+  .wallet { background: var(--panel); border-radius: 16px; padding: 14px 16px; }
+  .wallet h2 { margin: 0 0 8px; font-size: 18px; }
+  .addr { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); word-break: break-all; cursor: pointer; }
+  .bal { font-size: 26px; font-weight: 700; margin: 8px 0 12px; }
+  .bal small { font-size: 14px; color: var(--muted); font-weight: 400; }
+  .wallet input { width: 100%; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 8px;
+                  padding: 7px 10px; font: inherit; font-size: 13px; margin-bottom: 8px; }
+  .wallet .row { display: flex; gap: 8px; align-items: center; }
+  .wallet .row .btn { flex: none; white-space: nowrap; }
+  .wallet .row input { margin-bottom: 0; }
+  .wallet .msg { font-size: 12px; margin-top: 8px; word-break: break-all; color: var(--muted); }
+  .wallet .msg.err { color: var(--danger); }
+  .txs { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; font-size: 13px; }
+  .tx { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; }
+  .tx .peer { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+  .tx .in { color: #00ba7c; font-weight: 700; white-space: nowrap; }
+  .tx .out { color: var(--text); font-weight: 700; white-space: nowrap; }
+  .tx .failed { color: var(--danger); text-decoration: line-through; white-space: nowrap; }
   header { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--bg) 85%, transparent);
            backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 12px 16px; }
   header h1 { margin: 0; font-size: 20px; display: flex; align-items: center; justify-content: space-between; }
@@ -68,6 +90,7 @@
 </style>
 </head>
 <body>
+<div class="layout">
 <main>
   <header>
     <h1>Twitter Mock <span id="status" class="status">连接中…</span></h1>
@@ -87,6 +110,21 @@
 
   <div id="feed"></div>
 </main>
+<aside>
+  <div class="wallet">
+    <h2>钱包 · @<span id="w-user"></span></h2>
+    <div class="addr" id="w-addr" title="点击复制地址">加载中…</div>
+    <div class="bal"><span id="w-bal">–</span> <small>MON</small></div>
+    <input id="w-to" placeholder="收款地址 0x…" spellcheck="false">
+    <div class="row">
+      <input id="w-amt" placeholder="数量" inputmode="decimal">
+      <button class="btn" id="w-send">转账</button>
+    </div>
+    <div class="msg" id="w-msg"></div>
+    <div class="txs" id="w-txs"></div>
+  </div>
+</aside>
+</div>
 
 <script>
 // 前端身份固定为 ruoyu（模拟的人类用户，不是 agent）
@@ -117,7 +155,12 @@ function ago(iso) {
 
 async function api(path, body) {
   const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
-  if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`);
+  if (!r.ok) {
+    const text = await r.text();
+    let detail = text;
+    try { detail = JSON.parse(text).detail ?? text; } catch {}
+    throw new Error(String(detail).slice(0, 200));
+  }
   return r.json();
 }
 
@@ -264,8 +307,49 @@ document.addEventListener("keydown", (e) => {
     document.querySelector(`[data-send="${e.target.dataset.draft}"]`)?.click();
 });
 
+// ---- 钱包（ruoyu 的私钥在服务端，前端只发指令） ----
+const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
+let walletJson = "";
+async function refreshWallet() {
+  try {
+    const w = await api(`/__admin/wallets/${POSTER}`);
+    const json = JSON.stringify(w);
+    if (json === walletJson) return;
+    walletJson = json;
+    $("w-user").textContent = w.username;
+    $("w-addr").textContent = w.address;
+    $("w-addr").dataset.copy = w.address;
+    $("w-bal").textContent = Number(w.balance).toLocaleString(undefined, { maximumFractionDigits: 6 });
+    const me = w.address.toLowerCase();
+    $("w-txs").innerHTML = w.transfers.length ? w.transfers.map((t) => {
+      const incoming = t.to === me;
+      const amount = t.ok ? `<span class="${incoming ? "in" : "out"}">${incoming ? "+" : "−"}${esc(t.amount)}</span>`
+                          : `<span class="failed">失败 ${esc(t.amount)}</span>`;
+      return `<div class="tx" title="${t.hash} · block ${t.block}"><span class="peer">${incoming ? "来自" : "转给"} ${short(incoming ? t.from : t.to)}</span>${amount}</div>`;
+    }).join("") : `<div class="peer" style="color:var(--muted)">暂无转账记录</div>`;
+  } catch (e) {
+    $("w-addr").textContent = "钱包不可用: " + e.message;
+  }
+}
+$("w-send").addEventListener("click", async () => {
+  const to = $("w-to").value.trim(), amount = $("w-amt").value.trim();
+  const msg = $("w-msg");
+  if (!to || !amount) { msg.textContent = "请填写收款地址和数量"; msg.className = "msg err"; return; }
+  $("w-send").disabled = true;
+  try {
+    const r = await api(`/__admin/wallets/${POSTER}/transfer`, { to, amount });
+    msg.textContent = `已发送 ${r.amount} MON → ${short(r.to)}，tx ${short(r.hash)}`;
+    msg.className = "msg";
+    $("w-amt").value = "";
+    await refreshWallet();
+  } catch (e) { msg.textContent = "转账失败: " + e.message; msg.className = "msg err"; }
+  $("w-send").disabled = false;
+});
+
 refresh();
+refreshWallet();
 setInterval(refresh, POLL_MS);
+setInterval(refreshWallet, POLL_MS);
 setInterval(() => state && render(), 30000); // 刷新相对时间
 </script>
 </body>

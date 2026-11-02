@@ -2,10 +2,12 @@ import logging
 import os
 import time
 import requests
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Union
 from dotenv import load_dotenv, set_key
 from web3 import Web3
 from web3.middleware import geth_poa_middleware
+from web3.exceptions import TransactionNotFound
 from src.constants.networks import EVM_NETWORKS
 from src.constants.abi import ERC20_ABI
 from src.connections.base_connection import BaseConnection, Action, ActionParameter
@@ -17,6 +19,7 @@ MONAD_BASE_GAS_PRICE = 50  # gwei - hardcoded for testnet
 MONAD_CHAIN_ID = 10143
 MONAD_SCANNER_URL = "testnet.monadexplorer.com"
 ZERO_EX_API_URL = "https://api.0x.org/swap"
+ETHERSCAN_API_URL = "https://api.etherscan.io/v2/api"  # Etherscan v2 multichain API (chainid=10143)
 
 class MonadConnectionError(Exception):
     """Base exception for Monad connection errors"""
@@ -35,6 +38,7 @@ class MonadConnection(BaseConnection):
             
         self.scanner_url = MONAD_SCANNER_URL
         self.chain_id = MONAD_CHAIN_ID
+        self.explorer_api = config.get("explorer_api", ETHERSCAN_API_URL)
         
         super().__init__(config)
         self._initialize_web3()
@@ -86,6 +90,29 @@ class MonadConnection(BaseConnection):
                     ActionParameter("token_address", False, str, "Token address (optional, native token if not provided)")
                 ],
                 description="Get native or token balance"
+            ),
+            "get-address-balance": Action(
+                name="get-address-balance",
+                parameters=[
+                    ActionParameter("address", True, str, "Wallet address to look up"),
+                    ActionParameter("token_address", False, str, "Token address (optional, native token if not provided)")
+                ],
+                description="Get native or token balance of any address"
+            ),
+            "get-transaction": Action(
+                name="get-transaction",
+                parameters=[
+                    ActionParameter("tx_hash", True, str, "Transaction hash")
+                ],
+                description="Look up a transaction by hash: sender, recipient, amount, status and block"
+            ),
+            "get-address-transactions": Action(
+                name="get-address-transactions",
+                parameters=[
+                    ActionParameter("address", True, str, "Wallet address to look up"),
+                    ActionParameter("count", False, int, "Number of most recent transactions to return (default 10)")
+                ],
+                description="List the most recent transactions sent from or to an address"
             ),
             "transfer": Action(
                 name="transfer", 
@@ -203,11 +230,15 @@ class MonadConnection(BaseConnection):
 
     def get_balance(self, token_address: Optional[str] = None) -> float:
         """Get native or token balance for the configured wallet"""
+        return self.get_address_balance(self._get_current_account().address, token_address)
+
+    def get_address_balance(self, address: str, token_address: Optional[str] = None) -> float:
+        """Get native or token balance of any address"""
         try:
-            account = self._get_current_account()
-            
+            address = Web3.to_checksum_address(address)
+
             if token_address is None or token_address.lower() == self.NATIVE_TOKEN.lower():
-                raw_balance = self._web3.eth.get_balance(account.address)
+                raw_balance = self._web3.eth.get_balance(address)
                 return self._web3.from_wei(raw_balance, 'ether')
             
             contract = self._web3.eth.contract(
@@ -215,11 +246,74 @@ class MonadConnection(BaseConnection):
                 abi=ERC20_ABI 
             )
             decimals = contract.functions.decimals().call()
-            raw_balance = contract.functions.balanceOf(account.address).call()
+            raw_balance = contract.functions.balanceOf(address).call()
             return raw_balance / (10 ** decimals)
             
         except Exception as e:
             logger.error(f"Failed to get balance: {str(e)}")
+            raise
+
+    def get_transaction(self, tx_hash: str) -> Dict[str, Any]:
+        """Look up a transaction and its receipt by hash"""
+        try:
+            tx = self._web3.eth.get_transaction(tx_hash)
+            try:
+                receipt = self._web3.eth.get_transaction_receipt(tx_hash)
+            except TransactionNotFound:
+                receipt = None  # not mined yet
+
+            result = {
+                "hash": tx["hash"].hex(),
+                "from": tx["from"],
+                "to": tx["to"],
+                "amount": str(self._web3.from_wei(tx["value"], 'ether')),
+                "status": "pending" if receipt is None else ("success" if receipt["status"] == 1 else "failed"),
+                "block": tx["blockNumber"],
+            }
+            if receipt is not None:
+                block = self._web3.eth.get_block(tx["blockNumber"])
+                result["timestamp"] = datetime.fromtimestamp(block["timestamp"], timezone.utc).isoformat()
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get transaction: {str(e)}")
+            raise
+
+    def get_address_transactions(self, address: str, count: int = 10) -> list:
+        """List recent transactions of an address via the block explorer API (Etherscan v2 compatible)"""
+        try:
+            response = requests.get(self.explorer_api, params={
+                "chainid": self.chain_id,
+                "module": "account",
+                "action": "txlist",
+                "address": Web3.to_checksum_address(address),
+                "page": 1,
+                "offset": count,
+                "sort": "desc",
+                "apikey": os.getenv("ETHERSCAN_API_KEY", ""),
+            }, timeout=10)
+            if not response.ok:
+                # Don't surface the request URL: it carries the API key
+                raise MonadConnectionError(f"Explorer API request failed with status {response.status_code}")
+
+            data = response.json()
+            if data["status"] != "1":
+                if data["message"] == "No transactions found":
+                    return []
+                raise MonadConnectionError(f"Explorer API error: {data['result']}")
+
+            return [{
+                "hash": t["hash"],
+                "from": Web3.to_checksum_address(t["from"]),
+                "to": Web3.to_checksum_address(t["to"]) if t["to"] else None,
+                "amount": str(self._web3.from_wei(int(t["value"]), 'ether')),
+                "status": "success" if t["txreceipt_status"] == "1" else "failed",
+                "block": int(t["blockNumber"]),
+                "timestamp": datetime.fromtimestamp(int(t["timeStamp"]), timezone.utc).isoformat(),
+            } for t in data["result"]]
+
+        except Exception as e:
+            logger.error(f"Failed to get address transactions: {str(e)}")
             raise
 
     def _prepare_transfer_tx(

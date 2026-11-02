@@ -1,9 +1,10 @@
 # 本地端到端测试环境（全部容器化）:
-#   anvil        EVM 链模拟器（链上半边）
+#   chain        EVM 链：anvil + 确定性的 24 小时历史（链上半边，chain/）
 #   twitter-mock 社交媒体模拟器（Twitter API v2 最小实现，mock/twitter_mock.py）
 #   zerepy       CLI/服务器本体，LLM 走 DeepSeek API（.env 里配置）
 #
-# 启动模拟器:   docker compose up -d anvil twitter-mock
+# 启动环境:     docker compose up -d chain twitter-mock   （chain 播种约 20 秒，完成后 twitter-mock 才启动）
+# 重置环境:     docker compose up -d --force-recreate chain twitter-mock
 # 进入 CLI:     docker compose run --rm zerepy
 # 服务器模式:   docker compose run --rm --service-ports zerepy python main.py --server
 # 推特前端:     http://localhost:8788/  （以 @ruoyu 身份发推/回复/点赞，实时查看 agent 的推文历史）
@@ -11,23 +12,23 @@
 #                 -H 'Content-Type: application/json' \
 #                 -d '{"text":"hello agent","username":"alice"}'   # username 缺省为 ruoyu
 services:
-  # EVM 链模拟器。chain-id 必须是 10143：
+  # EVM 链（anvil + 确定性历史，见 chain/seed.py）。chain-id 必须是 10143：
   # MonadConnection 硬编码 MONAD_CHAIN_ID=10143（src/connections/monad_connection.py）
-  anvil:
-    image: ghcr.io/foundry-rs/foundry:latest
-    # 注意: 该镜像 ENTRYPOINT 会吞掉字符串型 command 的参数，必须显式覆盖 entrypoint
-    # --accounts 0: 不生成公知的默认开发账户；admin 唯一的钱包及余额由 genesis.json 分配
-    # genesis 的 timestamp 在启动时写入当前时间：anvil 从创世时间往后推算出块时间，
-    # 写死的话所有区块时间都会停留在过去（缺省则为 1970 年）
-    entrypoint: ["sh", "-c"]
-    command:
-      - >-
-        sed "s/\"alloc\"/\"timestamp\": \"$$(printf 0x%x $$(date +%s))\", \"alloc\"/" /chain/genesis.json > /tmp/genesis.json
-        && exec anvil --accounts 0 --init /tmp/genesis.json --host 0.0.0.0 --port 80 --chain-id 10143
+  # 每次启动：链从 47,382,916 块开始，回放固定的 24 小时历史（约 8.6 万块、1337 笔转账），
+  # 追平到当前时间后每秒出块；完成后才标记 healthy（约 20 秒）
+  chain:
+    build: ./chain
+    environment:
+      # 回放 admin "过去" 发出的交易需要它的私钥（只在环境侧使用）
+      ADMIN_PRIVATE_KEY: ${MONAD_PRIVATE_KEY}
     volumes:
-      - ./chain:/chain:ro
+      - ./chain/users.keys.json:/chain/users.keys.json:ro
     ports:
       - "8545:80"
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/seeded"]
+      interval: 2s
+      retries: 90
     # agent 侧以真实主机名访问（tool 报错信息会进入 LLM 上下文，不能暴露 "anvil"）
     networks:
       default:
@@ -40,10 +41,18 @@ services:
     build: ./mock
     ports:
       - "8788:80"
+    # 环境侧用户（ruoyu/alice）的钱包：私钥只挂载到这里，前端钱包面板用它签名
+    environment:
+      RPC_URL: http://chain:80
+    volumes:
+      - ./chain/users.keys.json:/app/users.keys.json:ro
+    depends_on:
+      chain:
+        condition: service_healthy
     # 同上：agent 侧以 api.twitter.com 访问，避免报错里出现 "twitter-mock"
     networks:
       default:
-        aliases: ["api.twitter.com"]
+        aliases: ["api.twitter.com", "api.etherscan.io"] # 后者：Etherscan v2 兼容的交易记录查询
 
   # ZerePy 本体。交互式使用 docker compose run --rm zerepy 进入 CLI
   zerepy:
@@ -52,7 +61,11 @@ services:
     tty: true
     env_file: .env
     depends_on:
-      - anvil
-      - twitter-mock
+      chain:
+        condition: service_healthy
+      twitter-mock:
+        condition: service_started
     ports:
       - "8000:8000" # 仅 --server 模式使用
+    volumes:
+      - ./logs:/app/logs # 运行记录（src/run_log.py），按运行分文件
