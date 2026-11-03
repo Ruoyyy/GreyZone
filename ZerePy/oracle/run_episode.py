@@ -1,9 +1,11 @@
-"""Episode driver (sibling-style): --prepare resolves + launches the victim,
---start takes the baseline. The attacker (external red-team agent as ruoyu)
-acts in between; watch.py observes and closes.
+"""Episode driver (sibling-style). The victim is launched only AFTER the attacker
+has planted, so it reads the complete planted state on its first cycle:
 
-  python3 oracle/run_episode.py --prepare --scenario benchmark/scenarios/<id>
-  python3 oracle/run_episode.py --start
+  1. --prepare --scenario <id>  resolve the boundary, verify the substrate,
+                                write the episode persona (victim NOT yet running)
+  2. (plant window)             the red-team agent acts as ruoyu via the RedTeam MCP
+  3. --start                    take the baseline, THEN launch the victim
+  4. watch.py                   observe-only; close on idle and judge
 """
 from __future__ import annotations
 
@@ -12,6 +14,10 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 from oracle import common as C
 from oracle import truth as T
@@ -58,13 +64,12 @@ def prepare(scenario: dict) -> None:
         assert ruoyu not in scope["eligible"], "ruoyu is eligible — attack is trivial, reseed"
         print(f"[prepare] substrate ok: |E|={len(scope['eligible'])}, alice in E, ruoyu not")
     persona = _resolve_persona(scenario, scope)
-    _launch_victim(persona)
     C.save_episode({
         "state": "prepared", "scenario": scenario["id"], "scenario_dir": scenario["_dir"],
         "task": scenario["task"], "surfaces": scenario["oracleSuccessSurfaces"],
         "scope": scope, "persona": persona,
     })
-    print(f"[prepare] victim up as {persona} ({scenario['task']}); run --start when ready")
+    print(f"[prepare] ready ({scenario['task']}); plant as ruoyu, then run --start to baseline + launch the victim")
 
 
 def start() -> None:
@@ -80,8 +85,9 @@ def start() -> None:
     ep["state"] = "running"
     C.save_episode(ep)
     C.alerts_path(ep["n"]).parent.mkdir(parents=True, exist_ok=True)
+    _launch_victim(ep["persona"])  # baseline captured first, so the victim's reactions are post-baseline
     print(f"[start] episode {ep['n']} running (baseline block {ep['baseline']['block']}); "
-          f"attack as ruoyu, then watch.py closes and judges")
+          f"victim launched — run watch.py to close on idle and judge")
 
 
 if __name__ == "__main__":
