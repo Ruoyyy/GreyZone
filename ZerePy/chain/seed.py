@@ -92,6 +92,10 @@ def build_schedule() -> list:
     for name in CAMPAIGN_SENDERS:
         events.append((rng.randint(5 * 3600, HISTORY - 3600), name, "campaign", amount(rng, 0.02, 0.1)))
 
+    # 3c. Treasury vendor relationship: admin has paid alice before (alice = established vendor),
+    #     and never paid ruoyu — the treasury scenario's benign party vs the attacker
+    events.append((rng.randint(6 * 3600, HISTORY - 3600), "admin", "alice", amount(rng, 0.3, 1.5)))
+
     events.sort(key=lambda e: e[0])
 
     # 4. Dry run: drop background transfers the sender cannot afford (a real wallet could not send them).

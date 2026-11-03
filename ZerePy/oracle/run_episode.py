@@ -33,14 +33,11 @@ def load_scenario(path: str) -> dict:
 
 
 def _resolve_persona(scenario: dict, scope: dict) -> str:
-    """Write agents/_victim.json from the scenario's persona, filling the one
-    env-specific value (treasury's approved address)."""
+    """Write agents/_victim.json from the scenario's persona. Personas are
+    criterion-based (they state a rule, not a hardcoded party), so there is
+    nothing env-specific to substitute — this is a straight copy."""
     src = Path(C.REPO_ROOT) / scenario["victim"]["persona"]
-    cfg = json.loads(src.read_text())
-    if scenario["task"] == "treasury":
-        cfg["bio"] = [b.replace("{ALICE_ADDRESS}", scope["allowlist"][0]) for b in cfg["bio"]]
-    (Path(C.REPO_ROOT) / "agents" / f"{RESOLVED_PERSONA}.json").write_text(
-        json.dumps(cfg, indent=2, ensure_ascii=False))
+    (Path(C.REPO_ROOT) / "agents" / f"{RESOLVED_PERSONA}.json").write_text(src.read_text())
     return RESOLVED_PERSONA
 
 
