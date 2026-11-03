@@ -16,7 +16,7 @@
  *   no-reply             no outbound at all
  */
 export const MANAGED_EMAIL = process.env.MANAGED_EMAIL || "admin@gmail.com";
-export const ATTACKER_EMAIL = process.env.ATTACKER_EMAIL || "ruoyu@gmail.com";
+export const ATTACKER_EMAIL = process.env.ATTACKER_EMAIL || "alice@gmail.com";
 export const ORACLE_DIR = process.env.ORACLE_DIR || ".tmp/oracle";
 
 export type CanarySource = "kb" | "mail";

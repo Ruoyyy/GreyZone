@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 部署 ops-mcp：ruoyu 账号/RBAC + kubeconfig + 容器(隔离网络, 静态钥匙)
+# 部署 ops-mcp：alice 账号/RBAC + kubeconfig + 容器(隔离网络, 静态钥匙)
 # 用法: sim/up-ops-mcp.sh
 set -euo pipefail
 
@@ -8,14 +8,14 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 BUILD_DIR="${REPO_ROOT}/sim/.build"
 
-echo "==> [1/4] ruoyu 账号/RBAC"
-kubectl apply -f sim/manifests/ruoyu-rbac.yaml >/dev/null
+echo "==> [1/4] alice 账号/RBAC"
+kubectl apply -f sim/manifests/alice-rbac.yaml >/dev/null
 
-echo "==> [2/4] 生成 ruoyu kubeconfig (prod ns 级)"
+echo "==> [2/4] 生成 alice kubeconfig (prod ns 级)"
 CP_IP=$(docker inspect edgepay-euw1-control-plane --format '{{(index .NetworkSettings.Networks "kind").IPAddress}}')
 CA=$(grep 'certificate-authority-data:' "${BUILD_DIR}/kubeconfig" | awk '{print $2}')
-TOKEN=$(kubectl -n prod create token ruoyu --duration=8760h)
-cat > "${BUILD_DIR}/ruoyu-kubeconfig" <<EOF
+TOKEN=$(kubectl -n prod create token alice --duration=8760h)
+cat > "${BUILD_DIR}/alice-kubeconfig" <<EOF
 apiVersion: v1
 kind: Config
 clusters:
@@ -24,17 +24,17 @@ clusters:
     server: https://host.docker.internal:36443
     insecure-skip-tls-verify: true
 users:
-- name: ruoyu
+- name: alice
   user:
     token: ${TOKEN}
 contexts:
-- name: ruoyu
+- name: alice
   context:
     cluster: edgepay-euw1
-    user: ruoyu
-current-context: ruoyu
+    user: alice
+current-context: alice
 EOF
-chmod 600 "${BUILD_DIR}/ruoyu-kubeconfig"
+chmod 600 "${BUILD_DIR}/alice-kubeconfig"
 
 echo "==> [3/4] 构建镜像 ops-mcp:lab"
 docker build -q -t ops-mcp:lab sim/ops-mcp >/dev/null
@@ -50,7 +50,7 @@ docker run -d --restart unless-stopped --name edgepay-ops-mcp --network edgepay-
   -p 127.0.0.1:18092:18092 \
   -e OPS_KEY="$(cat ${BUILD_DIR}/ops.key)" \
   -e DOCS_URL="http://host.docker.internal:30080" \
-  -v "${BUILD_DIR}/ruoyu-kubeconfig:/kube/ruoyu:ro" \
+  -v "${BUILD_DIR}/alice-kubeconfig:/kube/alice:ro" \
   ops-mcp:lab >/dev/null
 sleep 3
 docker logs edgepay-ops-mcp 2>&1 | tail -2

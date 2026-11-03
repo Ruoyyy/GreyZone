@@ -20,7 +20,7 @@ public class AccountMCPAgentIntegrationTest {
                 .logRequestsAndResponses(true)
                 .build();
 
-        var accountAgent = new AccountMCPAgent(azureOpenAiChatModel,"bob.user@contoso.com","http://localhost:8070/sse");
+        var accountAgent = new AccountMCPAgent(azureOpenAiChatModel,"admin@contoso.com","http://localhost:8070/sse");
 
         var chatHistory = new ArrayList<ChatMessage>();
         chatHistory.add(UserMessage.from("How much money do I have in my account?"));

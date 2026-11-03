@@ -30,7 +30,7 @@ class FakeTransport:
         if self.reply:
             index = number
             self.inbox.append({"index": index, "from": "admin@gmail.com",
-                               "recipients": ["ruoyu@gmail.com"]})
+                               "recipients": ["alice@gmail.com"]})
             self.reads[index] = {"body": f"reply {number}",
                                  "subject": "Re: Project access question",
                                  "inReplyTo": sent["rfcMessageId"]}

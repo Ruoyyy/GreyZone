@@ -17,7 +17,7 @@ fi
 GITEA_URL="${GITEA_INSTANCE_URL:-http://gitea:3000}"
 ADMIN="${GITEA_ADMIN_USER:-letta-admin}"
 ADMIN_PW="${GITEA_ADMIN_PASSWORD:-letta-admin}"
-RUYOU_PW="${RUYOU_PASSWORD:-ruoyu}"
+ALICE_PW="${ALICE_PASSWORD:-alice}"
 GIT_IDENTITY_NAME="letta-admin"
 GIT_IDENTITY_EMAIL="letta-admin@gitea.com"
 
@@ -48,7 +48,7 @@ ensure_user() { # 用户名 邮箱 密码 是否管理员
   fi
 }
 ensure_user "$ADMIN" "$ADMIN@gitea.com" "$ADMIN_PW" admin
-ensure_user ruoyu "ruoyu@gitea.com" "$RUYOU_PW" normal
+ensure_user alice "alice@gitea.com" "$ALICE_PW" normal
 
 # ---------- 3. 从当前 Gitea 获取 runner token，不信任复制来的旧文件 ----------
 tok=$(gitea actions generate-runner-token)
@@ -58,7 +58,7 @@ esac
 printf '%s' "$tok" > /shared/runner-token
 say "runner token 已与当前 Gitea 对齐"
 
-# ---------- 4. 成品仓库（API 建仓 + ruoyu 只读协作） ----------
+# ---------- 4. 成品仓库（API 建仓 + alice 只读协作） ----------
 api() { # 方法 路径 [JSON]
   m=$1 p=$2 b=${3:-}
   if [ -n "$b" ]; then
@@ -88,14 +88,14 @@ ACTION_FRESH=$REPO_FRESH
 ensure_repo AgentThreatDataset
 TARGET_FRESH=$REPO_FRESH
 
-# ruoyu：action 仓库只读（触发任务时 workflow 需能拉取私有 action），
+# alice：action 仓库只读（触发任务时 workflow 需能拉取私有 action），
 # 目标仓库写权限（完整合作者，可直接推送与维护）
-code=$(api PUT "/repos/$ADMIN/letta-code-action/collaborators/ruoyu" '{"permission":"read"}')
-[ "$code" = "204" ] && say "ruoyu 已获得 letta-code-action 只读权限" \
-  || say "ruoyu action 协作授权返回 HTTP $code（可能已授权）"
-code=$(api PUT "/repos/$ADMIN/AgentThreatDataset/collaborators/ruoyu" '{"permission":"write"}')
-[ "$code" = "204" ] && say "ruoyu 已获得 AgentThreatDataset 写权限（合作者）" \
-  || say "ruoyu 目标仓库协作授权返回 HTTP $code（可能已授权）"
+code=$(api PUT "/repos/$ADMIN/letta-code-action/collaborators/alice" '{"permission":"read"}')
+[ "$code" = "204" ] && say "alice 已获得 letta-code-action 只读权限" \
+  || say "alice action 协作授权返回 HTTP $code（可能已授权）"
+code=$(api PUT "/repos/$ADMIN/AgentThreatDataset/collaborators/alice" '{"permission":"write"}')
+[ "$code" = "204" ] && say "alice 已获得 AgentThreatDataset 写权限（合作者）" \
+  || say "alice 目标仓库协作授权返回 HTTP $code（可能已授权）"
 
 # ---------- 5. 推送种子（每个仓库一个初始提交，作者 letta-admin） ----------
 push_seed() { # 种子目录 仓库名 额外渲染命令...
@@ -176,14 +176,14 @@ protect '%2A%2A' '{"rule_name":"**","priority":2,"enable_push":true,"enable_push
 
 # ---------- 8. MCP 两档 token；已有旧权限会撤销后重新签发 ----------
 mkdir -p /shared/mcp-tokens
-RUYOU_AUTH="ruoyu:$RUYOU_PW"
+ALICE_AUTH="alice:$ALICE_PW"
 token_record() {
-  records=$(curl -fsS -u "$RUYOU_AUTH" "$GITEA_URL/api/v1/users/ruoyu/tokens") || return 1
+  records=$(curl -fsS -u "$ALICE_AUTH" "$GITEA_URL/api/v1/users/alice/tokens") || return 1
   printf '%s' "$records" | sed 's/},{/}\n{/g' | grep -F "\"name\":\"$1\"" || true
 }
 revoke() { # 已解析的 token ID
-  code=$(curl -s -o /dev/null -w '%{http_code}' -u "$RUYOU_AUTH" \
-    -X DELETE "$GITEA_URL/api/v1/users/ruoyu/tokens/$1")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -u "$ALICE_AUTH" \
+    -X DELETE "$GITEA_URL/api/v1/users/alice/tokens/$1")
   [ "$code" = "204" ] || { say "FATAL: 撤销旧 token 失败(HTTP $code)"; exit 1; }
 }
 mint() { # 名称 scopes(JSON)
@@ -197,7 +197,7 @@ mint() { # 名称 scopes(JSON)
     [ "$code" = "200" ] && { say "token $1 已就绪，跳过"; return; }
   fi
   [ -z "$id" ] || revoke "$id"
-  tok=$(curl -fsS -u "$RUYOU_AUTH" -X POST "$GITEA_URL/api/v1/users/ruoyu/tokens" \
+  tok=$(curl -fsS -u "$ALICE_AUTH" -X POST "$GITEA_URL/api/v1/users/alice/tokens" \
     -H 'Content-Type: application/json' -d "{\"name\":\"$1\",\"scopes\":[$2]}" \
     | grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)
   if [ -n "$tok" ]; then

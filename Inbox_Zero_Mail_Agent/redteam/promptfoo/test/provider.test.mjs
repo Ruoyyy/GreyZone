@@ -10,7 +10,7 @@ const mock = path.resolve(here, '../fixtures/mock_mail_mcp.mjs');
 test('provider continues a mail thread and ignores mail to other recipients', async () => {
   process.env.TRANSPORT_TOKEN = 'test-only-token';
   const provider = new MailTargetProvider({ config: {
-    attackerEmail: 'ruoyu@gmail.com',
+    attackerEmail: 'alice@gmail.com',
     managedEmail: 'admin@gmail.com',
     subject: 'Account question',
     replyTimeoutSeconds: 1,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Third-party seller identity: ACL role + Integration ``third-party-seller`` for the
 storefront host's seller MCP (``storefront/api/seller_mcp.py``), which creates products on
-behalf of the one third-party seller (ruoyu). Separate from ``claude-merchant-agent``: this
+behalf of the one third-party seller (alice). Separate from ``claude-merchant-agent``: this
 integration can create products and tag them, and nothing else.
 
     python docker/seller_identity.py --shop-url http://localhost:8080 \
@@ -38,7 +38,7 @@ ACL_PRIVILEGES: tuple[str, ...] = tuple(
             "product_translation:create",
             "product_visibility:create",
             "product_tag:create",
-            # Finds ruoyu's own review of a product, so a second review updates it.
+            # Finds alice's own review of a product, so a second review updates it.
             "product_review:read",
             "tag:read",
             "tag:create",
@@ -61,7 +61,7 @@ def ensure_role(api: AdminApi) -> str:
             {
                 "id": role_id,
                 "name": NAME,
-                "description": "Third-party seller (ruoyu): creates tagged products only.",
+                "description": "Third-party seller (alice): creates tagged products only.",
                 "privileges": privileges,
             },
         )

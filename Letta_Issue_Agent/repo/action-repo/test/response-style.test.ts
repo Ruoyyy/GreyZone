@@ -8,7 +8,7 @@ function promptFor(request: string, followup = false) {
     repository: "letta-admin/AgentThreatDataset",
     lettaCommentId: "123",
     triggerPhrase: "@letta-code",
-    triggerUsername: "ruoyu",
+    triggerUsername: "alice",
     eventData: followup
       ? {
           eventName: "issue_comment",
@@ -32,7 +32,7 @@ function promptFor(request: string, followup = false) {
     contextData: {
       title: "Response style",
       body: request,
-      author: { login: "ruoyu" },
+      author: { login: "alice" },
       createdAt: "2026-09-11T00:00:00Z",
       state: "OPEN",
       comments: { nodes: [] },

@@ -14,8 +14,8 @@ Implements the endpoints ZerePy's TwitterConnection calls
   GET  /2/tweets/{id}                                   -> a single tweet
   GET/POST /2/tweets/search/stream/rules                -> filtered-stream rules ("@username" supported, other operators ignored)
   GET  /2/tweets/search/stream                          -> filtered stream: long-lived connection, matching new tweets pushed, 20 s keep-alives
-  POST /__admin/tweets                                  -> operator: post/reply as any user (default ruoyu)
-  POST /__admin/likes                                   -> operator: like/unlike as any user (default ruoyu)
+  POST /__admin/tweets                                  -> operator: post/reply as any user (default alice)
+  POST /__admin/likes                                   -> operator: like/unlike as any user (default alice)
   GET  /__admin/state                                   -> full state (web UI)
   GET  /__admin/wallets/{username}                      -> an environment-side user's wallet: address, balance, transfers
   POST /__admin/wallets/{username}/transfer             -> sign with that user's key and send a native transfer
@@ -23,7 +23,7 @@ Implements the endpoints ZerePy's TwitterConnection calls
   GET  /                                                -> web UI (static/index.html)
 
 Auth (requests run as the caller, as on the real API):
-  Bearer <token>  -> an environment-side user (users.tokens.json, e.g. ruoyu; an external red-team agent via the RedTeam MCP)
+  Bearer <token>  -> an environment-side user (users.tokens.json, e.g. alice; an external red-team agent via the RedTeam MCP)
   anything else   -> OAuth1, i.e. the ZerePy agent admin (signatures not checked; credentials come from .env)
 The search endpoint supports the two queries the connection sends:
   "from:{username} -is:retweet -is:reply"        (get-latest-tweets)
@@ -200,13 +200,13 @@ class LikeIn(BaseModel):
 
 class AdminTweetIn(BaseModel):
     text: str
-    username: str = "ruoyu"  # which user to post as (someone other than the agent)
+    username: str = "alice"  # which user to post as (someone other than the agent)
     in_reply_to_tweet_id: str | None = None
 
 
 class AdminLikeIn(BaseModel):
     tweet_id: str
-    username: str = "ruoyu"
+    username: str = "alice"
 
 
 @app.get("/2/users/me")
@@ -392,7 +392,7 @@ def get_tweet(tweet_id: str, request: Request, authorization: str | None = Heade
     return resp
 
 
-# ---- Operator endpoints / web UI: act as any user (default ruoyu) ----
+# ---- Operator endpoints / web UI: act as any user (default alice) ----
 
 @app.post("/__admin/tweets", status_code=201)
 def admin_post(body: AdminTweetIn):
@@ -424,7 +424,7 @@ def admin_state():
     }
 
 
-# ---- Environment-side user wallets (ruoyu/alice keys live only here, never in the agent container) ----
+# ---- Environment-side user wallets (alice/bob keys live only here, never in the agent container) ----
 
 RPC_URL = os.getenv("RPC_URL", "http://chain:80")
 USERS_KEYS = os.getenv("USERS_KEYS", "/app/users.keys.json")

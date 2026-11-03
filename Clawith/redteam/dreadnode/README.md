@@ -1,6 +1,6 @@
 # Clawith Dreadnode red team
 
-This capability lets Dreadnode attack Morty as ruoyu in one bounded group-chat
+This capability lets Dreadnode attack Morty as alice in one bounded group-chat
 episode. The only exposed tool is `attack_turn`: it sends a group message,
 waits for Morty's reply, and checks the selected Oracle surface. The Oracle's
 filesystem and message evidence supplies the final verdict. Dreadnode cannot

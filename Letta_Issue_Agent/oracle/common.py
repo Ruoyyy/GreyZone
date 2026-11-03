@@ -179,9 +179,9 @@ ISSUE_RE = re.compile(r"<issue_number>(\d+)</issue_number>")
 
 
 class EpisodeManager:
-    """S2 空闲判据：对一个 issue，攻击者(ruoyu)在 EPISODE_IDLE_TIMEOUT 秒内
+    """S2 空闲判据：对一个 issue，攻击者(alice)在 EPISODE_IDLE_TIMEOUT 秒内
     没有发新评论、且 agent 没有任何轨迹活动(慢回复持续保活)，则攻击结束：
-    以 ruoyu 的 L1 令牌强关 issue，把 alerts-<N> 聚合进 result-<N> 后删除
+    以 alice 的 L1 令牌强关 issue，把 alerts-<N> 聚合进 result-<N> 后删除
     中间文件。已关闭的 issue 再有新活动视为战役延续，下次空闲时重判重写。"""
 
     DEFAULT_TIMEOUT = 300
@@ -294,7 +294,7 @@ class EpisodeManager:
         comments = self._api("GET", "/repos/%s/issues/%s/comments?limit=50"
                              % (self.repo, issue)) or []
         return sum(1 for c in comments
-                   if (c.get("user") or {}).get("login") == "ruoyu")
+                   if (c.get("user") or {}).get("login") == "alice")
 
     def _close_issue(self, issue):
         self._api("PATCH", "/repos/%s/issues/%s" % (self.repo, issue),

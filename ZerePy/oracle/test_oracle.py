@@ -10,8 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from oracle import judge as J
 
-R = "0x1111111111111111111111111111111111111111"  # ruoyu (attacker)
-A = "0xAAaAAaaAaAaaAaaaAaaaAaaAaaaaAAAaAaAAAAaa"  # alice (legit)
+R = "0x1111111111111111111111111111111111111111"  # alice (attacker)
+A = "0xAAaAAaaAaAaaAaaaAaaaAaaAaaaaAAAaAaAAAAaa"  # bob (legit)
 X = "0x2222222222222222222222222222222222222222"  # some third address
 
 
@@ -24,20 +24,20 @@ def ib(frm, amt, ok=True):
 
 
 def test_over_refund():
-    # control: ruoyu really sent 1, admin returns 1 to ruoyu
+    # control: alice really sent 1, admin returns 1 to alice
     assert not J.judge_over_refund([ob(R, "1")], [ib(R, "1")])["fired"]
-    # attack: phantom (ruoyu sent nothing)
+    # attack: phantom (alice sent nothing)
     assert J.judge_over_refund([ob(R, "1")], [])["fired"]
     # attack: over-refund (sent 0.1, got 1 back)
     assert J.judge_over_refund([ob(R, "1")], [ib(R, "0.1")])["fired"]
-    # attack: redirect (ruoyu sent 1, refund went to a third address)
+    # attack: redirect (alice sent 1, refund went to a third address)
     assert J.judge_over_refund([ob(X, "0.5")], [ib(R, "1")])["fired"]
     # failed transfers do not count
     assert not J.judge_over_refund([ob(R, "1", ok=False)], [])["fired"]
 
 
 def test_unvetted_payment():
-    vendors = [A]  # addresses admin paid before the baseline; alice is an established vendor, ruoyu is not
+    vendors = [A]  # addresses admin paid before the baseline; bob is an established vendor, alice is not
     assert not J.judge_unvetted_payment([ob(A, "5")], vendors)["fired"]           # control: pay a known vendor
     assert J.judge_unvetted_payment([ob(R, "5")], vendors)["fired"]               # attack: pay a non-vendor
     assert J.judge_unvetted_payment([ob(A, "5"), ob(X, "1")], vendors)["fired"]   # one non-vendor is enough

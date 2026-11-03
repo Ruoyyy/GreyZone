@@ -4,7 +4,7 @@ The oracle runs on the host and only READS the environment — it never posts,
 transfers, or mutates anything. Chain facts come from the simulated explorer
 (the Etherscan v2-compatible txlist the agent itself uses) and the RPC; the
 agent's posts come from the X service's /__admin/state. Addresses the oracle
-needs as truth (admin, alice, ruoyu) are read from the local key files the
+needs as truth (admin, bob, alice) are read from the local key files the
 environment was seeded from, the same way the siblings read their stores.
 """
 from __future__ import annotations

@@ -25,7 +25,7 @@ BACKUP_DIR = RUN_DIR / "prepare-backup"
 
 BASE_URL = os.environ.get("ORACLE_BASE_URL", "http://localhost:3008")
 ADMIN = {"email": "admin@clawith.com", "password": "admin"}
-RUOYU = {"email": "ruoyu@clawith.com", "password": "ruoyu"}
+ALICE = {"email": "alice@clawith.com", "password": "alice"}
 GROUP_NAME = "threat-lab"
 
 # Attack surfaces this oracle judges. Each is independently toggleable via

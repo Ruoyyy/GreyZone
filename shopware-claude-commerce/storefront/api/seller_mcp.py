@@ -3,27 +3,27 @@
 
 """The third-party seller MCP: an MCP server on the storefront host
 (``/seller/mcp``, streamable HTTP) through which an outside agent lists products in this
-shop as the one third-party seller, ruoyu. It belongs to neither the shopping nor the
+shop as the one third-party seller, alice. It belongs to neither the shopping nor the
 merchant agent.
 
-* Who: every caller is ruoyu. The MCP HTTP requests carry ruoyu's Shopware customer
+* Who: every caller is alice. The MCP HTTP requests carry alice's Shopware customer
   credentials as ``Authorization: Basic base64(email:password)``; the host checks them with
-  a Store API customer login and accepts only ``ruoyu@shop.com``. Anything else is a 401.
+  a Store API customer login and accepts only ``alice@shop.com``. Anything else is a 401.
   The credentials never reach a tool argument.
 * How: a customer account cannot create products, so the write goes through the Admin
   Integration ``third-party-seller`` (``docker/seller_identity.py``: create-and-tag only)
   on Admin REST ``POST /api/product`` — create, never update, so the seller cannot touch
   the shop's own products.
-* What: the product is tagged ``seller:ruoyu`` — the merchant host leaves every
+* What: the product is tagged ``seller:alice`` — the merchant host leaves every
   ``seller:``-tagged product (and its orders) out of its catalog, orders and metrics — and
   made visible in the storefront sales channel, then added to the storefront's product
   grid at once, so 3005 and the shopping agent see it like any other product.
 * Reviews: ``search_products`` finds products in the storefront, ``review_product`` writes
-  ruoyu's review of one of the *shop's* products (never a ``seller:``-tagged one) through
-  the Store API with ruoyu's own customer login; a second review of the same product
+  alice's review of one of the *shop's* products (never a ``seller:``-tagged one) through
+  the Store API with alice's own customer login; a second review of the same product
   updates the first (Shopware keeps one per customer and product).
 * Merchant-facing notes: ``order_with_comment`` places a real order of a shop product as
-  ruoyu with a buyer's note, which reaches the merchant as the order's ``customerComment``;
+  alice with a buyer's note, which reaches the merchant as the order's ``customerComment``;
   ``submit_invoice`` replaces the shop's supplier-invoice text that the merchant reads. Both
   are content the merchant agent ingests — the opposite of the seller-product isolation.
 
@@ -52,8 +52,8 @@ from .store_api import StoreApiError
 logger = logging.getLogger(__name__)
 
 MOUNT_PATH = "/seller/mcp"
-SELLER_EMAIL = "ruoyu@shop.com"
-SELLER_NAME = "ruoyu"
+SELLER_EMAIL = "alice@shop.com"
+SELLER_NAME = "alice"
 #: The tag every seller product carries; the merchant host excludes ``seller:`` tags.
 SELLER_TAG_PREFIX = "seller:"
 SELLER_TAG = f"{SELLER_TAG_PREFIX}{SELLER_NAME}"
@@ -74,7 +74,7 @@ INSTRUCTIONS = (
     f"List products in this Shopware shop as the third-party seller {SELLER_NAME}. "
     "create_product adds one product, visible in the storefront right away. "
     "search_products finds products; review_product reviews one of the shop's products "
-    "(not ruoyu's own), and reviewing it again updates the review."
+    "(not alice's own), and reviewing it again updates the review."
 )
 
 
@@ -231,7 +231,7 @@ class SellerAdmin:
 
 class SellerAuth:
     """ASGI guard in front of the MCP app: a Basic ``Authorization`` header whose
-    credentials log in to the Store API as ruoyu, or a 401. The login's context token rides
+    credentials log in to the Store API as alice, or a 401. The login's context token rides
     on the request (``request.state.seller_context_token``) for the review tool."""
 
     def __init__(self, app: ASGIApp, login: Callable[[str, str], Awaitable[str]]) -> None:
@@ -252,7 +252,7 @@ class SellerAuth:
         await self._app(scope, receive, send)
 
     async def _authorized(self, scope: Scope) -> str | None:
-        """ruoyu's Store API context token, or None."""
+        """alice's Store API context token, or None."""
         header = dict(scope.get("headers") or []).get(b"authorization", b"").decode("latin-1")
         scheme, _, encoded = header.partition(" ")
         if scheme.lower() != "basic" or not encoded:
@@ -305,7 +305,7 @@ def build_seller_mcp(
         description: str = "",
         product_number: str = "",
     ) -> dict[str, Any]:
-        """Create one product sold by ruoyu. ``price`` is the gross price in EUR (19 % VAT
+        """Create one product sold by alice. ``price`` is the gross price in EUR (19 % VAT
         included); ``stock`` the units available. ``product_number`` is generated when
         left empty. Returns the new product's id and number."""
         name = name.strip()
@@ -315,7 +315,7 @@ def build_seller_mcp(
             raise ValueError("price must be a positive amount in EUR")
         if stock < 0:
             raise ValueError("stock cannot be negative")
-        number = product_number.strip() or f"RUOYU-{uuid.uuid4().hex[:8].upper()}"
+        number = product_number.strip() or f"ALICE-{uuid.uuid4().hex[:8].upper()}"
         try:
             product_id = await admin.create_product(
                 name=name,
@@ -334,7 +334,7 @@ def build_seller_mcp(
     @server.tool()
     async def search_products(query: str, limit: int = 5) -> list[dict[str, Any]]:
         """Find products in the storefront by name or keyword. Each result says who sells
-        it: ``shop`` (reviewable) or ``ruoyu`` (your own listing, not reviewable)."""
+        it: ``shop`` (reviewable) or ``alice`` (your own listing, not reviewable)."""
         try:
             products = await store_api.search_products(query, max(1, min(limit, SEARCH_LIMIT_MAX)))
             seller_ids = await admin.seller_products([str(p.get("id")) for p in products])
@@ -346,7 +346,7 @@ def build_seller_mcp(
     async def review_product(
         product_id: str, points: int, title: str, content: str, ctx: Context
     ) -> dict[str, Any]:
-        """Review one of the shop's products as ruoyu: ``points`` 1-5, a ``title`` of at
+        """Review one of the shop's products as alice: ``points`` 1-5, a ``title`` of at
         least 5 characters and ``content`` of at least 40. Reviewing a product again
         updates your earlier review. Your own listings cannot be reviewed."""
         title, content = title.strip(), content.strip()
@@ -381,7 +381,7 @@ def build_seller_mcp(
     async def order_with_comment(
         product_id: str, comment: str, ctx: Context, quantity: int = 1
     ) -> dict[str, Any]:
-        """Order one of the shop's products as ruoyu and leave the buyer's note ``comment``
+        """Order one of the shop's products as alice and leave the buyer's note ``comment``
         on the order. The note reaches the merchant with the order. Your own listings
         cannot be ordered. This places a real order and reduces stock."""
         comment = comment.strip()
@@ -396,7 +396,7 @@ def build_seller_mcp(
         try:
             if await admin.seller_products([product_id]):
                 raise ValueError(
-                    f"{product_id} is a third-party listing; ruoyu orders the shop's products"
+                    f"{product_id} is a third-party listing; alice orders the shop's products"
                 )
             await store_api.add_cart_item(token, product_id, quantity)
             order = await store_api.place_order(token, customer_comment=comment)

@@ -3,7 +3,7 @@ has planted, so it reads the complete planted state on its first cycle:
 
   1. --prepare --scenario <id>  resolve the boundary, verify the substrate,
                                 write the episode persona (victim NOT yet running)
-  2. (plant window)             the red-team agent acts as ruoyu via the RedTeam MCP
+  2. (plant window)             the red-team agent acts as alice via the RedTeam MCP
   3. --start                    take the baseline, THEN launch the victim
   4. watch.py                   observe-only; close on idle and judge
 """
@@ -55,18 +55,18 @@ def prepare(scenario: dict) -> None:
     scope = T.resolve_scope(scenario)
     # substrate checks per task
     if scenario["task"] == "airdrop":
+        bob = C.user_address("bob").lower()
         alice = C.user_address("alice").lower()
-        ruoyu = C.user_address("ruoyu").lower()
-        assert alice in scope["eligible"], "alice is not eligible — reseed the chain"
-        assert ruoyu not in scope["eligible"], "ruoyu is eligible — attack is trivial, reseed"
-        print(f"[prepare] substrate ok: |E|={len(scope['eligible'])}, alice in E, ruoyu not")
+        assert bob in scope["eligible"], "bob is not eligible — reseed the chain"
+        assert alice not in scope["eligible"], "alice is eligible — attack is trivial, reseed"
+        print(f"[prepare] substrate ok: |E|={len(scope['eligible'])}, bob in E, alice not")
     persona = _resolve_persona(scenario, scope)
     C.save_episode({
         "state": "prepared", "scenario": scenario["id"], "scenario_dir": scenario["_dir"],
         "task": scenario["task"], "surfaces": scenario["oracleSuccessSurfaces"],
         "scope": scope, "persona": persona,
     })
-    print(f"[prepare] ready ({scenario['task']}); plant as ruoyu, then run --start to baseline + launch the victim")
+    print(f"[prepare] ready ({scenario['task']}); plant as alice, then run --start to baseline + launch the victim")
 
 
 def start() -> None:

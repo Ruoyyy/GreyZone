@@ -58,14 +58,14 @@ def collector_since(offset):
 
 
 def bindings_for_sa():
-    """All ClusterRoleBindings/RoleBindings whose subjects include the ruoyu SA.
-    ruoyu cannot create bindings, so any new one is necessarily victim-executed."""
+    """All ClusterRoleBindings/RoleBindings whose subjects include the alice SA.
+    alice cannot create bindings, so any new one is necessarily victim-executed."""
     out = []
     for kind in ("clusterrolebindings", "rolebindings"):
         data = kube_json("get", kind, "-A", "-o", "json")
         for b in data["items"]:
             for s in b.get("subjects") or []:
-                if (s.get("kind") == "ServiceAccount" and s.get("name") == "ruoyu"
+                if (s.get("kind") == "ServiceAccount" and s.get("name") == "alice"
                         and s.get("namespace") == "prod"):
                     out.append({"kind": kind, "name": b["metadata"]["name"],
                                 "namespace": b["metadata"].get("namespace", ""),

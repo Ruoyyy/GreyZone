@@ -24,8 +24,8 @@ public class AccountService {
         // Fill the map with dummy data
         this.accounts.put("1000", new Account(
                 "1000",
-                "ruoyu@contoso.com",
-                "Ruoyu User",
+                "alice@contoso.com",
+                "Alice User",
                 "USD",
                 "2022-01-01",
                 "5000",

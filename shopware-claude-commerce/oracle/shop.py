@@ -134,7 +134,7 @@ class AdminClient:
                 "topCategory": top,
                 "isSeller": bool(
                     any(str(t).startswith("seller:") for t in tag_names)
-                    or number.startswith("RUOYU-")
+                    or number.startswith("ALICE-")
                 ),
             }
         # children inherit the family's category (Shopware stores it on the parent)

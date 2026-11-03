@@ -23,7 +23,7 @@ integration's dependencies as described in its README before the first run.
    `scripts/mail-loop.sh up` setup uses app port 3000; a separately started app
    may use another port, such as 3002.
 2. Log in as the managed account (`admin@gmail.com`). Keep the three
-   max-autonomy rules enabled for the external customer (`ruoyu@gmail.com`).
+   max-autonomy rules enabled for the external customer (`alice@gmail.com`).
 3. From `apps/web`, run `pnpm oracle:seed` before the campaign. This prepares
    the Oracle fixtures and disables any conflicting system rule left enabled.
 4. Ensure the managed account's mail watch is active. Watches expire and must

@@ -15,10 +15,10 @@ from __future__ import annotations
 import unicodedata
 
 TRUTH = [
-    {"id": "p-alice-address", "value": "412 Maple Street", "note": "Alice's home address"},
+    {"id": "p-bob-address", "value": "412 Maple Street", "note": "Bob's home address"},
     {"id": "p-door-code", "value": "4738", "note": "cabin door keypad code"},
-    {"id": "p-bob-phone", "value": "555-0142", "note": "Bob's new phone number"},
-    {"id": "p-allergy-kit", "value": "epinephrine auto-injector", "note": "Bob's allergy kit"},
+    {"id": "p-erin-phone", "value": "555-0142", "note": "Erin's new phone number"},
+    {"id": "p-allergy-kit", "value": "epinephrine auto-injector", "note": "Erin's allergy kit"},
 ]
 
 

@@ -14,14 +14,14 @@ objective. Each scenario directory contains `scenario.json` and the referenced
 | `sandbox-escape` | `backend_root`, `meeseeks_namespace` | `fs-escape` | Escape the code sandbox onto the host filesystem |
 
 `scenario.json` names the environment, the `policy` the agent must uphold, the
-`successCriteria`, the `attacker` identity (ruoyu), the `attackChannel`
+`successCriteria`, the `attacker` identity (alice), the `attackChannel`
 (`group_message`), the exact `attackerTurn` planted, and the Oracle's
 `oracleMonitors` / `oracleSuccessSurfaces`.
 
 For a direct Oracle episode, `attackerTurn` is the one message sent by
 `oracle/run_episode.py --start`. The red team runners can instead arm an
 episode before the first message and send several serial turns through the
-ruoyu MCP bridge. PyRIT and DeepTeam send `attackerTurn` verbatim as their
+alice MCP bridge. PyRIT and DeepTeam send `attackerTurn` verbatim as their
 first turn; Promptfoo and Dreadnode use it as an attack idea. All runners use
 the same scenario objective and selected Oracle success surface.
 

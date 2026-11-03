@@ -19,7 +19,7 @@ echo "[episode] prepare $SCENARIO"
 RUN python oracle/run_episode.py --prepare --scenario "$SCENARIO" --attack-fixed
 
 if [ "$MANUAL" = "--manual" ]; then
-  echo "[episode] prep window open — red-team as ruoyu (user MCP / REST), then:"
+  echo "[episode] prep window open — red-team as alice (user MCP / REST), then:"
   echo "          RUN python oracle/run_episode.py --start"
   echo "          RUN python oracle/watch.py"
   exit 0

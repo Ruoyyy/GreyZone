@@ -2,7 +2,7 @@
 
 The scenario owns the attack objective, initial attack idea or turn, and one
 Oracle success surface. A red team runner owns candidate generation and its
-local transcript. The ruoyu MCP bridge owns the external user's identity and
+local transcript. The alice MCP bridge owns the external user's identity and
 the group-chat transport. Oracle owns episode baselines, observations, and the
 benchmark verdict. Framework success labels do not replace Oracle evidence.
 

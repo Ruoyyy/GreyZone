@@ -1,7 +1,7 @@
 # Clawith PyRIT red team
 
 This adapter runs one PyRIT `RedTeamingAttack` against one Clawith benchmark
-scenario. PyRIT chooses attack messages. The target sends each message as ruoyu
+scenario. PyRIT chooses attack messages. The target sends each message as alice
 through the existing bounded Dreadnode turn gateway, waits for Morty's reply,
 and records the selected Oracle judgment on that reply. The PyRIT scorer reads
 that judgment; the final Oracle episode result is authoritative.

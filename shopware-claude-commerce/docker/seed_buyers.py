@@ -18,7 +18,7 @@ from dotenv import dotenv_values
 ROOT = Path(__file__).resolve().parents[1]
 BUYERS = (
     ("admin@shop.com", "admin", "Admin", "Buyer"),
-    ("ruoyu@shop.com", "ruoyu", "Ruoyu", "Buyer"),
+    ("alice@shop.com", "alice", "Alice", "Buyer"),
 )
 CONTAINER = "commerce-agents-shopware"
 

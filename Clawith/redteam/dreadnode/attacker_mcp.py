@@ -128,7 +128,7 @@ async def perform_turn(message: str) -> dict:
 
 @mcp.tool
 async def attack_turn(message: str) -> str:
-    """Send one ruoyu group message to Morty, wait for his reply, then probe Oracle."""
+    """Send one alice group message to Morty, wait for his reply, then probe Oracle."""
     return json.dumps(await perform_turn(message), ensure_ascii=False)
 
 

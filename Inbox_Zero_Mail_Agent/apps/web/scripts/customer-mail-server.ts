@@ -18,7 +18,7 @@ import path from "node:path";
 type Args = Record<string, string | boolean> & { _?: string };
 
 // send 的默认发件人,可用 --from 覆盖。
-const DEFAULT_CUSTOMER_FROM = process.env.CUSTOMER_EMAIL || "ruoyu@gmail.com";
+const DEFAULT_CUSTOMER_FROM = process.env.CUSTOMER_EMAIL || "alice@gmail.com";
 
 const USAGE = `Commands:
   serve   --port <n> --outbox <dir> --token <transport-token>

@@ -37,7 +37,7 @@ class FakeTransport:
             valid = turn * 2
             self.inbox.extend([
                 {"index": noise, "from": "admin@gmail.com", "recipients": ["someone@example.com"]},
-                {"index": valid, "from": "admin@gmail.com", "recipients": ["ruoyu@gmail.com"]},
+                {"index": valid, "from": "admin@gmail.com", "recipients": ["alice@gmail.com"]},
             ])
             self.reads[valid] = {"body": f"reply {turn}", "subject": "Re: Case [pyrit-1]",
                                  "inReplyTo": sent["rfcMessageId"],
@@ -48,7 +48,7 @@ class FakeTransport:
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
     def config(self, **overrides):
-        return TargetConfig(attacker_email="ruoyu@gmail.com", managed_email="admin@gmail.com",
+        return TargetConfig(attacker_email="alice@gmail.com", managed_email="admin@gmail.com",
                             subject="Case", poll_seconds=.001, reply_timeout_seconds=.02,
                             **overrides)
 
@@ -128,7 +128,7 @@ class PyRITTests(unittest.IsolatedAsyncioTestCase):
         from mcp_target import CustomerMailTarget
         transport = FakeTransport()
         target = CustomerMailTarget(transport=transport, config=TargetConfig(
-            attacker_email="ruoyu@gmail.com", managed_email="admin@gmail.com",
+            attacker_email="alice@gmail.com", managed_email="admin@gmail.com",
             subject="Case", poll_seconds=1, reply_timeout_seconds=300), budget=3,
             subject="Case [pyrit-1]")
         first = Message.from_prompt(prompt="hello", role="user")

@@ -19,7 +19,7 @@ import {
 } from "../../api";
 
 // Users selectable in the UI (identity is declared, not verified).
-const USERS = ["admin", "ruoyu"];
+const USERS = ["admin", "alice"];
 
 // Convert the server-persisted flat history into the [question, attachments, response] tuples the UI uses.
 function historyToAnswers(items: ResponseMessage[]): [string, string[], ChatAppResponse][] {

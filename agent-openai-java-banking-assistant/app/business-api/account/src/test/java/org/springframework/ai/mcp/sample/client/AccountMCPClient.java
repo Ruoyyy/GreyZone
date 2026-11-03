@@ -53,7 +53,7 @@ public class AccountMCPClient {
 		System.out.println("Account : " + accountResult);
 
 		CallToolResult userResult = client.callTool(new CallToolRequest("getAccountsByUserName",
-				Map.of("userName", "bob.user@contoso.com")));
+				Map.of("userName", "admin@contoso.com")));
 		System.out.println("Account for Bob : " + userResult);
 
 		client.closeGracefully();

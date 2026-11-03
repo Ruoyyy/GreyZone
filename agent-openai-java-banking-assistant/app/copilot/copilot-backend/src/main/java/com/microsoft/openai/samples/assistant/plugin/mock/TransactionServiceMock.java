@@ -17,7 +17,7 @@ public class TransactionServiceMock {
                 new PaymentTransaction("11", "Payment of the bill 334398", "Mike ThePlumber", "0001", "1010", "BankTransfer", "100.00", "2024-4-01T12:00:00Z"),
                 new PaymentTransaction("22", "Payment of the bill 4613", "Jane TheElectrician", "0002", "1010", "CreditCard", "200.00", "2024-3-02T12:00:00Z"),
                 new PaymentTransaction("33", "Payment of the bill 724563", "Bob TheCarpenter", "0003", "1010", "BankTransfer", "300.00", "2023-10-03T12:00:00Z"),
-                new PaymentTransaction("43", "Payment of the bill 8898943", "Alice ThePainter", "0004", "1010", "DirectDebit", "400.00", "2023-8-04T12:00:00Z"),
+                new PaymentTransaction("43", "Payment of the bill 8898943", "Nora ThePainter", "0004", "1010", "DirectDebit", "400.00", "2023-8-04T12:00:00Z"),
                 new PaymentTransaction("53", "Payment of the bill 19dee", "Charlie TheMechanic", "0005", "1010", "BankTransfer", "500.00", "2023-4-05T12:00:00Z"))
         );
 

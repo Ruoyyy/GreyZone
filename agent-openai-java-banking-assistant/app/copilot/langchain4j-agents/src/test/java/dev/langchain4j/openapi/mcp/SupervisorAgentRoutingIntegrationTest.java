@@ -31,15 +31,15 @@ public class SupervisorAgentRoutingIntegrationTest {
 
         var documentIntelligenceInvoiceScanHelper = new DocumentIntelligenceInvoiceScanHelper(getDocumentIntelligenceClient(),getBlobStorageProxyClient());
 
-        var accountAgent = new AccountMCPAgent(azureOpenAiChatModel,"bob.user@contoso.com",
+        var accountAgent = new AccountMCPAgent(azureOpenAiChatModel,"admin@contoso.com",
                 "http://localhost:8070/sse");
         var transactionHistoryAgent = new TransactionHistoryMCPAgent(azureOpenAiChatModel,
-                "bob.user@contoso.com",
+                "admin@contoso.com",
                 "http://localhost:8090/sse",
                 "http://localhost:8070/sse");
         var paymentAgent = new PaymentMCPAgent(azureOpenAiChatModel,
                 documentIntelligenceInvoiceScanHelper,
-                "bob.user@contoso.com",
+                "admin@contoso.com",
                 "http://localhost:8090/sse",
                 "http://localhost:8070/sse",
                 "http://localhost:8060/sse");

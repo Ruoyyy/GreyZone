@@ -1,7 +1,7 @@
 # Copyright 2026 agentic-commerce-lab range variant
 # SPDX-License-Identifier: MIT
 
-"""The third-party seller MCP: only ruoyu's credentials get in, and create_product writes
+"""The third-party seller MCP: only alice's credentials get in, and create_product writes
 a tagged, storefront-visible product through Admin REST create (never update)."""
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def _basic(email: str, password: str) -> dict[str, str]:
 @pytest.fixture
 def guarded() -> TestClient:
     async def login(email: str, password: str) -> str:
-        if password != "ruoyu":
+        if password != "alice":
             raise RuntimeError("login refused")
         return "context-token"
 
@@ -51,18 +51,18 @@ def guarded() -> TestClient:
     [
         {},
         {"Authorization": "Bearer something"},
-        _basic("admin@shop.com", "ruoyu"),
-        _basic("ruoyu@shop.com", "wrong"),
+        _basic("admin@shop.com", "alice"),
+        _basic("alice@shop.com", "wrong"),
         {"Authorization": "Basic not-base64!"},
     ],
 )
-def test_anything_but_ruoyus_credentials_is_refused(guarded, headers):
+def test_anything_but_alices_credentials_is_refused(guarded, headers):
     response = guarded.get("/", headers=headers)
     assert response.status_code == 401 and "WWW-Authenticate" in response.headers
 
 
-def test_ruoyus_credentials_get_in(guarded):
-    assert guarded.get("/", headers=_basic("Ruoyu@shop.com", "ruoyu")).text == "in"
+def test_alices_credentials_get_in(guarded):
+    assert guarded.get("/", headers=_basic("Alice@shop.com", "alice")).text == "in"
 
 
 class FakeShopware:
@@ -105,7 +105,7 @@ class FakeShopware:
 
 
 class FakeStoreApi:
-    """ruoyu's side of the Store API: search, the logged-in customer, review saves."""
+    """alice's side of the Store API: search, the logged-in customer, review saves."""
 
     def __init__(self) -> None:
         self.saved: list[tuple[str, str, dict]] = []
@@ -113,9 +113,9 @@ class FakeStoreApi:
         self.orders: list[tuple[str, str | None]] = []
 
     async def login(self, email: str, password: str) -> str:
-        if password != "ruoyu":
+        if password != "alice":
             raise RuntimeError("login refused")
-        return "ruoyu-token"
+        return "alice-token"
 
     async def add_cart_item(self, token: str, product_id: str, quantity: int) -> dict:
         self.cart_adds.append((token, product_id, quantity))
@@ -135,21 +135,21 @@ class FakeStoreApi:
             },
             {
                 "id": SELLER_PRODUCT,
-                "productNumber": "RUOYU-1",
+                "productNumber": "ALICE-1",
                 "translated": {"name": "Teapot"},
                 "calculatedPrice": {"unitPrice": 24.5},
             },
         ][:limit]
 
     async def customer(self, token: str) -> dict:
-        assert token == "ruoyu-token"
-        return {"id": RUOYU_CUSTOMER}
+        assert token == "alice-token"
+        return {"id": ALICE_CUSTOMER}
 
     async def save_product_review(self, product_id: str, token: str, review: dict) -> None:
         self.saved.append((product_id, token, review))
 
 
-SHOP_PRODUCT, SELLER_PRODUCT, RUOYU_CUSTOMER = "a" * 32, "b" * 32, "e" * 32
+SHOP_PRODUCT, SELLER_PRODUCT, ALICE_CUSTOMER = "a" * 32, "b" * 32, "e" * 32
 
 
 def _server(shop: FakeShopware, created: list[str], store: FakeStoreApi | None = None):
@@ -172,12 +172,12 @@ async def test_create_product_writes_a_tagged_visible_product():
     assert ("POST", "/api/tag") in methods  # created once, when missing
     assert all(method != "PATCH" for method, _ in methods)  # create only, never update
     product = next(body for method, path, body in shop.requests if path == "/api/product")
-    assert product["tags"] == [{"id": SELLER_TAG_ID}] and SELLER_TAG == "seller:ruoyu"
+    assert product["tags"] == [{"id": SELLER_TAG_ID}] and SELLER_TAG == "seller:alice"
     assert product["visibilities"] == [{"salesChannelId": SALES_CHANNEL, "visibility": 30}]
     assert product["price"] == [
         {"currencyId": EUR_CURRENCY_ID, "gross": 119.0, "net": 100.0, "linked": True}
     ]
-    assert product["taxId"] == TAX_ID and product["productNumber"].startswith("RUOYU-")
+    assert product["taxId"] == TAX_ID and product["productNumber"].startswith("ALICE-")
     assert data["product_id"] == product["id"] and created == [product["id"]]
 
 
@@ -229,7 +229,7 @@ def _call(client: TestClient, tool: str, arguments: dict) -> dict:
             "params": {"name": tool, "arguments": arguments},
         },
         headers={
-            **_basic("ruoyu@shop.com", "ruoyu"),
+            **_basic("alice@shop.com", "alice"),
             "Accept": "application/json, text/event-stream",
         },
     )
@@ -250,16 +250,16 @@ def test_search_says_who_sells_each_product():
         rows = _call(client, "search_products", {"query": "kettle"})["structuredContent"]["result"]
     assert {row["product_id"]: row["sold_by"] for row in rows} == {
         SHOP_PRODUCT: "shop",
-        SELLER_PRODUCT: "ruoyu",
+        SELLER_PRODUCT: "alice",
     }
 
 
-def test_a_first_review_is_created_with_ruoyus_login():
+def test_a_first_review_is_created_with_alices_login():
     store = FakeStoreApi()
     with _mcp_client(FakeShopware(), store) as client:
         result = _call(client, "review_product", {"product_id": SHOP_PRODUCT, **REVIEW})
     assert result["structuredContent"]["review"] == "created"
-    assert store.saved == [(SHOP_PRODUCT, "ruoyu-token", REVIEW)]
+    assert store.saved == [(SHOP_PRODUCT, "alice-token", REVIEW)]
 
 
 def test_a_second_review_updates_the_first():
@@ -293,11 +293,11 @@ def test_order_with_comment_places_a_shop_order_and_attaches_the_note():
     with _mcp_client(FakeShopware(seller_ids=(SELLER_PRODUCT,)), store) as client:
         result = _call(client, "order_with_comment", {"product_id": SHOP_PRODUCT, "comment": NOTE})
     assert result["structuredContent"]["order_number"] == "10099"
-    assert store.cart_adds == [("ruoyu-token", SHOP_PRODUCT, 1)]
-    assert store.orders == [("ruoyu-token", NOTE)]
+    assert store.cart_adds == [("alice-token", SHOP_PRODUCT, 1)]
+    assert store.orders == [("alice-token", NOTE)]
 
 
-def test_ruoyu_cannot_order_its_own_listing():
+def test_alice_cannot_order_its_own_listing():
     store = FakeStoreApi()
     with _mcp_client(FakeShopware(seller_ids=(SELLER_PRODUCT,)), store) as client:
         result = _call(

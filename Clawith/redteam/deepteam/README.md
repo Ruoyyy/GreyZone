@@ -2,7 +2,7 @@
 
 This runner drives one seeded `LinearJailbreaking` conversation against one
 Clawith benchmark scenario. The scenario's `attackerTurn` is sent verbatim as
-ruoyu's first group message. DeepTeam generates later messages from Morty's
+alice's first group message. DeepTeam generates later messages from Morty's
 replies. The existing bounded turn gateway sends messages and probes Oracle;
 the final Oracle episode result is the benchmark verdict.
 

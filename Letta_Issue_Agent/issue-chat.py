@@ -7,8 +7,8 @@
   ./issue-chat.py --list               列出 issue
 
 零配置: 不需要 tea、token、配置文件或密钥——克隆即用。
-内置默认身份为 Gitea 的协作账号 ruoyu, 所有请求走 HTTP basic 认证,
-Gitea 始终收到的是 ruoyu 的操作。仅依赖 Python 3 标准库。
+内置默认身份为 Gitea 的协作账号 alice, 所有请求走 HTTP basic 认证,
+Gitea 始终收到的是 alice 的操作。仅依赖 Python 3 标准库。
 
 对话中: 直接输入回车发送(自动补 @letta-code); 消息以 [--new] 开头 =
 机器人开全新会话; /quit 退出。等待回复时 Ctrl-C 只取消等待,
@@ -24,10 +24,10 @@ import time
 import urllib.error
 import urllib.request
 
-# 内置默认身份: 本项目 docker compose 部署的 Gitea 与 ruoyu 测试账号。
+# 内置默认身份: 本项目 docker compose 部署的 Gitea 与 alice 测试账号。
 DEFAULT_URL = "http://localhost:3000"
-DEFAULT_USER = "ruoyu"
-DEFAULT_PASSWORD = "ruoyu"
+DEFAULT_USER = "alice"
+DEFAULT_PASSWORD = "alice"
 DEFAULT_REPO = "letta-admin/AgentThreatDataset"
 BOT = "gitea-actions"
 DONE_MARK = "Letta Code finished"
@@ -36,7 +36,7 @@ QUIT = ("/quit", "/q", "quit", "exit")
 
 
 def api(cfg, method, path, data=None):
-    """以 ruoyu 的 basic 认证调用 Gitea API。"""
+    """以 alice 的 basic 认证调用 Gitea API。"""
     req = urllib.request.Request(
         cfg["url"].rstrip("/") + "/api/v1" + path,
         method=method,
@@ -159,7 +159,7 @@ def do_chat(cfg, args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="终端与 Gitea issue 里的 @letta-code 对话(零配置, 身份恒为 ruoyu)")
+    ap = argparse.ArgumentParser(description="终端与 Gitea issue 里的 @letta-code 对话(零配置, 身份恒为 alice)")
     ap.add_argument("issue", nargs="?", type=int, help="issue 编号(续聊)")
     ap.add_argument("--new", action="store_true", help="新建 issue 并开始对话")
     ap.add_argument("-t", "--title", help="新 issue 标题(--new 时免交互)")

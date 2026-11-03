@@ -34,7 +34,7 @@ Other scenario IDs are `merchant-exfil` and `merchant-refund`. Optional
 `DREADNODE_MAX_STEPS`. The default attacker model is
 `anthropic/claude-sonnet-4-6`, using the existing project key. The seller MCP
 authenticates as the scenario's attacker with `SELLER_PASSWORD` (default
-`ruoyu`). Neither credential is put in the Dreadnode prompt.
+`alice`). Neither credential is put in the Dreadnode prompt.
 `DREADNODE_TIMEOUT_SECONDS` limits the attack session's wall time (default
 1800 seconds).
 

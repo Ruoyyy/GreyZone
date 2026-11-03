@@ -40,7 +40,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
     return { isError: true, content: [{ type: 'text', text: 'Cannot reply to missing mail' }] };
   }
   if (sends === 1) addMail('other@example.com', 'unrelated', subject, rfcMessageId);
-  if (args.body !== 'silent') addMail('ruoyu@gmail.com', `reply ${sends}`, subject, rfcMessageId);
+  if (args.body !== 'silent') addMail('alice@gmail.com', `reply ${sends}`, subject, rfcMessageId);
   return success({ deliveryId: `incoming-${sends}`, messageId: `internal-${sends}`, rfcMessageId });
 });
 

@@ -1,11 +1,11 @@
 // One-shot seed for the self-contained local stack (docker-compose.stack.yml).
 //
 // On an EMPTY database it creates exactly:
-//   - admin (role admin) and ruoyu, through the real signup path — so each gets
+//   - admin (role admin) and alice, through the real signup path — so each gets
 //     what any new user gets: a My Workspace, the starter tasks, their own Scout;
 //   - the pod "Pod", created by admin, with admin's Scout and the Claude Code
-//     seat "kai" installed by admin, and ruoyu joined through an admin invite;
-//   - a runtime token for kai and a device token for ruoyu (the user MCP),
+//     seat "kai" installed by admin, and alice joined through an admin invite;
+//   - a runtime token for kai and a device token for alice (the user MCP),
 //     written only into their own secrets volumes.
 // On any database that already has a human user it does nothing: re-running
 // `docker compose up` must never duplicate the seed.
@@ -40,10 +40,10 @@ const accounts = {
     email: process.env.SEED_ADMIN_EMAIL || 'admin@commonly.local',
     password: process.env.SEED_ADMIN_PASSWORD || 'admin',
   },
-  ruoyu: {
-    username: 'ruoyu',
-    email: process.env.SEED_RUOYU_EMAIL || 'ruoyu@commonly.local',
-    password: process.env.SEED_RUOYU_PASSWORD || 'ruoyu',
+  alice: {
+    username: 'alice',
+    email: process.env.SEED_ALICE_EMAIL || 'alice@commonly.local',
+    password: process.env.SEED_ALICE_PASSWORD || 'alice',
   },
 };
 
@@ -117,11 +117,11 @@ const main = async () => {
 
   // 1. Accounts, through the real signup path.
   const admin = await register(accounts.admin);
-  const ruoyu = await register(accounts.ruoyu);
+  const alice = await register(accounts.alice);
   await User.updateOne({ _id: admin._id }, { $set: { role: 'admin' } });
   const ADMIN = String(admin._id);
-  const RUOYU = String(ruoyu._id);
-  console.log('[seed] users: admin (admin), ruoyu');
+  const ALICE = String(alice._id);
+  console.log('[seed] users: admin (admin), alice');
 
   // 2. The pod, created by admin.
   const created = await call(podController.createPod, asUser(ADMIN, { body: { name: POD_NAME, type: 'team' } }));
@@ -189,19 +189,19 @@ const main = async () => {
   writeSecret(KAI_TOKEN_FILE, issued.token);
   console.log('[seed] agents in pod: Scout (admin), Kai (admin)');
 
-  // 5. ruoyu joins through a single-use invite admin issued (routes/podInvites.ts).
+  // 5. alice joins through a single-use invite admin issued (routes/podInvites.ts).
   const invite = await PodInvite.create({
     token: crypto.randomBytes(16).toString('hex'), podId, createdBy: admin._id, maxUses: 1,
   });
-  await Pod.updateOne({ _id: podId }, { $addToSet: { members: ruoyu._id }, $set: { updatedAt: new Date() } });
+  await Pod.updateOne({ _id: podId }, { $addToSet: { members: alice._id }, $set: { updatedAt: new Date() } });
   invite.useCount += 1;
   invite.lastUsedAt = new Date();
   await invite.save();
-  console.log('[seed] ruoyu joined via invite');
+  console.log('[seed] alice joined via invite');
 
-  // 6. ruoyu's device token for the user MCP — revocable from ruoyu's devices.
+  // 6. alice's device token for the user MCP — revocable from alice's devices.
   const userToken = `cm_${crypto.randomBytes(32).toString('hex')}`;
-  await User.updateOne({ _id: RUOYU }, {
+  await User.updateOne({ _id: ALICE }, {
     $push: { deviceTokens: { tokenHash: hashDeviceCredential(userToken), label: 'user-mcp', createdAt: new Date() } },
   });
   writeSecret(MCP_TOKEN_FILE, userToken);

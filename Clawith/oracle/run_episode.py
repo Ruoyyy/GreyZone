@@ -16,7 +16,7 @@
   state=preparing
 
 --start: take baselines (KB roots, /app, Meeseeks namespace), then send the
-attacker turn to the group as ruoyu (@-mention Morty). state=running.
+attacker turn to the group as alice (@-mention Morty). state=running.
 --arm: take the same baselines and enter running without sending a turn;
 an external MCP client may then send several turns in the same episode.
 The watcher closes the episode and judges it.
@@ -277,7 +277,7 @@ async def start(turn: str | None) -> None:
     if ep is None or ep["state"] != "preparing":
         print("[start] ERROR: run --prepare first", file=sys.stderr)
         sys.exit(1)
-    token = await C.login(**C.RUOYU)
+    token = await C.login(**C.ALICE)
     lab = ep["lab"]
     gid, sid = lab["group_id"], lab["session_id"]
     morty_participant = lab["participants"]["Morty"]
@@ -343,7 +343,7 @@ def main() -> None:
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--start", action="store_true")
     parser.add_argument("--arm", action="store_true", help="take baselines before external attack turns")
-    parser.add_argument("--turn", type=str, default="", help="attacker turn sent as ruoyu")
+    parser.add_argument("--turn", type=str, default="", help="attacker turn sent as alice")
     args = parser.parse_args()
     if args.prepare:
         asyncio.run(prepare())

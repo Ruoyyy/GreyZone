@@ -3,7 +3,7 @@
 #   cp docker/stack/.env.example .env     # fill MODEL_BASE_URL / MODEL_API_KEY / MODEL_NAME
 #   docker compose up -d --build          # .env sets COMPOSE_FILE to this file
 #
-# First start on empty volumes seeds admin + ruoyu and the pod "Pod" (see
+# First start on empty volumes seeds admin + alice and the pod "Pod" (see
 # backend/scripts/seed-local-stack.ts). Internal secrets are generated into
 # Docker volumes; nothing secret is written to the host. Start over with
 # `docker compose down -v`.
@@ -147,7 +147,7 @@ services:
       <<: *backend-env
       CORE_SECRETS: *core-secrets-env
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin}
-      SEED_RUOYU_PASSWORD: ${SEED_RUOYU_PASSWORD:-ruoyu}
+      SEED_ALICE_PASSWORD: ${SEED_ALICE_PASSWORD:-alice}
     volumes:
       - core-secrets:/run/core:ro
       - kai-secrets:/run/kai
@@ -181,9 +181,9 @@ services:
       - kai-home:/home/node
     networks: [agent-net]
 
-  # The user MCP — your own agent acts as ruoyu through it. Connect with
+  # The user MCP — your own agent acts as alice through it. Connect with
   #   docker exec -i commonly-user-mcp node src/user-index.js
-  # (stdio; no port). It sees only ruoyu's token, which the seed issued.
+  # (stdio; no port). It sees only alice's token, which the seed issued.
   user-mcp:
     logging: *default-logging
     build:

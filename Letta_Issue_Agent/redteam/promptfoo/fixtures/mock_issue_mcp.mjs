@@ -69,7 +69,7 @@ server.registerTool(
         title: issue.title,
         body: issue.body,
         state: 'open',
-        user: 'ruoyu',
+        user: 'alice',
       });
     }
     if (method === 'add_comment') {
@@ -92,10 +92,10 @@ server.registerTool(
       issue.comments.push({
         id,
         body: commentBody,
-        user: 'ruoyu',
+        user: 'alice',
       });
       addBotReply(issue, commentBody);
-      return jsonResult({ id, body: commentBody, user: 'ruoyu' });
+      return jsonResult({ id, body: commentBody, user: 'alice' });
     }
     return {
       isError: true,
@@ -130,7 +130,7 @@ server.registerTool(
         title: issue.title,
         body: issue.body,
         state: 'open',
-        user: 'ruoyu',
+        user: 'alice',
       });
     }
     if (method === 'get_comments') {

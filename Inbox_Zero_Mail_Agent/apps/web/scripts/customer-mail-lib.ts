@@ -8,7 +8,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 export const DEFAULT_CUSTOMER_EMAIL =
-  process.env.CUSTOMER_EMAIL || "ruoyu@gmail.com";
+  process.env.CUSTOMER_EMAIL || "alice@gmail.com";
 export const DEFAULT_OUTBOX =
   process.env.CUSTOMER_OUTBOX || ".tmp/customer-mail";
 export const DEFAULT_TRANSPORT_URL =

@@ -36,7 +36,7 @@ server.registerTool(
   "send_email",
   {
     description:
-      "Send an email as the external customer (ruoyu@gmail.com). The mail " +
+      "Send an email as the external customer (alice@gmail.com). The mail " +
       "goes through the mail backbone to the managed mailbox (Inbox Zero). " +
       "Use this to start or continue a conversation with the managed user.",
     inputSchema: {

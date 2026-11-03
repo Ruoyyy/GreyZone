@@ -1,14 +1,14 @@
-"""MCP bridge exposing ruoyu's Clawith group-chat capabilities to external agents.
+"""MCP bridge exposing alice's Clawith group-chat capabilities to external agents.
 
 Design (one environment = one token):
-- At startup this service mints a long-lived HS256 JWT for ruoyu using the
+- At startup this service mints a long-lived HS256 JWT for alice using the
   same JWT_SECRET_KEY the backend uses. The token exists only in this
   process (and once in this container's logs); it is never written to disk
   or committed anywhere.
 - External MCP clients authenticate with MCP_API_KEY (auto-generated at
-  startup when unset) and never see the ruoyu JWT.
-- Every tool call hits the backend REST API as ruoyu, so all actions are
-  attributed to ruoyu in message history and workspace revisions.
+  startup when unset) and never see the alice JWT.
+- Every tool call hits the backend REST API as alice, so all actions are
+  attributed to alice in message history and workspace revisions.
 """
 
 from __future__ import annotations
@@ -32,20 +32,20 @@ log = logging.getLogger("mcp-bridge")
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:8000").rstrip("/") + "/api"
 JWT_SECRET_KEY = os.environ["JWT_SECRET_KEY"]
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
-RUOYU_USER_ID = os.environ["RUOYU_USER_ID"]
-RUOYU_ROLE = os.environ.get("RUOYU_ROLE", "member")
-RUOYU_TENANT_ID = os.environ["RUOYU_TENANT_ID"]
+ALICE_USER_ID = os.environ["ALICE_USER_ID"]
+ALICE_ROLE = os.environ.get("ALICE_ROLE", "member")
+ALICE_TENANT_ID = os.environ["ALICE_TENANT_ID"]
 TOKEN_TTL_DAYS = int(os.environ.get("TOKEN_TTL_DAYS", "3650"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "3010"))
 
 
-def mint_ruoyu_token() -> str:
+def mint_alice_token() -> str:
     exp = datetime.now(timezone.utc) + timedelta(days=TOKEN_TTL_DAYS)
     payload = {
-        "sub": RUOYU_USER_ID,
-        "role": RUOYU_ROLE,
+        "sub": ALICE_USER_ID,
+        "role": ALICE_ROLE,
         "exp": exp,
-        "tenant_id": RUOYU_TENANT_ID,
+        "tenant_id": ALICE_TENANT_ID,
     }
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
@@ -55,7 +55,7 @@ import uuid as _uuid
 def _validate_env() -> None:
     """Fail fast with a clear message when .env ids are still placeholders
     (start.sh fills them after the bootstrap; do not start the bridge before)."""
-    for name in ("RUOYU_USER_ID", "RUOYU_TENANT_ID"):
+    for name in ("ALICE_USER_ID", "ALICE_TENANT_ID"):
         try:
             _uuid.UUID(os.environ[name])
         except (KeyError, ValueError):
@@ -66,10 +66,10 @@ def _validate_env() -> None:
 
 _validate_env()
 
-RUOYU_TOKEN = mint_ruoyu_token()
+ALICE_TOKEN = mint_alice_token()
 MCP_API_KEY = os.environ.get("MCP_API_KEY") or secrets.token_urlsafe(32)
 
-log.info("minted ruoyu JWT (exp=%dd): %s", TOKEN_TTL_DAYS, RUOYU_TOKEN)
+log.info("minted alice JWT (exp=%dd): %s", TOKEN_TTL_DAYS, ALICE_TOKEN)
 log.info("MCP API key: %s", MCP_API_KEY)
 
 
@@ -82,7 +82,7 @@ class StaticKeyVerifier(TokenVerifier):
         return None
 
 
-mcp = FastMCP(name="clawith-ruoyu-bridge", auth=StaticKeyVerifier())
+mcp = FastMCP(name="clawith-alice-bridge", auth=StaticKeyVerifier())
 
 _client: httpx.AsyncClient | None = None
 
@@ -92,7 +92,7 @@ def client() -> httpx.AsyncClient:
     if _client is None:
         _client = httpx.AsyncClient(
             base_url=BACKEND_URL,
-            headers={"Authorization": f"Bearer {RUOYU_TOKEN}"},
+            headers={"Authorization": f"Bearer {ALICE_TOKEN}"},
             timeout=30,
         )
     return _client
@@ -110,7 +110,7 @@ async def _call(method: str, path: str, **kwargs) -> str:
 
 @mcp.tool
 async def list_groups() -> str:
-    """List all groups ruoyu belongs to (id, name, description)."""
+    """List all groups alice belongs to (id, name, description)."""
     return await _call("GET", "/groups")
 
 
@@ -134,7 +134,7 @@ async def list_group_messages(
     after: str | None = None,
     limit: int = 100,
 ) -> str:
-    """Read ruoyu-visible group messages. Pass the last cursor as after to
+    """Read alice-visible group messages. Pass the last cursor as after to
     continue a multi-turn conversation without replaying older messages."""
     if not 1 <= limit <= 500:
         raise ValueError("limit must be between 1 and 500")
@@ -151,7 +151,7 @@ async def send_group_message(
     content: str,
     mention_participant_ids: list[str] | None = None,
 ) -> str:
-    """Send a message to a group chat as ruoyu. Use participant_ids from
+    """Send a message to a group chat as alice. Use participant_ids from
     list_group_members to @-mention agents."""
     body: dict = {
         "content": content,

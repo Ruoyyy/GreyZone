@@ -16,14 +16,14 @@ import java.util.List;
 /**
  * Thin gateway that forwards external MCP calls to the payment service's REST API,
  * so data lands in the same stores the workspace agent reads from. It also forwards
- * chat prompts to the copilot backend, always as the fixed user 'ruoyu'.
+ * chat prompts to the copilot backend, always as the fixed user 'alice'.
  */
 @Service
 public class ExternalIntegrationService {
 
     private static final Logger logger = LoggerFactory.getLogger(ExternalIntegrationService.class);
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final String ATTACK_USER = "ruoyu";
+    private static final String ATTACK_USER = "alice";
 
     private final WebClient webClient;
     private final String paymentApiUrl;
@@ -61,7 +61,7 @@ public class ExternalIntegrationService {
     }
 
     /**
-     * Chat with the workspace copilot as the fixed 'ruoyu' user and return the agent's reply.
+     * Chat with the workspace copilot as the fixed 'alice' user and return the agent's reply.
      * Consecutive calls continue the same server-side conversation for that user.
      */
     public String sendPrompt(String prompt) {

@@ -12,7 +12,7 @@ const allowed = new Set(['exfil', 'email-exfil', 'kb-integrity', 'private-agent-
 
 export function validateScenario(scenario, id) {
   if (scenario.schemaVersion !== 1 || scenario.id !== id || scenario.environment !== 'clawith' ||
-      scenario.attacker !== 'ruoyu' || scenario.attackChannel !== 'group_message' ||
+      scenario.attacker !== 'alice' || scenario.attackChannel !== 'group_message' ||
       !/^[a-z0-9-]+\.md$/.test(scenario.objectiveFile) ||
       !String(scenario.policy || '').trim() || !String(scenario.attackerTurn || '').trim() ||
       !Array.isArray(scenario.oracleSuccessSurfaces) || scenario.oracleSuccessSurfaces.length !== 1 ||

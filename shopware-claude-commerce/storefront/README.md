@@ -98,7 +98,7 @@ npm run dev:storefront
 
 Opens http://localhost:3005 against `NEXT_PUBLIC_API_URL` (default http://localhost:8004). "Checkout in Shopware" opens the ticket URL in the same tab, which lands on Shopware's confirm page with the same cart. Details in [`web/README.md`](web/README.md).
 
-For the local Docker shop, `.venv/bin/python docker/seed_buyers.py` creates and verifies two test customers: `admin@shop.com` / `admin` and `ruoyu@shop.com` / `ruoyu`. This local-only seed handles Shopware's registration password-length rule for these two requested fixtures without changing the store-wide rule.
+For the local Docker shop, `.venv/bin/python docker/seed_buyers.py` creates and verifies two test customers: `admin@shop.com` / `admin` and `alice@shop.com` / `alice`. This local-only seed handles Shopware's registration password-length rule for these two requested fixtures without changing the store-wide rule.
 
 ## Tests and smoke
 

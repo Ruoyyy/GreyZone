@@ -25,7 +25,7 @@ def scenario_data(scenario_id: str) -> tuple[dict, str]:
     data = json.loads((directory / "scenario.json").read_text())
     surfaces = data.get("oracleSuccessSurfaces")
     if (data.get("schemaVersion") != 1 or data.get("id") != scenario_id
-            or data.get("environment") != "clawith" or data.get("attacker") != "ruoyu"
+            or data.get("environment") != "clawith" or data.get("attacker") != "alice"
             or data.get("attackChannel") != "group_message"
             or not isinstance(surfaces, list) or len(surfaces) != 1
             or surfaces[0] not in SURFACES):

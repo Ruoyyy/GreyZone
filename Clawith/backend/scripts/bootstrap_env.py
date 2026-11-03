@@ -3,13 +3,13 @@ canonical two-user threat-research environment.
 
 Target state (see start.sh):
   - admin:  admin@clawith.com / admin        (platform_admin, group manager)
-  - ruoyu:  ruoyu@clawith.com / ruoyu  (member, MCP bridge identity)
+  - alice:  alice@clawith.com / alice  (member, MCP bridge identity)
   - agents: Morty (company, in group) + Meeseeks (private), both created by admin
-  - group:  one group with admin + ruoyu + Morty
+  - group:  one group with admin + alice + Morty
   - LLM:    zhipu glm-4.7 platform model + runtime planning/compact settings
 
 Run inside the backend container:  python /app/scripts/bootstrap_env.py
-Prints BOOTSTRAP_RUOYU_USER_ID / BOOTSTRAP_RUOYU_TENANT_ID for start.sh.
+Prints BOOTSTRAP_ALICE_USER_ID / BOOTSTRAP_ALICE_TENANT_ID for start.sh.
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ from app.models.user import Identity, User
 ADMIN_EMAIL = "admin@clawith.com"
 ADMIN_PASSWORD = "admin"
 ADMIN_DISPLAY = "admin"
-RUOYU_EMAIL = "ruoyu@clawith.com"
-RUOYU_PASSWORD = "ruoyu"
-RUOYU_DISPLAY = "ruoyu"
+ALICE_EMAIL = "alice@clawith.com"
+ALICE_PASSWORD = "alice"
+ALICE_DISPLAY = "alice"
 GROUP_NAME = "threat-lab"
 
 settings = get_settings()
@@ -72,15 +72,15 @@ async def _set_identity(db, user: User, email: str, password: str, display: str)
         part.display_name = display
 
 
-async def _ensure_ruoyu(db, admin: User) -> User:
+async def _ensure_alice(db, admin: User) -> User:
     ident = (
-        await db.execute(select(Identity).where(Identity.email == RUOYU_EMAIL))
+        await db.execute(select(Identity).where(Identity.email == ALICE_EMAIL))
     ).scalars().one_or_none()
     if ident is None:
         ident = Identity(
             id=uuid.uuid4(),
-            email=RUOYU_EMAIL,
-            password_hash=await hash_password_async(RUOYU_PASSWORD),
+            email=ALICE_EMAIL,
+            password_hash=await hash_password_async(ALICE_PASSWORD),
             is_active=True,
             email_verified=True,
         )
@@ -90,7 +90,7 @@ async def _ensure_ruoyu(db, admin: User) -> User:
             id=uuid.uuid4(),
             identity_id=ident.id,
             tenant_id=admin.tenant_id,
-            display_name=RUOYU_DISPLAY,
+            display_name=ALICE_DISPLAY,
             role="member",
             is_active=True,
         )
@@ -102,8 +102,8 @@ async def _ensure_ruoyu(db, admin: User) -> User:
         user.tenant_id = admin.tenant_id
         user.role = "member"
         user.is_active = True
-        user.display_name = RUOYU_DISPLAY
-        ident.password_hash = await hash_password_async(RUOYU_PASSWORD)
+        user.display_name = ALICE_DISPLAY
+        ident.password_hash = await hash_password_async(ALICE_PASSWORD)
         ident.is_active = True
     await db.flush()
     part = (
@@ -119,7 +119,7 @@ async def _ensure_ruoyu(db, admin: User) -> User:
                 id=uuid.uuid4(),
                 type="user",
                 ref_id=user.id,
-                display_name=RUOYU_DISPLAY,
+                display_name=ALICE_DISPLAY,
             )
         )
     return user
@@ -199,7 +199,7 @@ async def _configure_agents(db, admin: User, model) -> None:
         meeseeks.primary_model_id = model.id
 
 
-async def _ensure_group(db, admin: User, ruoyu: User) -> None:
+async def _ensure_group(db, admin: User, alice: User) -> None:
     from app.services import group_chat_service
 
     admin_part = (
@@ -209,10 +209,10 @@ async def _ensure_group(db, admin: User, ruoyu: User) -> None:
             )
         )
     ).scalars().one()
-    ruoyu_part = (
+    alice_part = (
         await db.execute(
             select(Participant).where(
-                Participant.type == "user", Participant.ref_id == ruoyu.id
+                Participant.type == "user", Participant.ref_id == alice.id
             )
         )
     ).scalars().one()
@@ -243,10 +243,10 @@ async def _ensure_group(db, admin: User, ruoyu: User) -> None:
             creator_participant_id=admin_part.id,
             name=GROUP_NAME,
             description="threat-research lab group",
-            member_participant_ids=[ruoyu_part.id, morty_part.id],
+            member_participant_ids=[alice_part.id, morty_part.id],
         )
     else:
-        for part_id, role in ((ruoyu_part.id, "member"), (morty_part.id, "member")):
+        for part_id, role in ((alice_part.id, "member"), (morty_part.id, "member")):
             exists = (
                 await db.execute(
                     select(GroupMember).where(
@@ -337,14 +337,14 @@ async def main() -> None:
     async with async_session() as db:
         admin = await _ensure_admin(db)
         await _set_identity(db, admin, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_DISPLAY)
-        ruoyu = await _ensure_ruoyu(db, admin)
+        alice = await _ensure_alice(db, admin)
         seed_knowledge_base(admin.tenant_id)
         tenant_model, _platform_model = await _ensure_models(db, admin.tenant_id)
         await _configure_agents(db, admin, tenant_model)
-        await _ensure_group(db, admin, ruoyu)
+        await _ensure_group(db, admin, alice)
         await db.commit()
-    print(f"BOOTSTRAP_RUOYU_USER_ID={ruoyu.id}")
-    print(f"BOOTSTRAP_RUOYU_TENANT_ID={ruoyu.tenant_id}")
+    print(f"BOOTSTRAP_ALICE_USER_ID={alice.id}")
+    print(f"BOOTSTRAP_ALICE_TENANT_ID={alice.tenant_id}")
     print("BOOTSTRAP_OK")
 
 

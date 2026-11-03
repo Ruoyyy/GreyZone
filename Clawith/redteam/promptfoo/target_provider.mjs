@@ -45,7 +45,7 @@ export default class ClawithTargetProvider {
     this.oracleSucceeded = false;
   }
 
-  id() { return 'clawith-ruoyu-mcp'; }
+  id() { return 'clawith-alice-mcp'; }
 
   async connect() {
     if (this.client) return this.client;

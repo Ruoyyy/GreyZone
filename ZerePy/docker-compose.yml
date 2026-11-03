@@ -1,18 +1,18 @@
 # Local end-to-end environment (fully containerized):
 #   chain        EVM chain: anvil + a deterministic 24-hour history (the onchain half, chain/)
 #   twitter-mock simulated X: Twitter API v2 + explorer API + web UI (mock/twitter_mock.py)
-#   redteam-mcp  RedTeam MCP: ruoyu's X account for an external red-team agent (redteam_mcp/)
+#   redteam-mcp  RedTeam MCP: alice's X account for an external red-team agent (redteam_mcp/)
 #   zerepy       the victim: ZerePy CLI / server; LLM configured in .env
 #
 # Start:        docker compose up -d chain twitter-mock redteam-mcp   (chain seeds ~30-40 s; twitter-mock waits for it)
 # Reset:        docker compose up -d --force-recreate chain twitter-mock redteam-mcp
 # CLI:          docker compose run --rm zerepy
 # Server mode:  docker compose run --rm --service-ports zerepy python main.py --server
-# RedTeam MCP:  http://localhost:8790/mcp  (streamable HTTP; an external red-team agent uses X as @ruoyu)
-# Web UI:       http://localhost:8788/  (post/reply/like as @ruoyu, watch the agent's tweets live)
+# RedTeam MCP:  http://localhost:8790/mcp  (streamable HTTP; an external red-team agent uses X as @alice)
+# Web UI:       http://localhost:8788/  (post/reply/like as @alice, watch the agent's tweets live)
 # Inject tweet: curl -X POST localhost:8788/__admin/tweets \
 #                 -H 'Content-Type: application/json' \
-#                 -d '{"text":"hello agent","username":"alice"}'   # username defaults to ruoyu
+#                 -d '{"text":"hello agent","username":"bob"}'   # username defaults to alice
 services:
   # EVM chain (anvil + deterministic history, see chain/seed.py). chain-id must be 10143:
   # MonadConnection hard-codes MONAD_CHAIN_ID=10143 (src/connections/monad_connection.py)
@@ -42,7 +42,7 @@ services:
     build: ./mock
     ports:
       - "8788:80"
-    # Wallets of the environment-side users (ruoyu/alice): their keys are mounted only here; the web UI wallet signs with them
+    # Wallets of the environment-side users (alice/bob): their keys are mounted only here; the web UI wallet signs with them
     environment:
       RPC_URL: http://chain:80
     volumes:
@@ -74,10 +74,10 @@ services:
       - ./logs:/app/logs # run logs (src/run_log.py), one file per run
       - ./agents:/app/agents # live agent configs (episode personas resolved by the oracle)
 
-  # RedTeam MCP: ruoyu's Twitter account as MCP (streamable HTTP, /mcp) for an external red-team agent.
-  # Decoupled from the environment: a plain Twitter API v2 client with only the API base + ruoyu's token;
+  # RedTeam MCP: alice's Twitter account as MCP (streamable HTTP, /mcp) for an external red-team agent.
+  # Decoupled from the environment: a plain Twitter API v2 client with only the API base + alice's token;
   # never touches admin endpoints or any environment secret.
-  # Port bound to loopback only: whoever reaches this service posts as ruoyu.
+  # Port bound to loopback only: whoever reaches this service posts as alice.
   redteam-mcp:
     build: ./redteam_mcp
     env_file: ./redteam_mcp/.env # TWITTER_BEARER_TOKEN

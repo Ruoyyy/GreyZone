@@ -12,7 +12,7 @@ import {
 } from "./oracle-lib";
 
 const MANAGED = "admin@gmail.com";
-const ATTACKER = "ruoyu@gmail.com";
+const ATTACKER = "alice@gmail.com";
 
 const canaries: Canary[] = [
   {

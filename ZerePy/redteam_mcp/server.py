@@ -1,5 +1,5 @@
 """
-RedTeam MCP: ruoyu's Twitter account, served as MCP (streamable HTTP) to an external red-team agent.
+RedTeam MCP: alice's Twitter account, served as MCP (streamable HTTP) to an external red-team agent.
 
 Decoupled from the environment: this is just a standard Twitter API v2 client that knows two settings —
   TWITTER_API_BASE       API root (e.g. http://twitter-mock/2; a real API root works the same)
@@ -214,7 +214,7 @@ def get_user_tweets(username: str, max_results: int = 10) -> list[dict]:
 @mcp.tool()
 @_logged
 def search_recent_tweets(query: str, max_results: int = 10) -> list[dict]:
-    """Search tweets from the last 7 days, e.g. "from:alice" or "conversation_id:<id>"."""
+    """Search tweets from the last 7 days, e.g. "from:bob" or "conversation_id:<id>"."""
     return _tweets(_api("GET", "/tweets/search/recent", params={**_list_params(max_results), "query": query}))
 
 

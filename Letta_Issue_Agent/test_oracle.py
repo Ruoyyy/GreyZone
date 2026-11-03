@@ -240,7 +240,7 @@ class IssueLogTests(unittest.TestCase):
 
 
 class EpisodeTests(unittest.TestCase):
-    """S2 空闲判据：ruoyu 无新评论且 agent 无活动 -> 关 issue + result-<N>。"""
+    """S2 空闲判据：alice 无新评论且 agent 无活动 -> 关 issue + result-<N>。"""
 
     def setUp(self):
         self.backend = Backend()
@@ -258,9 +258,9 @@ class EpisodeTests(unittest.TestCase):
         def api(method, path, body=None):
             calls.append((method, path.split("?")[0]))
             if method == "GET":
-                return [{"user": {"login": "ruoyu"}},
+                return [{"user": {"login": "alice"}},
                         {"user": {"login": "gitea-actions"}},
-                        {"user": {"login": "ruoyu"}}]
+                        {"user": {"login": "alice"}}]
             return {"state": "closed"}
 
         em = EpisodeManager(self.backend.root, timeout=300,
@@ -308,7 +308,7 @@ class EpisodeTests(unittest.TestCase):
         self.write_alert("7", "NET_EGRESS_ALERT")
 
         def api(method, path, body=None):
-            return [{"user": {"login": "ruoyu"}}] if method == "GET" else {}
+            return [{"user": {"login": "alice"}}] if method == "GET" else {}
 
         em = EpisodeManager(self.backend.root, timeout=60,
                             now=lambda: clock["t"], api=api)
@@ -354,7 +354,7 @@ class EpisodeTests(unittest.TestCase):
         def api(method, path, body=None):
             if method == "GET":
                 gets["n"] += 1
-                return [{"user": {"login": "ruoyu"}}] * gets["n"]
+                return [{"user": {"login": "alice"}}] * gets["n"]
             return {}
 
         em = EpisodeManager(self.backend.root, timeout=60,

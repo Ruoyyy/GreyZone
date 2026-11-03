@@ -36,7 +36,7 @@ services:
       GITEA_CUSTOM: /data/gitea
       GITEA_INSTANCE_URL: http://localhost:3000
       GITEA_ADMIN_PASSWORD: ${GITEA_ADMIN_PASSWORD:-letta-admin}
-      RUYOU_PASSWORD: ${RUYOU_PASSWORD:-ruoyu}
+      ALICE_PASSWORD: ${ALICE_PASSWORD:-alice}
     volumes:
       - gitea-data:/data
       - ./shared:/shared                # runner 注册 token 交接
@@ -48,7 +48,7 @@ services:
         max-size: "5m"
         max-file: "3"
 
-  # 对外 MCP 网关：连上即 ruoyu。l1 = Issue，l2 = Issue + 代码；Gitea token 是权限边界。
+  # 对外 MCP 网关：连上即 alice。l1 = Issue，l2 = Issue + 代码；Gitea token 是权限边界。
   gitea-mcp:
     build: ./mcp
     image: letta/gitea-mcp:1.7.0
@@ -69,7 +69,7 @@ services:
     healthcheck:
       test: ["CMD", "/app/gitea-mcp", "-healthcheck"]
     ports:
-      - "127.0.0.1:8080:8080"   # 端口可达 = 授权为 ruoyu
+      - "127.0.0.1:8080:8080"   # 端口可达 = 授权为 alice
     logging:
       options:
         max-size: "5m"

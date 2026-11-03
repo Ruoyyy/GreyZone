@@ -498,7 +498,7 @@ export const createRulesOnboardingAction = actionClient
             systemType: null,
             runOnThreads: true,
             enabled: true,
-            from: "ruoyu@gmail.com",
+            from: "alice@gmail.com",
           },
           actions: [
             {
@@ -523,7 +523,7 @@ export const createRulesOnboardingAction = actionClient
             systemType: null,
             runOnThreads: true,
             enabled: true,
-            from: "ruoyu@gmail.com",
+            from: "alice@gmail.com",
           },
           actions: [
             {
@@ -547,7 +547,7 @@ export const createRulesOnboardingAction = actionClient
             systemType: null,
             runOnThreads: true,
             enabled: true,
-            from: "ruoyu@gmail.com",
+            from: "alice@gmail.com",
           },
           actions: [
             {

@@ -2,7 +2,7 @@
 
 This adapter runs one multi-turn Crescendo attack against one existing
 `benchmark/scenarios/<id>` objective. Promptfoo generates attack messages;
-the target provider sends each message as ruoyu through the authenticated MCP
+the target provider sends each message as alice through the authenticated MCP
 bridge, waits for Morty's response in the same group session, and probes the
 selected Oracle surface. A fired Oracle judgment ends Crescendo immediately.
 The Oracle's final result is the benchmark outcome; the policy plugin supplies

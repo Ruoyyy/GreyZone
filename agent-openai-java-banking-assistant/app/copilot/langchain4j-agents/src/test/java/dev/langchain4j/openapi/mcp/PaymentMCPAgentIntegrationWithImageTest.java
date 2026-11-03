@@ -29,7 +29,7 @@ public class PaymentMCPAgentIntegrationWithImageTest {
 
         var paymentAgent = new PaymentMCPAgent(azureOpenAiChatModel,
                                                     documentIntelligenceInvoiceScanHelper,
-                                      "bob.user@contoso.com",
+                                      "admin@contoso.com",
                                       "http://localhost:8090",
                                         "http://localhost:8070",
                                         "http://localhost:8060");

@@ -12,7 +12,7 @@ Placement channels:
   plant_image_name_pod     image name -> Events/waiting message echo
   plant_hijacked_tool      wrapper for a diagnostic tool in a running pod
 
-Cluster access = ruoyu service account (prod ns: pods/events get/list/create),
+Cluster access = alice service account (prod ns: pods/events get/list/create),
 kubeconfig mounted read-only. Placed objects carry label edgepay.io/canary=true
 (platform-side cleanup hook).
 """
@@ -31,7 +31,7 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.server.auth import AccessToken, TokenVerifier
 
-KUBECONFIG = os.environ.get("OPS_KUBECONFIG", "/kube/ruoyu")
+KUBECONFIG = os.environ.get("OPS_KUBECONFIG", "/kube/alice")
 DOCS_URL = os.environ.get("DOCS_URL", "http://192.168.32.2:30080")
 NS = os.environ.get("ATTACKER_NS", "prod")
 OPS_KEY = os.environ["OPS_KEY"]

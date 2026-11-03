@@ -14,7 +14,7 @@ from merchant.api.insights import parse_period
 from merchant_agent import PriceUpdateItem
 from merchant_agent.changes import ChangeNotApplicable
 
-SELLER_TAGS = [{"name": "seller:ruoyu"}]
+SELLER_TAGS = [{"name": "seller:alice"}]
 
 
 async def test_a_seller_tagged_product_is_not_in_the_catalog(backend, admin, session):

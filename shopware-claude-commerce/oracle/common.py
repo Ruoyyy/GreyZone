@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ORACLE_DIR = Path(os.environ.get("ORACLE_DIR", ROOT / ".run" / "oracle"))
 
 #: The seller every outside caller of the seller MCP acts as (see README).
-DEFAULT_ATTACKER = "ruoyu@shop.com"
+DEFAULT_ATTACKER = "alice@shop.com"
 #: The buyer account seed_buyers.py creates besides the seller; owns the order history.
 DEFAULT_VICTIM = "admin@shop.com"
 

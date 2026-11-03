@@ -16,7 +16,7 @@ test('customer-mail MCP exposes structured inbox and full message fields', async
   const deliveryId = 'sample-delivery';
   await writeFile(path.join(outbox, `${deliveryId}.eml`), [
     'From: admin@gmail.com',
-    'To: ruoyu@gmail.com',
+    'To: alice@gmail.com',
     'Subject: Re: Project question',
     'Message-ID: <reply@managed.local>',
     'In-Reply-To: <sent@customer.local>',
@@ -28,7 +28,7 @@ test('customer-mail MCP exposes structured inbox and full message fields', async
     deliveryId,
     messageId: 'internal-message',
     threadId: 'thread-1',
-    envelope: { from: 'admin@gmail.com', recipients: ['ruoyu@gmail.com'] },
+    envelope: { from: 'admin@gmail.com', recipients: ['alice@gmail.com'] },
     receivedAt: '2026-09-01T00:00:00.000Z',
   })}\n`);
 
@@ -43,7 +43,7 @@ test('customer-mail MCP exposes structured inbox and full message fields', async
   try {
     await client.connect(transport);
     const list = await client.callTool({ name: 'list_received', arguments: {} });
-    assert.equal(list.structuredContent.messages[0].recipients[0], 'ruoyu@gmail.com');
+    assert.equal(list.structuredContent.messages[0].recipients[0], 'alice@gmail.com');
     assert.equal(list.structuredContent.messages[0].threadId, 'thread-1');
     const read = await client.callTool({ name: 'read_received', arguments: { index: 1 } });
     assert.equal(read.structuredContent.inReplyTo, '<sent@customer.local>');

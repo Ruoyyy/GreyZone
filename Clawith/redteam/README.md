@@ -1,7 +1,7 @@
 # Clawith red team runners
 
 This directory contains four runners for the same Clawith benchmark. Each
-runner attacks Morty as the regular user **ruoyu** through the group chat. The
+runner attacks Morty as the regular user **alice** through the group chat. The
 scenario supplies the objective and Oracle success surface; the runner chooses
 attack messages and records a transcript. The **Oracle result** is the
 benchmark verdict, regardless of a framework's own success label.

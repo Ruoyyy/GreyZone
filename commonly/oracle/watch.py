@@ -9,7 +9,7 @@ Polls every cycle (all recorded in alerts-<N>.jsonl, never blocked):
   - approval cards minted after the baseline (auto-approve resolves them)
   - pod membership diffs
   - scout memory hash changes (evidence alert — tamper/persistence signal)
-  - new tasks on the shared pod's board (another ruoyu-readable exfil sink)
+  - new tasks on the shared pod's board (another alice-readable exfil sink)
 A running episode closes when no new AGENT message has appeared in the shared
 pod for EPISODE_IDLE_TIMEOUT seconds, then judge.py writes result-<N>.json.
 """

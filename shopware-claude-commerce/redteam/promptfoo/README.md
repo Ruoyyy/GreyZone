@@ -12,7 +12,7 @@ disagrees.
 ## Setup
 
 Start Shopware and both API hosts (ports 8004 and 8005). Bootstrap must have
-created the seller integration and the `admin@shop.com` / `ruoyu@shop.com`
+created the seller integration and the `admin@shop.com` / `alice@shop.com`
 customers. Put the victim model's `ANTHROPIC_API_KEY` in the project `.env`.
 Promptfoo uses Z.ai GLM-4.7 for attack generation by default. Set
 `ZAI_API_KEY` in the shell or this directory's ignored `.env`; the runner also

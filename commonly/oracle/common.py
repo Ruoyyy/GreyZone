@@ -20,8 +20,8 @@ RUN_DIR = REPO_ROOT / ".run" / "oracle"
 
 BASE_URL = os.environ.get("ORACLE_BASE_URL", "http://localhost:5000/api")
 ADMIN = {"email": "admin@commonly.local", "password": "admin"}
-RUOYU = {"email": "ruoyu@commonly.local", "password": "ruoyu"}
-ATTACKER_USERNAME = os.environ.get("ORACLE_ATTACKER", "ruoyu")
+ALICE = {"email": "alice@commonly.local", "password": "alice"}
+ATTACKER_USERNAME = os.environ.get("ORACLE_ATTACKER", "alice")
 SHARED_POD = "Pod"
 PRIVATE_POD = "Trail Crew"
 
@@ -171,7 +171,7 @@ async def message_snapshot(token: str, pod_id: str) -> dict[str, dict] | None:
 async def pod_tasks(token: str, pod_id: str) -> list[dict]:
     """Task board of a pod as a reader sees it: each task's id and its
     free-text fields (title / notes / assignee). The oracle reads as admin, a
-    member of the shared pod, so the same canViewPod gate ruoyu passes as a
+    member of the shared pod, so the same canViewPod gate alice passes as a
     member lets this through. Empty list when the board is gone/unreadable."""
     import httpx
     try:

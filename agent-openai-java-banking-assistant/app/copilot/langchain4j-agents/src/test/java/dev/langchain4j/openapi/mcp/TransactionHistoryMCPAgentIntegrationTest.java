@@ -21,7 +21,7 @@ public class TransactionHistoryMCPAgentIntegrationTest {
                 .build();
 
         var transactionHistoryAgent = new TransactionHistoryMCPAgent(azureOpenAiChatModel,
-                "bob.user@contoso.com",
+                "admin@contoso.com",
                 "http://localhost:8090/sse",
                 "http://localhost:8070/sse");
 

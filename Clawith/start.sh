@@ -5,9 +5,9 @@
 #
 # Produces:
 #   admin  admin@clawith.com / admin       (platform_admin)
-#   ruoyu  ruoyu@clawith.com / ruoyu (member, MCP bridge identity)
+#   alice  alice@clawith.com / alice (member, MCP bridge identity)
 #   agents Morty (company, group) + Meeseeks (private)
-#   group  "threat-lab" with admin + ruoyu + Morty
+#   group  "threat-lab" with admin + alice + Morty
 #   MCP    http://127.0.0.1:3010/mcp (key printed in mcp-bridge logs)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -41,7 +41,7 @@ ensure_env() {
         fi
     done
     # Drop duplicate MCP-era vars from older .env layouts (keep first occurrence)
-    for var in RUOYU_USER_ID RUOYU_TENANT_ID RUOYU_ROLE TOKEN_TTL_DAYS MCP_API_KEY MCP_PORT; do
+    for var in ALICE_USER_ID ALICE_TENANT_ID ALICE_ROLE TOKEN_TTL_DAYS MCP_API_KEY MCP_PORT; do
         count=$(grep -cE "^${var}=" "$ENV_FILE" || true)
         if [ "$count" -gt 1 ]; then
             sed_in_place "/^${var}=/d" "$ENV_FILE"
@@ -96,15 +96,15 @@ run_bootstrap() {
     ZHIPU=$(grep -E '^ZHIPU_API_KEY=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
     OUT=$(docker compose exec -T -e ZHIPU_API_KEY="$ZHIPU" -e PYTHONPATH=/app backend \
         python /app/scripts/bootstrap_env.py 2>&1 | tee /dev/stderr)
-    USER_ID=$(echo "$OUT" | sed -nE 's/^BOOTSTRAP_RUOYU_USER_ID=(.+)$/\1/p' | tail -1)
-    TENANT_ID=$(echo "$OUT" | sed -nE 's/^BOOTSTRAP_RUOYU_TENANT_ID=(.+)$/\1/p' | tail -1)
+    USER_ID=$(echo "$OUT" | sed -nE 's/^BOOTSTRAP_ALICE_USER_ID=(.+)$/\1/p' | tail -1)
+    TENANT_ID=$(echo "$OUT" | sed -nE 's/^BOOTSTRAP_ALICE_TENANT_ID=(.+)$/\1/p' | tail -1)
     if [ -z "$USER_ID" ] || [ -z "$TENANT_ID" ]; then
         echo "[start] ERROR: bootstrap did not report ids" >&2
         exit 1
     fi
-    set_env_value RUOYU_USER_ID "$USER_ID"
-    set_env_value RUOYU_TENANT_ID "$TENANT_ID"
-    echo "[start] .env updated with ruoyu ids"
+    set_env_value ALICE_USER_ID "$USER_ID"
+    set_env_value ALICE_TENANT_ID "$TENANT_ID"
+    echo "[start] .env updated with alice ids"
 }
 
 main() {
@@ -129,7 +129,7 @@ main() {
     echo " Clawith threat-lab is up"
     echo "   Web UI   : http://localhost:${FRONTEND_PORT:-3008}"
     echo "   admin    : admin@clawith.com / admin"
-    echo "   ruoyu    : ruoyu@clawith.com / ruoyu"
+    echo "   alice    : alice@clawith.com / alice"
     echo "   MCP      : http://127.0.0.1:${MCP_PORT:-3010}/mcp"
     echo "   MCP key  : ${MCP_KEY:-<see: docker compose logs mcp-bridge>}"
     echo "══════════════════════════════════════════════════════"

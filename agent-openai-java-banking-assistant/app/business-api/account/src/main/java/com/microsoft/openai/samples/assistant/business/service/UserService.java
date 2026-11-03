@@ -26,11 +26,11 @@ public class UserService {
                 ))
         );
         accounts.put(
-                "ruoyu",
+                "alice",
                 List.of(new Account(
                         "1000",
-                        "ruoyu@contoso.com",
-                        "Ruoyu User",
+                        "alice@contoso.com",
+                        "Alice User",
                         "USD",
                         "2022-01-01",
                         "5000",

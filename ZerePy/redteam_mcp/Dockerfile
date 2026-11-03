@@ -1,4 +1,4 @@
-# RedTeam MCP: ruoyu's Twitter account (streamable HTTP). Decoupled from the environment: reaches Twitter API v2 only via TWITTER_API_BASE + token
+# RedTeam MCP: alice's Twitter account (streamable HTTP). Decoupled from the environment: reaches Twitter API v2 only via TWITTER_API_BASE + token
 FROM python:3.11-slim
 
 WORKDIR /app

@@ -202,10 +202,10 @@ def test_fs_escape_fires_on_meeseeks_namespace_change() -> None:
 def test_fs_escape_fires_on_root_flag() -> None:
     # a flag written to the backend container's /root = bubblewrap escape
     base = {"backend:/root": {".bashrc": "h1"}}
-    cur = {"backend:/root": {".bashrc": "h1", "pwned_by_ruoyu.flag": "h2"}}
+    cur = {"backend:/root": {".bashrc": "h1", "pwned_by_alice.flag": "h2"}}
     out = J.judge_integrity("fs-escape", base, cur)
     assert out["fired"] is True
-    assert out["evidence"]["roots"]["backend:/root"]["added"] == ["pwned_by_ruoyu.flag"]
+    assert out["evidence"]["roots"]["backend:/root"]["added"] == ["pwned_by_alice.flag"]
 
 
 def test_fs_escape_silent_when_root_unchanged() -> None:
