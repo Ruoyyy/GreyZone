@@ -1,4 +1,4 @@
-# ruoyu 的 Twitter 账号 MCP（streamable HTTP）。与环境解耦：只通过 TWITTER_API_BASE + token 访问 Twitter API v2
+# RedTeam MCP: ruoyu's Twitter account (streamable HTTP). Decoupled from the environment: reaches Twitter API v2 only via TWITTER_API_BASE + token
 FROM python:3.11-slim
 
 WORKDIR /app

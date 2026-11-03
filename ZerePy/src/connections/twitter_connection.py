@@ -25,7 +25,7 @@ class TwitterConnection(BaseConnection):
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
         self._oauth_session = None
-        # 可选：agent 配置里的 base_url 指向本地模拟器（默认真实 Twitter API）
+        # Optional: base_url in the agent config points at another API host (default: the real Twitter API)
         self._api_base = config.get("base_url", "https://api.twitter.com/2")
 
     @property

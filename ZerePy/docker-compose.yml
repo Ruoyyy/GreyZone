@@ -1,26 +1,27 @@
-# 本地端到端测试环境（全部容器化）:
-#   chain        EVM 链：anvil + 确定性的 24 小时历史（链上半边，chain/）
-#   twitter-mock 社交媒体模拟器（Twitter API v2 最小实现，mock/twitter_mock.py）
-#   zerepy       CLI/服务器本体，LLM 走 DeepSeek API（.env 里配置）
+# Local end-to-end environment (fully containerized):
+#   chain        EVM chain: anvil + a deterministic 24-hour history (the onchain half, chain/)
+#   twitter-mock simulated X: Twitter API v2 + explorer API + web UI (mock/twitter_mock.py)
+#   redteam-mcp  RedTeam MCP: ruoyu's X account for an external red-team agent (redteam_mcp/)
+#   zerepy       the victim: ZerePy CLI / server; LLM configured in .env
 #
-# 启动环境:     docker compose up -d chain twitter-mock   （chain 播种约 20 秒，完成后 twitter-mock 才启动）
-# 重置环境:     docker compose up -d --force-recreate chain twitter-mock
-# 进入 CLI:     docker compose run --rm zerepy
-# 服务器模式:   docker compose run --rm --service-ports zerepy python main.py --server
-# ruoyu MCP:    http://localhost:8790/mcp  （streamable HTTP，供外部 agent 以 @ruoyu 身份使用 Twitter）
-# 推特前端:     http://localhost:8788/  （以 @ruoyu 身份发推/回复/点赞，实时查看 agent 的推文历史）
-# 注入推文:     curl -X POST localhost:8788/__admin/tweets \
+# Start:        docker compose up -d chain twitter-mock redteam-mcp   (chain seeds ~30-40 s; twitter-mock waits for it)
+# Reset:        docker compose up -d --force-recreate chain twitter-mock redteam-mcp
+# CLI:          docker compose run --rm zerepy
+# Server mode:  docker compose run --rm --service-ports zerepy python main.py --server
+# RedTeam MCP:  http://localhost:8790/mcp  (streamable HTTP; an external red-team agent uses X as @ruoyu)
+# Web UI:       http://localhost:8788/  (post/reply/like as @ruoyu, watch the agent's tweets live)
+# Inject tweet: curl -X POST localhost:8788/__admin/tweets \
 #                 -H 'Content-Type: application/json' \
-#                 -d '{"text":"hello agent","username":"alice"}'   # username 缺省为 ruoyu
+#                 -d '{"text":"hello agent","username":"alice"}'   # username defaults to ruoyu
 services:
-  # EVM 链（anvil + 确定性历史，见 chain/seed.py）。chain-id 必须是 10143：
-  # MonadConnection 硬编码 MONAD_CHAIN_ID=10143（src/connections/monad_connection.py）
-  # 每次启动：链从 47,382,916 块开始，回放固定的 24 小时历史（约 8.6 万块、1337 笔转账），
-  # 追平到当前时间后每秒出块；完成后才标记 healthy（约 20 秒）
+  # EVM chain (anvil + deterministic history, see chain/seed.py). chain-id must be 10143:
+  # MonadConnection hard-codes MONAD_CHAIN_ID=10143 (src/connections/monad_connection.py)
+  # Every start: the chain begins at block 47,382,916, replays a fixed 24-hour history (~86k blocks, 1,337 transfers),
+  # catches up to wall clock and then mines one block per second; healthy only once that is done (~30-40 s)
   chain:
     build: ./chain
     environment:
-      # 回放 admin "过去" 发出的交易需要它的私钥（只在环境侧使用）
+      # Replaying admin's "past" transactions needs its key (used on the environment side only)
       ADMIN_PRIVATE_KEY: ${MONAD_PRIVATE_KEY}
     volumes:
       - ./chain/users.keys.json:/chain/users.keys.json:ro
@@ -30,34 +31,33 @@ services:
       test: ["CMD", "test", "-f", "/tmp/seeded"]
       interval: 2s
       retries: 90
-    # agent 侧以真实主机名访问（tool 报错信息会进入 LLM 上下文，不能暴露 "anvil"）
+    # The agent reaches it by a real hostname (tool errors enter the LLM context and must not reveal "anvil")
     networks:
       default:
         aliases: ["testnet-rpc.monad.xyz"]
 
-  # 社交媒体模拟器：Twitter API v2 的最小实现
-  # （agent 循环的 post/reply/like 任务 + timeline 读取都走这里；
-#   TwitterConnection 通过 agent 配置里的 base_url 指向本服务）
+  # Simulated X: Twitter API v2 (timelines, search, mentions, likes, filtered stream), explorer API, web UI.
+  # TwitterConnection points here via base_url in the agent config.
   twitter-mock:
     build: ./mock
     ports:
       - "8788:80"
-    # 环境侧用户（ruoyu/alice）的钱包：私钥只挂载到这里，前端钱包面板用它签名
+    # Wallets of the environment-side users (ruoyu/alice): their keys are mounted only here; the web UI wallet signs with them
     environment:
       RPC_URL: http://chain:80
     volumes:
       - ./chain/users.keys.json:/app/users.keys.json:ro
-      - ./chain/seed.py:/app/chain_seed.py:ro # 预置推文引用链上历史，复用其确定性钱包派生
-      - ./mock/users.tokens.json:/app/users.tokens.json:ro # 环境侧用户的 Bearer token（ruoyu_mcp 用）
+      - ./chain/seed.py:/app/chain_seed.py:ro # seeded tweets quote the chain history; reuse its deterministic wallet derivation
+      - ./mock/users.tokens.json:/app/users.tokens.json:ro # Bearer tokens of the environment-side users (used by the RedTeam MCP)
     depends_on:
       chain:
         condition: service_healthy
-    # 同上：agent 侧以 api.twitter.com 访问，避免报错里出现 "twitter-mock"
+    # Same as above: the agent reaches it as api.twitter.com, so errors never show "twitter-mock"
     networks:
       default:
-        aliases: ["api.twitter.com", "api.etherscan.io"] # 后者：Etherscan v2 兼容的交易记录查询
+        aliases: ["api.twitter.com", "api.etherscan.io"] # the latter: Etherscan v2-compatible transaction history
 
-  # ZerePy 本体。交互式使用 docker compose run --rm zerepy 进入 CLI
+  # ZerePy itself (the victim). Run docker compose run --rm zerepy for the interactive CLI
   zerepy:
     build: .
     stdin_open: true
@@ -69,22 +69,24 @@ services:
       twitter-mock:
         condition: service_started
     ports:
-      - "8000:8000" # 仅 --server 模式使用
+      - "8000:8000" # --server mode only
     volumes:
-      - ./logs:/app/logs # 运行记录（src/run_log.py），按运行分文件
+      - ./logs:/app/logs # run logs (src/run_log.py), one file per run
+      - ./agents:/app/agents # live agent configs (episode personas resolved by the oracle)
 
-  # ruoyu 的 Twitter 账号，以 MCP（streamable HTTP，/mcp）提供给外部 agent。
-  # 与环境解耦：只是标准 Twitter API v2 客户端，仅凭 API 地址 + ruoyu 的 token 访问；不碰管理接口和任何环境密钥。
-  # 端口只绑定本机：持有该服务即可以 ruoyu 身份发帖。
-  ruoyu-mcp:
-    build: ./ruoyu_mcp
-    env_file: ./ruoyu_mcp/.env # TWITTER_BEARER_TOKEN
+  # RedTeam MCP: ruoyu's Twitter account as MCP (streamable HTTP, /mcp) for an external red-team agent.
+  # Decoupled from the environment: a plain Twitter API v2 client with only the API base + ruoyu's token;
+  # never touches admin endpoints or any environment secret.
+  # Port bound to loopback only: whoever reaches this service posts as ruoyu.
+  redteam-mcp:
+    build: ./redteam_mcp
+    env_file: ./redteam_mcp/.env # TWITTER_BEARER_TOKEN
     environment:
       TWITTER_API_BASE: http://twitter-mock/2
       LOG_DIR: /app/logs
-      MCP_ALLOWED_HOSTS: localhost:*,127.0.0.1:*,ruoyu-mcp:*
+      MCP_ALLOWED_HOSTS: localhost:*,127.0.0.1:*,redteam-mcp:*
     volumes:
-      - ./logs:/app/logs # 调用记录：logs/ruoyu-mcp-<时间>.log
+      - ./logs:/app/logs # call log: logs/redteam-mcp-<time>.log
     ports:
       - "127.0.0.1:8790:8790"
     depends_on:

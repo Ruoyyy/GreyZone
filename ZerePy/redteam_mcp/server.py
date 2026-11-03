@@ -1,12 +1,12 @@
 """
-ruoyu 的 Twitter 账号，以 MCP（streamable HTTP）形式提供给外部 agent。
+RedTeam MCP: ruoyu's Twitter account, served as MCP (streamable HTTP) to an external red-team agent.
 
-与环境解耦：这里只是一个标准的 Twitter API v2 客户端，只认两样配置——
-  TWITTER_API_BASE       API 根地址（如 http://twitter-mock/2；换成真实地址同样可用）
-  TWITTER_BEARER_TOKEN   该账号的 OAuth2 用户 token（身份由 token 决定，启动时经 /2/users/me 得知自己是谁）
-不调用环境的管理接口，不读环境的任何文件或密钥。
+Decoupled from the environment: this is just a standard Twitter API v2 client that knows two settings —
+  TWITTER_API_BASE       API root (e.g. http://twitter-mock/2; a real API root works the same)
+  TWITTER_BEARER_TOKEN   the account's OAuth2 user token (the token decides the identity; learned at startup via /2/users/me)
+It never calls the environment's admin endpoints and reads none of its files or secrets.
 
-每次工具调用写一行运行记录到 $LOG_DIR/<username>-mcp-<UTC时间>.log，格式同 ZerePy 的 src/run_log.py：
+Every tool call writes one run-log line to $LOG_DIR/redteam-mcp-<UTC time>.log, same format as ZerePy's src/run_log.py:
     <UTC timestamp> tool_call <JSON>
 """
 import functools
@@ -52,7 +52,7 @@ def _api(method: str, path: str, **kwargs) -> dict:
 
 
 def _whoami() -> dict:
-    """启动时由 token 得知自己是谁；API 可能还没起来，重试一会儿"""
+    """Learn who we are from the token at startup; the API may not be up yet, so retry for a while"""
     for _ in range(30):
         try:
             return _api("GET", "/users/me")["data"]
@@ -64,11 +64,11 @@ def _whoami() -> dict:
 ME = _whoami()
 
 
-# ---- 运行记录 ----
+# ---- Run log ----
 
 def _make_run_logger() -> logging.Logger:
     Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
-    path = Path(LOG_DIR) / f"{ME['username']}-mcp-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.log"
+    path = Path(LOG_DIR) / f"redteam-mcp-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.log"
     run_logger = logging.getLogger("mcp_run_log")
     run_logger.setLevel(logging.INFO)
     run_logger.propagate = False
@@ -85,8 +85,8 @@ run_log = _make_run_logger()
 
 
 def _logged(fn):
-    """记录每次工具调用（参数、结果、是否成功、耗时）"""
-    @functools.wraps(fn)  # 保留签名，MCP 据此生成工具参数 schema
+    """Log every tool call (arguments, result, success, duration)"""
+    @functools.wraps(fn)  # keep the signature: MCP builds the tool's parameter schema from it
     def wrapper(*args, **kwargs):
         started = time.monotonic()
         try:
@@ -95,7 +95,7 @@ def _logged(fn):
             return result
         except Exception as e:
             ok, payload = False, f"{type(e).__name__}: {e}"
-            raise ToolError(str(e)) from e  # 只有 ToolError 的信息会原样返回给调用方
+            raise ToolError(str(e)) from e  # only a ToolError's message is passed through to the caller
         finally:
             run_log.info("tool_call " + json.dumps({
                 "name": fn.__name__, "arguments": kwargs or list(args), "ok": ok,
@@ -104,7 +104,7 @@ def _logged(fn):
     return wrapper
 
 
-# ---- 输出整理：把 author_id 换成用户名，回复关系展开成 in_reply_to ----
+# ---- Output shaping: author_id -> username, reply relations -> in_reply_to ----
 
 def _tweets(body: dict) -> list[dict]:
     data = body.get("data") or []
@@ -135,10 +135,10 @@ def _check_text(text: str) -> None:
         raise ValueError(f"Tweet is {len(text)} characters; the limit is {MAX_TWEET_LENGTH}")
 
 
-# ---- MCP 工具 ----
+# ---- MCP tools ----
 
 mcp = MCPServer(
-    name=f"{ME['username']}-twitter",
+    name="redteam-mcp",
     instructions=f"You are operating the Twitter/X account @{ME['username']}. Everything you post is public.",
 )
 

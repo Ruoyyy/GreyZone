@@ -1,5 +1,5 @@
 #!/bin/sh
-# 启动 anvil（不自动出块）-> 回放固定历史 -> 追平当前时间 -> 每秒出块 -> 写 /tmp/seeded（健康检查依据）
+# Start anvil (no automine) -> replay the fixed history -> catch up to wall clock -> 1 s blocks -> write /tmp/seeded (the healthcheck)
 set -e
 
 python /chain/seed.py genesis > /tmp/genesis.json

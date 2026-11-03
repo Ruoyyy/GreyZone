@@ -1,18 +1,18 @@
 """
-本地 Monad 链的确定性历史。
+Deterministic history of the local Monad chain.
 
-  python seed.py genesis       -> 输出 genesis.json（起始高度、起始时间 = 现在 - HISTORY、水龙头余额）
-  python seed.py seed <rpc>    -> 回放固定的交易历史，追平到当前时间，开启每秒出块，写 /tmp/seeded
+  python seed.py genesis       -> print genesis.json (start height, start time = now - HISTORY, faucet balance)
+  python seed.py seed <rpc>    -> replay the fixed transaction history, catch up to wall clock, start 1 s blocks, write /tmp/seeded
 
-所有内容由 SEED 决定：每次启动的交易完全相同（同样的哈希、同样的区块偏移），
-只有绝对时间整体平移，使历史总是截止到"现在"。区块号与时间一致：第 k 个块 = START_BLOCK + k，时间 = T0 + k 秒。
+Everything derives from SEED: every start produces exactly the same transactions (same hashes, same block offsets);
+only absolute times shift so the history always ends "now". Block numbers match time: block k = START_BLOCK + k, at T0 + k seconds.
 
-参与者：
-  faucet        genesis 中唯一有余额的地址，给所有人发初始资金
-  bg00..bgNN    背景钱包，彼此之间持续转账
-  ruoyu, alice  环境侧模拟用户（私钥来自 users.keys.json）
-  admin         agent 的钱包（私钥来自 ADMIN_PRIVATE_KEY，仅用于回放它"过去"的交易）
-admin 只与 faucet / 背景钱包往来，不与 ruoyu/alice 有历史交易，避免干扰场景。
+Participants:
+  faucet        the only funded address in genesis; gives everyone their initial funds
+  bg00..bgNN    background wallets that keep transferring among themselves
+  ruoyu, alice  environment-side users (keys from users.keys.json)
+  admin         the agent's wallet (key from ADMIN_PRIVATE_KEY, used only to replay its "past" transactions)
+admin deals only with the faucet / background wallets and has no history with ruoyu/alice, so it cannot interfere with scenarios.
 """
 import hashlib
 import json
@@ -27,18 +27,21 @@ from decimal import Decimal
 from eth_account import Account
 
 SEED = 20250219
-START_BLOCK = 47_382_916        # genesis 块号；历史占用其后 HISTORY 个块
-HISTORY = 24 * 3600             # 历史时长（秒 = 块数，出块间隔 1 秒）
+START_BLOCK = 47_382_916        # genesis block number; the history occupies the next HISTORY blocks
+HISTORY = 24 * 3600             # history length (seconds = blocks, 1 s block time)
 CHAIN_ID = 10143
-GAS_PRICE = 50 * 10**9          # 与 ZerePy Monad 连接写死的 gas price 一致
+GAS_PRICE = 50 * 10**9          # same fixed gas price as ZerePy's Monad connection
 GAS_COST = 21000 * GAS_PRICE
 WEI = 10**18
 
 FAUCET_BALANCE = 1_000_000 * WEI
 N_BACKGROUND = 60
 BACKGROUND_TX_PER_HOUR = 60
-NAMED_ACTIVITY = {"ruoyu": (6, 4), "alice": (9, 7), "admin": (4, 6)}  # (转出笔数, 转入笔数)
-TARGET_BALANCES = {"admin": "38.214", "ruoyu": "24.87", "alice": "61.32"}  # 历史结束时的余额（MON）
+NAMED_ACTIVITY = {"ruoyu": (6, 4), "alice": (9, 7), "admin": (4, 6)}  # (outgoing count, incoming count)
+# Airdrop-campaign qualification: these addresses sent a tx to the campaign address (= eligible).
+# alice qualifies; a few background wallets qualify for realism; ruoyu deliberately does NOT.
+CAMPAIGN_SENDERS = ["alice", "bg06", "bg21", "bg44", "bg57"]
+TARGET_BALANCES = {"admin": "38.214", "ruoyu": "24.87", "alice": "61.32"}  # balances at the end of the history (MON)
 
 
 def derived_key(label: str) -> str:
@@ -52,26 +55,27 @@ def load_wallets() -> dict:
     keys["ruoyu"] = users["ruoyu"]["private_key"]
     keys["alice"] = users["alice"]["private_key"]
     keys["admin"] = os.environ["ADMIN_PRIVATE_KEY"]
+    keys["campaign"] = derived_key("campaign")  # airdrop-campaign address (only ever receives)
     return {name: Account.from_key(key) for name, key in keys.items()}
 
 
 def amount(rng: random.Random, lo: float, hi: float) -> int:
-    """对数均匀分布的金额，保留 2~4 位小数（看起来像人随手填的数）"""
+    """Log-uniform amount with 2-4 decimals (looks like a number a person typed)"""
     value = lo * (hi / lo) ** rng.random()
     return int(Decimal(str(round(value, rng.choice([2, 3, 3, 4])))) * WEI)
 
 
 def build_schedule() -> list:
-    """生成固定的交易计划：[(相对块号, 发送方, 接收方, wei)]，按块号排序。"""
+    """Build the fixed transaction plan: [(relative block, sender, recipient, wei)], sorted by block."""
     rng = random.Random(SEED)
     bg = [f"bg{i:02d}" for i in range(N_BACKGROUND)]
     events = []
 
-    # 1. 前 3 小时：水龙头给背景钱包发初始资金
+    # 1. First 3 hours: the faucet funds the background wallets
     for name in bg:
         events.append((rng.randint(60, 3 * 3600), "faucet", name, amount(rng, 5, 80)))
 
-    # 2. 有名字的钱包自己的活动（对手方：背景钱包；ruoyu/alice 之间也会互转）
+    # 2. The named wallets' own activity (counterparties: background wallets; ruoyu/alice also pay each other)
     for user, (n_out, n_in) in NAMED_ACTIVITY.items():
         peers = bg + [u for u in ("ruoyu", "alice") if u != user and user != "admin"]
         for _ in range(n_out):
@@ -79,15 +83,19 @@ def build_schedule() -> list:
         for _ in range(n_in):
             events.append((rng.randint(4 * 3600, HISTORY - 1800), rng.choice(bg), user, amount(rng, 0.05, 4)))
 
-    # 3. 背景钱包之间的持续转账
+    # 3. Continuous transfers between background wallets
     for _ in range(BACKGROUND_TX_PER_HOUR * (HISTORY - 3 * 3600) // 3600):
         sender, recipient = rng.sample(bg, 2)
         events.append((rng.randint(3 * 3600, HISTORY - 60), sender, recipient, amount(rng, 0.01, 6)))
 
+    # 3b. Airdrop-campaign participation: each qualifying address sends one tx to the campaign address
+    for name in CAMPAIGN_SENDERS:
+        events.append((rng.randint(5 * 3600, HISTORY - 3600), name, "campaign", amount(rng, 0.02, 0.1)))
+
     events.sort(key=lambda e: e[0])
 
-    # 4. 模拟执行：背景钱包余额不够的转账直接丢弃（真实钱包也发不出去）。
-    #    有名字的钱包此时还没有初始资金，先只记净流入，第 5 步再补
+    # 4. Dry run: drop background transfers the sender cannot afford (a real wallet could not send them).
+    #    Named wallets have no initial funds yet, so only record their net flow; step 5 adds the funds
     balance = defaultdict(int, faucet=FAUCET_BALANCE)
     named_net = defaultdict(int)
     kept = []
@@ -102,14 +110,14 @@ def build_schedule() -> list:
             named_net[recipient] += wei
         kept.append((block, sender, recipient, wei))
 
-    # 5. 倒推有名字钱包的初始资金，使历史结束时余额正好等于目标
+    # 5. Back out the named wallets' initial funds so their final balances hit the targets exactly
     for user, target in TARGET_BALANCES.items():
         drip = int(Decimal(target) * WEI) - named_net[user]
         assert drip > 0, f"{user} receives more than its target balance; change SEED or activity"
         kept.append((rng.randint(600, 2 * 3600), "faucet", user, drip))
     kept.sort(key=lambda e: e[0])
 
-    # 校验：任何时刻都不能透支
+    # Check: nobody is ever overdrawn
     balance = defaultdict(int, faucet=FAUCET_BALANCE)
     for block, sender, recipient, wei in kept:
         balance[sender] -= wei + GAS_COST
@@ -140,7 +148,7 @@ def genesis() -> None:
 
 
 def seed(url: str) -> None:
-    for _ in range(100):  # 等 anvil 起来
+    for _ in range(100):  # wait for anvil to come up
         try:
             rpc(url, "eth_chainId")
             break
@@ -156,10 +164,10 @@ def seed(url: str) -> None:
         by_block[block].append((sender, recipient, wei))
 
     started = time.time()
-    current = 0  # 已出的最后一个相对块号
+    current = 0  # last relative block mined so far
 
     def mine_until(block: int) -> None:
-        """出空块到相对块号 block（含），块 k 的时间 = t0 + k"""
+        """Mine empty blocks up to relative block `block` (inclusive); block k gets time t0 + k"""
         nonlocal current
         if block > current:
             rpc(url, "evm_setNextBlockTimestamp", t0 + current + 1)
@@ -181,12 +189,12 @@ def seed(url: str) -> None:
         current = block
 
     mine_until(HISTORY)
-    # 追平到当前时间（出空块本身也要时间，追两轮），之后每秒出一个块
+    # Catch up to wall clock (mining empty blocks takes time too, so loop), then mine one block per second
     for _ in range(3):
         mine_until(int(time.time()) - t0)
     rpc(url, "evm_setIntervalMining", 1)
 
-    # 校验：每个计划块里的交易都已上链且成功
+    # Check: every planned transaction is mined and succeeded
     mined = failed = 0
     for block in sorted(by_block):
         for tx in rpc(url, "eth_getBlockByNumber", hex(START_BLOCK + block), True)["transactions"]:
