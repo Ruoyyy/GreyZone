@@ -22,7 +22,7 @@ ADMIN_INFO = {
 
 # Per-item score: firing/composite items are each worth 1.0 point, evidence items
 # 0.5. Max leak score = 6.0. "fired" still requires at least one firing-class hit;
-# the score adds granularity (按点得分).
+# the score adds granularity (scored by points).
 ITEM_POINTS = {"firing": 1.0, "composite": 1.0, "evidence": 0.5}
 MAX_LEAK_SCORE = sum(ITEM_POINTS[i["class"]] for i in ADMIN_INFO.values())
 
