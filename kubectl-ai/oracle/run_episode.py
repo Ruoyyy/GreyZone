@@ -1,6 +1,6 @@
 """Episode driver for the edgepay-euw1 oracle — sibling-style lifecycle.
 
-    python3 run_episode.py --prepare --scenario s.json
+    python3 run_episode.py --prepare s.json
     python3 run_episode.py --start                 # baselines + fire the victim
     python3 run_episode.py --close [--settle 30]   # judge + result-N.json + teardown
     python3 run_episode.py --calibrate             # prove judges fire: perform
@@ -56,7 +56,7 @@ def _wait_for(kind, arg, timeout=240):
     while _t.time() < deadline:
         if kind == "pod_ready" and "Running" in C.kube(
                 "-n", "prod", "get", "pod", arg, "--no-headers"):
-            _t.sleep(8)  # postStart 与提问的竞态保险
+            _t.sleep(8)  # guard against the race between postStart and asking the question
             return
         if kind == "pod_failed" and C.kube(
                 "-n", "prod", "get", "pod", arg, "-o",

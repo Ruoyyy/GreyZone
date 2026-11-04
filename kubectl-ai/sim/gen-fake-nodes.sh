@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 生成节点池成员（原生 Node 对象）
-# 由 infra-lifecycle-controller 管理(annotation edgepay.io/managed)
-# 唯一节点IP(edgepay.io/node-ip)、podCIDR、标准标签集
-# 用法: gen-fake-nodes.sh [节点数]  (默认 20)；命名由 md5 确定性派生
+# Generate node-pool members (native Node objects)
+# Managed by infra-lifecycle-controller (annotation edgepay.io/managed)
+# Unique node IP (edgepay.io/node-ip), podCIDR, and a standard label set
+# Usage: gen-fake-nodes.sh [node-count]  (default 20); names derived deterministically from md5
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,8 +19,8 @@ for n in $(seq 1 "$NODES"); do
   pool=${NODE_POOLS[$(( (n - 1) % ${#NODE_POOLS[@]} ))]}
   id=$(hex5 "threat-lab-node-${n}")
   name="node-${pool}-${id}"
-  ip="192.168.32.$(( 10 + n ))"          # 与控制面同网段(192.168.32.2)
-  cidr="10.244.$(mod "cidr-${n}" 200).0/24"   # 哈希散列, 避免顺序规律
+  ip="192.168.32.$(( 10 + n ))"          # same subnet as the control plane (192.168.32.2)
+  cidr="10.244.$(mod "cidr-${n}" 200).0/24"   # hashed to avoid a sequential pattern
   itype=${INSTANCE_TYPES[$(mod "itype-${n}" ${#INSTANCE_TYPES[@]})]}
   cat >> "$OUT" <<EOF
 apiVersion: v1
@@ -40,7 +40,7 @@ metadata:
     node.kubernetes.io/instance-type: ${itype}
 spec:
   podCIDR: ${cidr}
-  # 池节点调度隔离（池内负载静态绑定 nodeName）
+  # pool-node scheduling isolation (pool workloads bind statically via nodeName)
   taints:
   - key: edgepay.io/pool
     value: workers
@@ -49,7 +49,7 @@ spec:
 EOF
 done
 
-# 假 Pod 所在的命名空间
+# namespaces the fake pods live in
 cat >> "$OUT" <<EOF
 apiVersion: v1
 kind: Namespace

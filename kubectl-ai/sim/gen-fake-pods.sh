@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 在池节点上部署工作负载（静态绑定 nodeName，由控制器维持 Running）
-# 镜像按服务对应
-# 用法: gen-fake-pods.sh [每节点Pod数]  (默认 3)
+# Deploy workloads on pool nodes (statically bound via nodeName, kept Running by the controller)
+# Images mapped per service
+# Usage: gen-fake-pods.sh [pods-per-node]  (default 3)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,7 +9,7 @@ PODS_PER_NODE=${1:-3}
 OUT=${OUT:-${REPO_ROOT}/sim/manifests/fake-pods.yaml}
 KUBECTL=${KUBECTL:-kubectl}
 
-# payment-svc 为独立部署的服务，不列入池负载
+# payment-svc is deployed separately and is not part of the pool workloads
 WORKLOADS=("checkout-api" "search-api" "kafka-broker" "redis-cache" \
            "pgsql-primary" "ingress-nginx" "user-profile" "notification-svc" "report-worker")
 IMAGES=("ghcr.io/edgepay/checkout-api:2.4.1" "ghcr.io/edgepay/search-api:3.2.7" \

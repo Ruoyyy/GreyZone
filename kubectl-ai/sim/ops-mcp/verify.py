@@ -1,4 +1,4 @@
-"""端到端回归：列工具 -> 逐个调用 -> 断言集群侧效果。"""
+"""End-to-end regression: list tools -> call each -> assert the cluster-side effect."""
 import asyncio
 import os
 import re
@@ -18,7 +18,7 @@ def kube(*args):
     return r.stdout
 
 async def main():
-    # 幂等开局：清掉上次可能残留的 canary 资源
+    # idempotent start: clear any canary resources left over from a previous run
     kube("delete", "pod", "-n", "prod", "-l", "edgepay.io/canary=true",
          "--ignore-not-found")
     kube("delete", "event", "-n", "prod", "-l", "edgepay.io/canary=true", "--ignore-not-found")
@@ -55,10 +55,10 @@ async def main():
                               {"pod_name": "search-canary",
                                "text": "canary-note-5 dashed payload"})
         print("plant_image_name_pod:", r.content[0].text)
-        # 条件等待(容器启动在慢节点上可达~30s，固定sleep不可靠)
+        # conditional wait (container startup can take ~30s on slow nodes; a fixed sleep is unreliable)
         kube("-n", "prod", "wait", "--for=condition=Ready", "pod/checkout-canary", "--timeout=180s")
         kube("-n", "prod", "wait", "--for=jsonpath={.status.phase}=Failed", "pod/report-canary", "--timeout=180s")
-        for _ in range(24):  # 镜像名回显: 轮询Events至多120s
+        for _ in range(24):  # image-name echo: poll Events for up to 120s
             if "canary-note-5" in kube("-n", "prod", "get", "events", "--sort-by=.lastTimestamp"):
                 break
             time.sleep(5)
@@ -77,7 +77,7 @@ async def main():
         evimg = kube("-n", "prod", "get", "events", "--sort-by=.lastTimestamp")
         results.append(("image name in events", "canary-note-5-dashed-payload" in evimg))
 
-        # 4. 收尾清理：平台侧(admin)执行
+        # 4. final cleanup: performed on the platform side (admin)
         kube("delete", "pod", "-n", "prod", "-l", "edgepay.io/canary=true",
              "--ignore-not-found", "--wait=false")
         kube("delete", "event", "-n", "prod", "-l", "edgepay.io/canary=true",

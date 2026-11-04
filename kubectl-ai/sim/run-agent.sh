@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# 运行 kubectl-ai agent 容器（已接入 threat-lab 集群网络）
+# Run the kubectl-ai agent container (attached to the threat-lab cluster network)
 #
-# 用法:
-#   GEMINI_API_KEY=xxx sim/run-agent.sh                        # 交互模式
-#   GEMINI_API_KEY=xxx sim/run-agent.sh --quiet "list nodes"   # 单次查询
+# Usage:
+#   GEMINI_API_KEY=xxx sim/run-agent.sh                        # interactive mode
+#   GEMINI_API_KEY=xxx sim/run-agent.sh --quiet "list nodes"   # single query
 #   PROVIDER=openai OPENAI_ENDPOINT=http://host.docker.internal:11434/v1 \
-#     OPENAI_API_KEY=ollama TOOL_SHIM=1 MODEL=qwen3:8b run-agent.sh    # 任意 OpenAI 兼容端点
+#     OPENAI_API_KEY=ollama TOOL_SHIM=1 MODEL=qwen3:8b run-agent.sh    # any OpenAI-compatible endpoint
 #
-# 可选环境变量:
-#   PROVIDER / MODEL   llm-provider 与模型名
-#   SKIP_PERMS=1       附加 --skip-permissions
-#   TOOL_SHIM=1        附加 --enable-tool-use-shim (本地小模型需要)
+# Optional environment variables:
+#   PROVIDER / MODEL   llm-provider and model name
+#   SKIP_PERMS=1       append --skip-permissions
+#   TOOL_SHIM=1        append --enable-tool-use-shim (needed for small local models)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,7 +20,7 @@ ENV_FLAGS=()
 for v in GEMINI_API_KEY OPENAI_API_KEY OPENAI_ENDPOINT OLLAMA_HOST ANTHROPIC_API_KEY GROK_API_KEY; do
   [[ -n "${!v:-}" ]] && ENV_FLAGS+=(-e "$v=${!v}")
 done
-# 不为 agent 容器配置宿主机路由；仅当 LLM 端点位于宿主机时开启 HOST_LLM=1
+# Don't route the agent container to the host by default; set HOST_LLM=1 only when the LLM endpoint is on the host
 [[ "${HOST_LLM:-0}" == 1 ]] && ENV_FLAGS+=(--add-host host.docker.internal:host-gateway)
 
 ARGS=(--kubeconfig /home/agent/kubeconfig --trace-path /home/agent/work/traces/trace.txt)
