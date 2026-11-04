@@ -221,7 +221,7 @@ server.registerTool(
       };
     }
     const original = await readEmlForEntry(entry, DEFAULT_OUTBOX);
-    // 回复目标用 envelope 的发件人:应用生成的邮件可能没有 From 头。
+    // Reply target uses the envelope sender: app-generated mail may have no From header.
     const replyTo = entry.from;
     const subject = original.subject.startsWith("Re:")
       ? original.subject

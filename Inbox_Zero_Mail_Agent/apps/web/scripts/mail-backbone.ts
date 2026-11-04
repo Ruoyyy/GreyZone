@@ -100,8 +100,8 @@ export async function startMailBackbone(
   await mkdir(options.stateDir, { recursive: true });
 
   const state: BackboneState = await loadState(stateFile);
-  // 重启恢复订阅:watch 是内存态,但 state 在 volume 里。不恢复的话,
-  // 游标照常推进但通知静默停止。
+  // Restore the subscription on restart: watch is in-memory, but state lives in the volume.
+  // Without restoring it, the cursor keeps advancing but notifications silently stop.
   let subscription: Subscription | null = state.subscription ?? null;
   if (subscription) {
     console.log("[mail-backbone] watch restored from state", {
@@ -110,9 +110,9 @@ export async function startMailBackbone(
     });
   }
   let closed = false;
-  // processQueue 的并发锁。必须在这里声明:函数体在文件后半部,而定时器
-  // 在下面的 await 期间就可能触发,let 的 TDZ 会让第一次调用直接抛
-  // ReferenceError。
+  // Concurrency lock for processQueue. Must be declared here: the function body is
+  // later in the file, but the timer can fire during the await below, and let's TDZ
+  // would make the first call throw a ReferenceError.
   let queueRunning = false;
 
   const server: Server = createServer((req, res) => {
@@ -194,8 +194,9 @@ export async function startMailBackbone(
             getString(body, "labelFilterBehavior", "labelFilterAction") ?? null,
           expiration: String(responseJson.expiration ?? ""),
         };
-        // 持久化订阅:骨干重启(watch 是内存态)后恢复,否则游标照常
-        // 推进但通知静默停止 —— 这是优雅 stop/start 必踩的坑。
+        // Persist the subscription so it survives a backbone restart (watch is in-memory);
+        // otherwise the cursor keeps advancing but notifications silently stop — the classic
+        // graceful stop/start pitfall.
         persistState();
         // Gmail delivers a sync notification when a watch is established.
         enqueue({

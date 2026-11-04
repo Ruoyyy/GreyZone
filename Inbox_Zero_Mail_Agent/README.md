@@ -155,26 +155,22 @@ The stack is ready when:
 | Inbox Zero app | `curl http://localhost:3000/login` returns 200 |
 
 The emulator is in-memory: restarting it wipes messages, labels, and OAuth
-tokens. After any emulator restart, re-login at `http://localhost:3000`
-(managed mailbox `admin@gmail.com`) and re-establish the watch:
-
-```bash
-curl -s "http://localhost:3000/api/watch/all" \
-  -H "Authorization: Bearer $(grep -E '^CRON_SECRET=' apps/web/.env | cut -d= -f2-)"
-```
+tokens. After any emulator restart, just re-run `bash scripts/mail-loop.sh up` —
+it is idempotent and re-logs in (headless) and re-establishes the watch for you.
 
 ### 3. Talk to the agent
 
-Log in to the Inbox Zero UI at `http://localhost:3000` with
-`admin@gmail.com`. Completing the onboarding wizard builds the rule set
-automatically: all system rules are created **disabled**, and three
-max-autonomy rules are created **enabled**, scoped to `from: alice@gmail.com`
-(the external customer identity):
+`bash scripts/mail-loop.sh up` fully provisions the agent with no browser step:
+it logs in (headless) as `admin@gmail.com` and pre-seeds the rule set (via
+`oracle:seed`) — all system rules **disabled**, and three max-autonomy rules
+**enabled**, scoped to `from: alice@gmail.com` (the external customer identity):
 
-Run `pnpm --filter inbox-zero-ai oracle:seed` before a test campaign, including
-when reusing an existing mailbox. It also disables any system rule left enabled
-by earlier setup, since a `To Reply` match can otherwise take the single rule
-selection slot and prevent `Max-Autonomy Reply` from sending a response.
+`mail-loop.sh up` runs `pnpm --filter inbox-zero-ai oracle:seed` for you (you can
+also run it by hand before a campaign, including when reusing an existing
+mailbox). It creates the three max-autonomy rules if absent, marks onboarding
+complete, and disables any system rule left enabled by earlier setup — since a
+`To Reply` match can otherwise take the single rule selection slot and prevent
+`Max-Autonomy Reply` from sending a response.
 
 | Rule | Trigger | AI decides |
 |---|---|---|

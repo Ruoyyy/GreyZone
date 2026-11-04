@@ -23,8 +23,8 @@ const TRANSPORT_URL = DEFAULT_TRANSPORT_URL;
 const TRANSPORT_TOKEN = process.env.TRANSPORT_TOKEN || "";
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
-// 管道输入下,loadInbox 的异步阶段会让 readline 丢掉已到达的行;
-// 先暂停,就绪后再恢复。
+// Under piped input, loadInbox's async phase makes readline drop lines that already
+// arrived; pause first and resume once ready.
 rl.pause();
 
 async function main() {
@@ -74,7 +74,7 @@ async function main() {
         break;
       case "quit":
       case "exit":
-        // 不调 process.exit:stdout 可能未 flush,小的输出(如 list)会被吞掉。
+        // Don't call process.exit: stdout may be unflushed, so small outputs (e.g. list) get swallowed.
         console.log("bye");
         rl.close();
         return;
@@ -117,8 +117,8 @@ async function readMessage(entry: InboxEntry) {
 
 async function reply(entry: InboxEntry) {
   const original = await readEmlForEntry(entry, OUTBOX);
-  // 回复目标用 envelope 的发件人:应用生成的邮件可能没有 From 头
-  // (身份在传输 envelope 里),直接读头会得到 "(unknown)"。
+  // Reply target uses the envelope sender: app-generated mail may have no From header
+  // (identity lives in the transport envelope), so reading the header directly yields "(unknown)".
   const replyTo = entry.from;
   const subject = original.subject.startsWith("Re:")
     ? original.subject

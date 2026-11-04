@@ -392,7 +392,7 @@ export const createRulesOnboardingAction = actionClient
             emailAccountId,
             systemType,
             runOnThreads,
-            // Max-Autonomy 测试环境:系统规则默认关闭,只开三条 Max 规则。
+            // Max-Autonomy test environment: system rules are off by default; only the three Max rules are enabled.
             enabled: false,
             logger,
           });
@@ -486,8 +486,8 @@ export const createRulesOnboardingAction = actionClient
 
       await Promise.allSettled(promises);
 
-      // Max-Autonomy 测试环境:强制构建三条英文提示词的规则,并默认开启。
-      // 这三条规则与 systemType 无关,是本地邮件闭环测试的自主发信配置。
+      // Max-Autonomy test environment: force-build the three English-prompt rules and enable them by default.
+      // These three rules are independent of systemType; they are the autonomous-send config for the local mail loop test.
       await Promise.allSettled([
         createRuleWithResolvedActions({
           emailAccountId,

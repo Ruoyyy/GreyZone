@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
 #
-# 一条命令拉起本地邮件闭环。
+# Bring up the local mail loop with a single command.
 #
-#   bash scripts/mail-loop.sh up      起全套(幂等,可重复跑)
-#   bash scripts/mail-loop.sh down    停全套(容器与数据卷保留)
-#   bash scripts/mail-loop.sh status  看状态
-#   bash scripts/mail-loop.sh logs    跟踪日志
-#   bash scripts/mail-loop.sh sync-labels  重建并回写标签
+#   bash scripts/mail-loop.sh up      start everything (idempotent, safe to rerun)
+#   bash scripts/mail-loop.sh down    stop everything (containers and volumes kept)
+#   bash scripts/mail-loop.sh status  show status
+#   bash scripts/mail-loop.sh logs    tail logs
+#   bash scripts/mail-loop.sh sync-labels  rebuild labels and write them back
 #
-# 三块组成:
-#   基础设施(db/redis/redis-http)     ← 主 docker-compose.yml
-#   邮件闭环(模拟器/骨干/客户服务器) ← docker-compose.mail-loop.yml
-#   应用(next dev)                    ← 宿主机进程,由本脚本 launch
+# Three pieces:
+#   infrastructure (db/redis/redis-http)          <- main docker-compose.yml
+#   mail loop (emulator/backbone/customer server) <- docker-compose.mail-loop.yml
+#   app (next dev)                                 <- host process, launched by this script
 #
-# 首次运行前先: bash scripts/mail-loop-init.sh(生成 compose 挂载的依赖物)
+# Before the first run: bash scripts/mail-loop-init.sh (generates the artifacts mounted by compose)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/apps/web"
 PIDS="$APP/.tmp/mail-loop.pids"
 LOG_DIR="$APP/.tmp/mail-loop-logs"
+# Managed mailbox seeded in emulate.local.config.yaml (the agent's own account).
+MANAGED_EMAIL="${MANAGED_EMAIL:-admin@gmail.com}"
 
 say() { printf '\033[36m▸\033[0m %s\n' "$*"; }
 ok() { printf '\033[32m✓\033[0m %s\n' "$*"; }
@@ -34,17 +36,17 @@ env_value() { grep -E "^$1=" "$APP/.env" | head -1 | cut -d= -f2- | tr -d '"'; }
 listening() { curl -s -o /dev/null --max-time 3 "$1" 2>/dev/null; }
 
 # launch <name> <command> [env assignments...]
-# 记下子 shell 的 pid。npx 会 exec 成真正的进程,所以这个 pid 通常就是
-# 真正的服务进程;down 里还有按模式匹配的兜底。
+# Records the subshell pid. npx execs into the real process, so this pid is
+# usually the actual service process; down() also has a pattern-match fallback.
 launch() {
   local name="$1" cmd="$2"
   shift 2
   local pid
   (
     cd "$APP"
-    # 裸 export 会打印全部环境变量,所以这里必须判空。
+    # A bare export prints every environment variable, so we must guard against empty args.
     [ "$#" -gt 0 ] && export "$@"
-    # 保留上一轮日志,否则排查"上次为什么失败"时证据已经没了。
+    # Keep the previous run's log, or the evidence is gone when debugging why it failed last time.
     if [ -f "$LOG_DIR/$name.log" ]; then
       mv -f "$LOG_DIR/$name.log" "$LOG_DIR/$name.prev.log"
     fi
@@ -53,8 +55,9 @@ launch() {
   ) >"$LOG_DIR/$name.pid"
   ok "$name (pid $(cat "$LOG_DIR/$name.pid"))"
 
-  # 同一服务重新启动时替换旧条目。注意用 if 而不是 `[ -f ] && ...`:
-  # 后者在文件不存在时返回非 0,会被 set -e 当成错误中断脚本。
+  # Replace the old entry when relaunching the same service. Note the use of
+  # if rather than `[ -f ] && ...`: the latter returns non-zero when the file
+  # is absent, which set -e treats as an error and aborts the script.
   if [ -f "$PIDS" ]; then
     grep -v "^$name " "$PIDS" >"$PIDS.tmp" || true
     mv -f "$PIDS.tmp" "$PIDS"
@@ -65,7 +68,7 @@ launch() {
 require_env() {
   local v
   v="$(env_value "$1")"
-  [ -n "$v" ] || die "apps/web/.env 缺少 $1"
+  [ -n "$v" ] || die "apps/web/.env is missing $1"
   printf '%s' "$v"
 }
 
@@ -75,14 +78,15 @@ wait_for() {
   shift 3 2>/dev/null || shift 2
   for _ in $(seq 1 "$tries"); do
     code="$(curl -s "$@" -o /dev/null -w '%{http_code}' "$url" --max-time 5 || true)"
-    # 000 = 连不上;其余(含 5xx)说明端口有人在听,只是上游可能还没好。
+    # 000 = cannot connect; anything else (incl. 5xx) means something is
+    # listening on the port, the upstream may just not be ready yet.
     if [ -n "$code" ] && [ "$code" != "000" ]; then
-      ok "$desc 就绪"
+      ok "$desc ready"
       return 0
     fi
     sleep 1
   done
-  die "$desc 在 ${tries}s 内没起来($url)"
+  die "$desc did not come up within ${tries}s ($url)"
 }
 
 # wait_http_200 <desc> <url> <tries> [extra curl args...]
@@ -92,112 +96,148 @@ wait_http_200() {
   for _ in $(seq 1 "$tries"); do
     code="$(curl -s "$@" -o /dev/null -w '%{http_code}' "$url" --max-time 5 || true)"
     if [ "$code" = "200" ]; then
-      ok "$desc 就绪"
+      ok "$desc ready"
       return 0
     fi
     sleep 1
   done
-  die "$desc 在 ${tries}s 内没返回 200($url)"
+  die "$desc did not return 200 within ${tries}s ($url)"
 }
 
 up() {
   local NEEDS_LOGIN=0
   mkdir -p "$LOG_DIR" "$APP/.tmp/customer-mail" "$APP/.tmp/mail-backbone"
 
-  say "检查依赖物(bundle / patched emulate / transport token)"
+  say "Checking artifacts (bundle / patched emulate / transport token)"
   if [ ! -f "$APP/.tmp/mail-loop-bundles/run-mail-backbone.js" ] ||
     [ ! -f "$APP/.tmp/mail-loop-bundles/customer-mail-server.js" ] ||
     [ ! -f "$ROOT/.tmp/emulate-patched/dist/index.js" ]; then
-    die "缺少运行依赖物,先跑: bash scripts/mail-loop-init.sh"
+    die "Missing runtime artifacts; first run: bash scripts/mail-loop-init.sh"
   fi
 
   local transport
   transport="$(cat "$APP/.tmp/customer-mail/.transport-token" 2>/dev/null || true)"
-  [ -n "$transport" ] || die "缺少 transport token,先跑: bash scripts/mail-loop-init.sh"
+  [ -n "$transport" ] || die "Missing transport token; first run: bash scripts/mail-loop-init.sh"
 
-  say "启动基础设施(db/redis/cron)"
-  docker compose up -d db redis serverless-redis-http >/dev/null 2>&1 || true
+  say "Starting infrastructure (db/redis/cron)"
+  # The app connects to Postgres on host port 5433 (see the app launch below), so the
+  # db container must publish 5433 too. This also sidesteps a host Postgres on 5432.
+  # serverless-redis-http authenticates with SRH_TOKEN=${UPSTASH_REDIS_TOKEN}; it must
+  # match the app's UPSTASH_REDIS_TOKEN, so pass it explicitly (not via a repo-root .env).
+  POSTGRES_PORT=5433 POSTGRES_PASSWORD="$(require_env POSTGRES_PASSWORD)" \
+    UPSTASH_REDIS_TOKEN="$(require_env UPSTASH_REDIS_TOKEN)" \
+    docker compose up -d db redis serverless-redis-http >/dev/null 2>&1 || true
   docker compose up -d --no-deps cron >/dev/null 2>&1 || true
 
-  say "启动邮件闭环(模拟器/骨干/客户服务器)"
+  # Single source of truth for the host->Postgres URL (5433); app, migrate and
+  # oracle-seed all use it so they never disagree on the port.
+  local DB_URL
+  DB_URL="postgresql://postgres:$(require_env POSTGRES_PASSWORD)@127.0.0.1:5433/inboxzero?schema=public"
+
+  say "Waiting for Postgres (5433) and applying migrations"
+  local _i
+  for _i in $(seq 1 30); do
+    docker exec inbox-zero-services-db-1 pg_isready -U postgres -d inboxzero >/dev/null 2>&1 && break
+    sleep 2
+  done
+  if (cd "$APP" && DATABASE_URL="$DB_URL" DIRECT_URL="$DB_URL" npx prisma migrate deploy >>"$LOG_DIR/migrate.log" 2>&1); then
+    ok "Migrations applied"
+  else
+    warn "prisma migrate deploy failed; see $LOG_DIR/migrate.log"
+  fi
+
+  say "Starting mail loop (emulator/backbone/customer server)"
   TRANSPORT_TOKEN="$transport" \
     GOOGLE_PUBSUB_VERIFICATION_TOKEN="$(require_env GOOGLE_PUBSUB_VERIFICATION_TOKEN)" \
     docker compose --profile mail-loop -f docker-compose.mail-loop.yml up -d >/dev/null 2>&1 || true
 
-  wait_for "模拟器" "http://127.0.0.1:4002/.well-known/openid-configuration" 60
-  wait_for "骨干" "http://127.0.0.1:4005/.well-known/openid-configuration" 40
+  wait_for "emulator" "http://127.0.0.1:4002/.well-known/openid-configuration" 60
+  wait_for "backbone" "http://127.0.0.1:4005/.well-known/openid-configuration" 40
 
-  # 模拟器是纯内存的,重启会清空 OAuth token 和标签。
+  # The emulator is purely in-memory; a restart wipes OAuth tokens and labels.
   local emu_profile app_history_now
   emu_profile="$(curl -s "http://127.0.0.1:4002/gmail/v1/users/me/profile" -H "Authorization: Bearer $transport" 2>/dev/null |
     python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("messagesTotal",-1), d.get("historyId","0"))' 2>/dev/null || echo '-1 0')"
   app_history_now="$(docker exec inbox-zero-services-db-1 psql -U postgres -d inboxzero -tAc \
     "select coalesce(\"lastSyncedHistoryId\",'') from \"EmailAccount\" limit 1;" 2>/dev/null | tr -d '[:space:]' || true)"
   if [ "${emu_profile%% *}" = "0" ] && [ -n "$app_history_now" ]; then
-    warn "模拟器是空的但应用有游标 —— 模拟器被重启过"
-    warn "OAuth token 和标签都已失效,需要重新登录(见下方步骤)"
+    warn "Emulator is empty but the app has a cursor -- the emulator was restarted"
+    warn "OAuth tokens and labels are gone; you need to log in again (see steps below)"
     NEEDS_LOGIN=1
   fi
 
-  # Oracle 种子:秘密邮件走传输面真实投递(INBOX+UNREAD,web 界面可见),
-  # 知识库经 prisma 幂等写入;canary 注册表给 oracle-watch 用。失败不阻塞闭环。
-  say "播种 Oracle 种子"
-  if (cd "$APP" && npx tsx scripts/oracle-seed.ts >>"$LOG_DIR/oracle-seed.log" 2>&1); then
-    ok "Oracle 种子就绪(apps/web/.tmp/oracle/canaries.json)"
-  else
-    warn "Oracle 种子播种失败——闭环不受影响,详见 $LOG_DIR/oracle-seed.log"
-  fi
-
   if listening "http://localhost:3000/login"; then
-    ok "应用已在运行"
+    ok "App is already running"
   else
-    say "启动应用(源码方式,含 LLM 修复)"
-    local pw rt
-    pw="$(require_env POSTGRES_PASSWORD)"
+    say "Starting app (from source, with LLM fixes)"
+    local rt
     rt="$(require_env UPSTASH_REDIS_TOKEN)"
     launch app "npx cross-env NODE_OPTIONS=--max-old-space-size=3072 next dev --turbopack" \
-      DATABASE_URL="postgresql://postgres:${pw}@127.0.0.1:5433/inboxzero?schema=public" \
-      DIRECT_URL="postgresql://postgres:${pw}@127.0.0.1:5433/inboxzero?schema=public" \
+      DATABASE_URL="$DB_URL" DIRECT_URL="$DB_URL" \
       UPSTASH_REDIS_URL="http://127.0.0.1:8079" UPSTASH_REDIS_TOKEN="$rt"
-    wait_for "应用" "http://localhost:3000/login" 120
+    wait_for "app" "http://localhost:3000/login" 120
   fi
 
-  # 自动重建 watch:骨干重启会丢内存态订阅(虽然现在订阅也持久化了,
-  # 但应用侧 watch 可能已过期),重建成本低、幂等。
-  say "重建 watch 订阅"
+  # Headless login as the managed mailbox (no browser): creates the server-side
+  # session and the EmailAccount that oracle-seed and the watch depend on. In the
+  # app these come from the browser onboarding wizard; the loop is fully headless,
+  # so we drive the emulator's OAuth here. Idempotent (skips if already logged in).
+  say "Logging in (headless) as the managed mailbox"
+  if (cd "$ROOT" && python3 scripts/dev-login.py --email "$MANAGED_EMAIL" >>"$LOG_DIR/dev-login.log" 2>&1); then
+    ok "Logged in"
+  else
+    warn "Headless login failed; see $LOG_DIR/dev-login.log"
+  fi
+
+  # Oracle seeds (needs the EmailAccount from the login above): knowledge base +
+  # canary registry for oracle-watch, the Max-Autonomy rules (pre-seeded so the
+  # agent acts without the browser onboarding), and the seed secret email delivered
+  # for real over the transport plane. Idempotent; failure does not block the loop.
+  say "Seeding the oracle (knowledge base, rules, canaries)"
+  if (cd "$APP" && DATABASE_URL="$DB_URL" DIRECT_URL="$DB_URL" npx tsx scripts/oracle-seed.ts >>"$LOG_DIR/oracle-seed.log" 2>&1); then
+    ok "Oracle seeds ready (apps/web/.tmp/oracle/canaries.json)"
+  else
+    warn "Oracle seeding failed; the loop is unaffected, see $LOG_DIR/oracle-seed.log"
+  fi
+
+  # Rebuild watches automatically: a backbone restart drops in-memory
+  # subscriptions (they are persisted now, but the app-side watch may have
+  # expired); rebuilding is cheap and idempotent.
+  say "Rebuilding watch subscriptions"
   local cron_secret
   cron_secret="$(env_value CRON_SECRET)"
   if [ -n "$cron_secret" ]; then
     curl -s -X GET "http://localhost:3000/api/watch/all" \
       -H "Authorization: Bearer $cron_secret" --max-time 60 \
       | head -c 200 >/dev/null 2>&1 || true
-    ok "watch 请求已发送(应用若未登录会静默失败,登录后再跑一次)"
+    ok "Watch active"
   else
-    warn "缺少 CRON_SECRET,跳过 watch 重建"
+    warn "CRON_SECRET missing, skipping watch rebuild"
   fi
 
   echo
-  ok "邮件闭环就绪"
-  if [ "$NEEDS_LOGIN" = "1" ]; then
-    warn "但需要先重新登录(模拟器被重启过,OAuth token 已失效)"
-  fi
+  ok "Mail loop ready — logged in, rules seeded, watch active (no browser step needed)"
   cat <<EOF
 
-  下一步(需要你在浏览器操作)
-    1. 打开 http://localhost:3000,用受管邮箱登录
-    2. 登录后建 watch:
-       curl -s "http://localhost:3000/api/watch/all" \\
-         -H "Authorization: Bearer $(env_value CRON_SECRET)"
+  Run an attack episode end to end (no manual steps):
+    cd apps/web
+    pnpm oracle:watch                                   # in another shell; opens/scores episodes
+    TOKEN=\$(cat .tmp/customer-mail/.transport-token)
+    pnpm customer:mail compose --from $(env_value CUSTOMER_EMAIL) --to $MANAGED_EMAIL \\
+      --subject "..." --text "..." --out /tmp/attack.eml
+    pnpm customer:mail send --url http://127.0.0.1:4005 --token "\$TOKEN" \\
+      --from $(env_value CUSTOMER_EMAIL) --to $MANAGED_EMAIL /tmp/attack.eml
 
-  可用命令
+  Available commands
     bash scripts/mail-loop.sh status
     bash scripts/mail-loop.sh logs
     bash scripts/mail-loop.sh down
 EOF
 }
 
-# 按监听端口杀进程。不用 pkill -f:模式匹配会命中调用方自己的命令行
-# (任何 grep/pkill 参数里含该字符串的进程都会被一起杀掉)。
+# Kill processes by listening port. No pkill -f: pattern matching can hit the
+# caller's own command line (any process whose grep/pkill args contain the
+# string would be killed along with it).
 kill_port() {
   local port="$1" pids
   pids="$(ss -ltnpH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)"
@@ -208,75 +248,75 @@ kill_port() {
 }
 
 down() {
-  say "停止应用(宿主机进程)"
+  say "Stopping app (host processes)"
   if [ -f "$PIDS" ]; then
     while read -r name pid; do
       kill "$pid" 2>/dev/null && ok "$name (pid $pid)" || true
     done <"$PIDS"
     rm -f "$PIDS"
   fi
-  # 端口兜底:PID 文件丢了、或进程换了 pid 时还能收干净。
+  # Port fallback: still cleans up if the PID file is lost or a process changed pid.
   for port in 3000; do kill_port "$port"; done
   sleep 1
 
-  say "停止邮件闭环(mail-loop compose,容器保留)"
+  say "Stopping mail loop (mail-loop compose, containers kept)"
   docker compose --profile mail-loop -f docker-compose.mail-loop.yml stop >/dev/null 2>&1 || true
 
-  say "停止基础设施(主 compose,容器保留)"
+  say "Stopping infrastructure (main compose, containers kept)"
   docker compose stop db redis serverless-redis-http cron >/dev/null 2>&1 || true
 
-  ok "已停止(全部容器与数据卷保留)"
+  ok "Stopped (all containers and volumes kept)"
 }
 
 status() {
-  echo "容器:"
+  echo "Containers:"
   docker ps -a --filter "name=inbox-zero" --format '  {{.Names}}\t{{.Status}}' 2>/dev/null
-  echo "端点:"
+  echo "Endpoints:"
 
   local code
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:4002/.well-known/openid-configuration" --max-time 5 || echo ---)"
-  printf '  %-8s %s\n' "模拟器" "$code"
+  printf '  %-8s %s\n' "emulator" "$code"
 
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:4005/.well-known/openid-configuration" --max-time 5 || echo ---)"
-  printf '  %-8s %s\n' "骨干" "$code"
+  printf '  %-8s %s\n' "backbone" "$code"
 
-  # 客户服务器只接受 POST /receive,GET / 返回 404 是正常的。
+  # The customer server only accepts POST /receive; a 404 on GET / is normal.
   code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:4100/receive" --max-time 5 || echo ---)"
-  printf '  %-8s %s\n' "客户" "$code (400/401 为正常:只收 POST /receive)"
+  printf '  %-8s %s\n' "customer" "$code (400/401 is normal: only accepts POST /receive)"
 
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:3000/login" --max-time 5 || echo ---)"
-  printf '  %-8s %s\n' "应用" "$code"
+  printf '  %-8s %s\n' "app" "$code"
 
-  echo "游标:"
+  echo "Cursors:"
   local emu app
   emu="$(curl -s "http://127.0.0.1:4002/gmail/v1/users/me/profile" -H "Authorization: Bearer $(cat "$APP/.tmp/customer-mail/.transport-token" 2>/dev/null || echo x)" 2>/dev/null |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("historyId","?"))' 2>/dev/null || echo '?')"
   app="$(docker exec inbox-zero-services-db-1 psql -U postgres -d inboxzero -tAc \
-    "select coalesce(\"lastSyncedHistoryId\",'(空)') from \"EmailAccount\" limit 1;" 2>/dev/null | tr -d '[:space:]')"
-  printf '  %-8s %s\n' "模拟器" "$emu"
-  printf '  %-8s %s\n' "应用" "${app:-?}"
-  if [ -n "$emu" ] && [ -n "$app" ] && [ "$app" != "(空)" ] && [ "${#emu}" -lt "${#app}" ]; then
-    warn "两侧游标位数不同,可能错位 —— 重跑 up 会自动重置"
+    "select coalesce(\"lastSyncedHistoryId\",'(empty)') from \"EmailAccount\" limit 1;" 2>/dev/null | tr -d '[:space:]')"
+  printf '  %-8s %s\n' "emulator" "$emu"
+  printf '  %-8s %s\n' "app" "${app:-?}"
+  if [ -n "$emu" ] && [ -n "$app" ] && [ "$app" != "(empty)" ] && [ "${#emu}" -lt "${#app}" ]; then
+    warn "Cursor lengths differ between the two sides, they may be out of sync -- rerunning up resets them automatically"
   fi
 
-  echo "订阅:"
+  echo "Subscriptions:"
   if grep -q "watch captured" "$LOG_DIR/backbone.log" 2>/dev/null &&
     ! grep -q "watch stopped" "$LOG_DIR/backbone.log" 2>/dev/null; then
-    echo "  watch 已建立"
+    echo "  watch established"
   else
-    warn "watch 未建立 —— 通知不会发出去。重新登录后跑:"
+    warn "watch not established -- notifications will not go out. After logging in again, run:"
     echo "    curl -s \"http://localhost:3000/api/watch/all\" -H \"Authorization: Bearer $(env_value CRON_SECRET)\""
   fi
 }
 
 logs() {
-  echo "== 应用日志($LOG_DIR/app.log)=="
-  tail -n 30 "$LOG_DIR/app.log" 2>/dev/null || echo "  (无)"
+  echo "== App log ($LOG_DIR/app.log) =="
+  tail -n 30 "$LOG_DIR/app.log" 2>/dev/null || echo "  (none)"
   echo
-  echo "== 容器日志 =="
+  echo "== Container logs =="
   docker compose --profile mail-loop -f docker-compose.mail-loop.yml logs --tail 20 2>/dev/null
   echo
-  echo "跟踪: bash scripts/mail-loop.sh logs 只打印快照;实时跟踪用:"
+  echo "Note: bash scripts/mail-loop.sh logs only prints a snapshot; to follow live, use:"
   echo "  tail -f $LOG_DIR/app.log"
   echo "  docker compose --profile mail-loop -f docker-compose.mail-loop.yml logs -f"
 }
@@ -292,7 +332,7 @@ status) status ;;
 logs) logs ;;
 sync-labels) sync_labels ;;
 *)
-  echo "用法: bash scripts/mail-loop.sh {up|down|status|logs|sync-labels}" >&2
+  echo "Usage: bash scripts/mail-loop.sh {up|down|status|logs|sync-labels}" >&2
   exit 1
   ;;
 esac

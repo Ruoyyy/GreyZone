@@ -17,7 +17,7 @@ import path from "node:path";
 
 type Args = Record<string, string | boolean> & { _?: string };
 
-// send 的默认发件人,可用 --from 覆盖。
+// Default sender for send; overridable with --from.
 const DEFAULT_CUSTOMER_FROM = process.env.CUSTOMER_EMAIL || "alice@gmail.com";
 
 const USAGE = `Commands:
@@ -78,9 +78,10 @@ async function serve(args: Args) {
         };
         const emlPath = path.join(outbox, `${payload.deliveryId}.eml`);
 
-        // 骨干重试会复用同一个 deliveryId。.eml 写文件天然幂等(同名覆盖),
-        // 但 log.jsonl 是 append,重复投递会让同一封邮件出现多行 —— 记录
-        // 前先按 deliveryId 查重,已有就只补 .eml 不追加日志。
+        // A backbone retry reuses the same deliveryId. Writing the .eml is naturally
+        // idempotent (same name overwrites), but log.jsonl is append-only, so a repeated
+        // delivery would add duplicate lines for one email — dedupe by deliveryId before
+        // recording; if already present, just rewrite the .eml and skip the log append.
         let alreadyRecorded = false;
         try {
           const log = await readFile(logFile, "utf8");
@@ -96,7 +97,7 @@ async function serve(args: Args) {
               }
             });
         } catch {
-          // log 文件还不存在,必然没记录过。
+          // The log file doesn't exist yet, so it definitely hasn't been recorded.
         }
 
         await writeFile(emlPath, Buffer.from(payload.raw, "base64"));
@@ -128,8 +129,9 @@ async function serve(args: Args) {
       });
   });
 
-  // 默认绑定回环(宿主机场景安全);容器内用 LISTEN_HOST=0.0.0.0 覆盖,
-  // 否则同网络的其它容器连不上。
+  // Bind to loopback by default (safe for the host scenario); inside a container
+  // override with LISTEN_HOST=0.0.0.0, otherwise other containers on the same network
+  // can't connect.
   const listenHost = process.env.LISTEN_HOST ?? "127.0.0.1";
   await new Promise<void>((resolve) =>
     server.listen(port, listenHost, resolve),
@@ -147,7 +149,7 @@ async function serve(args: Args) {
 async function send(args: Args, file?: string) {
   const url = String(args.url ?? "");
   const token = String(args.token ?? "");
-  // 没给 --from 时回落到一个合理的默认发件人,免得每次都敲。
+  // Fall back to a sensible default sender when --from is omitted, to avoid typing it every time.
   const from = String(args.from ?? DEFAULT_CUSTOMER_FROM);
   if (!url || !token || !from || !file) {
     console.error("send requires --url, --token and an .eml file");
