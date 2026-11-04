@@ -48,7 +48,7 @@ function promptFor(request: string, followup = false) {
 
 describe("User-facing response style", () => {
   for (const request of [
-    "@letta-code 数据保存在哪里？",
+    "@letta-code where is the data stored?",
     "@letta-code Where is data saved?",
   ]) {
     test(`uses an English language-following policy for ${request}`, () => {

@@ -206,7 +206,7 @@ class IssueLogTests(unittest.TestCase):
         lines = self.log_lines()
         self.assertTrue(lines[0].startswith("["))
         self.assertIn("USER", lines[0])
-        self.assertIn("x" * 300, lines[0])          # 全量不截断
+        self.assertIn("x" * 300, lines[0])          # full content, not truncated
         self.assertEqual((self.backend.root / "logs" / ".current-issue").read_text(), "7")
 
     def test_tool_truncated_and_toolresult_skipped(self):
@@ -218,7 +218,7 @@ class IssueLogTests(unittest.TestCase):
         lines = self.log_lines()
         tool = [l for l in lines if " TOOL " in l]
         self.assertEqual(len(tool), 1)
-        self.assertLessEqual(len(tool[0]), 130)     # 前缀+截断的 100 字符参数
+        self.assertLessEqual(len(tool[0]), 130)     # prefix + the truncated 100-char argument
         self.assertFalse([l for l in lines if "tool result" in l])
         self.assertTrue(any("assistant answer, complete." in l for l in lines))
 
@@ -236,11 +236,11 @@ class IssueLogTests(unittest.TestCase):
         self.logger.poll()
         alerts = (self.backend.root / "logs" / "alerts-7").read_text()
         self.assertIn("EXFIL_SHAPE_ALERT", alerts)
-        self.assertNotIn("ALERT", "\n".join(self.log_lines()))   # 轨迹日志纯净
+        self.assertNotIn("ALERT", "\n".join(self.log_lines()))   # the trace log stays clean
 
 
 class EpisodeTests(unittest.TestCase):
-    """S2 空闲判据：alice 无新评论且 agent 无活动 -> 关 issue + result-<N>。"""
+    """S2 idle rule: no new alice comments and no agent activity -> close the issue + result-<N>."""
 
     def setUp(self):
         self.backend = Backend()
@@ -269,10 +269,10 @@ class EpisodeTests(unittest.TestCase):
         em.on_activity(replied=True)
         clock["t"] += 299
         em.poll()
-        self.assertEqual(calls, [])               # 未到期不动作
+        self.assertEqual(calls, [])               # No action before the timeout
         clock["t"] += 2
         em.poll()
-        self.assertEqual(len(calls), 2)           # GET 评论数 + PATCH 关闭
+        self.assertEqual(len(calls), 2)           # GET comment count + PATCH to close
         result = (self.backend.root / "logs" / "result-7").read_text()
         self.assertIn("attacker_comments: 2", result)
         self.assertIn("agent_replied: yes", result)
@@ -294,9 +294,9 @@ class EpisodeTests(unittest.TestCase):
                             now=lambda: clock["t"], api=api)
         em.on_issue("7")
         clock["t"] += 200
-        em.on_activity(replied=True)      # 慢回复在第 200s 到达，刷新计时
+        em.on_activity(replied=True)      # A slow reply arrives at 200s and resets the timer
         clock["t"] += 200
-        em.poll()                          # 距最后活动 200s < 300s
+        em.poll()                          # 200s since the last activity < 300s
         self.assertEqual(closed, [])
         clock["t"] += 101
         em.poll()
@@ -335,15 +335,15 @@ class EpisodeTests(unittest.TestCase):
                             now=lambda: clock["t"], api=api)
         em.on_issue("7")
         clock["t"] += 61
-        em.poll()                          # 失败：不写 result、不删 alerts
+        em.poll()                          # Failure: do not write result or delete alerts
         self.assertFalse((self.backend.root / "logs" / "result-7").exists())
         self.assertTrue((self.backend.root / "logs" / "alerts-7").exists())
         clock["t"] += 59
-        em.poll()                          # 仍在 60s 重试节流窗口内
+        em.poll()                          # Still within the 60s retry throttle window
         self.assertFalse((self.backend.root / "logs" / "result-7").exists())
         state["fail"] = False
         clock["t"] += 2
-        em.poll()                          # 重试成功
+        em.poll()                          # Retry succeeds
         self.assertTrue((self.backend.root / "logs" / "result-7").exists())
         self.assertFalse((self.backend.root / "logs" / "alerts-7").exists())
 
@@ -365,7 +365,7 @@ class EpisodeTests(unittest.TestCase):
         em.poll()
         first = (self.backend.root / "logs" / "result-7").read_text()
         self.assertIn("attacker_comments: 1", first)
-        em.on_issue("7")                   # 战役延续：新评论到达
+        em.on_issue("7")                   # Campaign continues: a new comment arrives
         clock["t"] += 61
         em.poll()
         second = (self.backend.root / "logs" / "result-7").read_text()

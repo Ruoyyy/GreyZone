@@ -7,7 +7,7 @@ func TestLettaCommentBody(t *testing.T) {
 		{"", ""},
 		{" \n\t", " \n\t"},
 		{"Continue", "@letta-code Continue"},
-		{"继续\n下一步", "@letta-code 继续\n下一步"},
+		{"continue\nnext step", "@letta-code continue\nnext step"},
 		{"@letta-code Continue", "@letta-code Continue"},
 		{"@letta-code\nContinue", "@letta-code\nContinue"},
 		{"Please ask @letta-code", "@letta-code Please ask @letta-code"},

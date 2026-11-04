@@ -2,8 +2,8 @@ import fs from "fs/promises";
 import path from "path";
 import type { Octokits } from "../api/client";
 
-// Gitea 的附件 URL 格式与 GitHub 不同,且不支持 body_html mediaType。
-// 用负向先行断言使两个正则永远不匹配,跳过图片下载(降级,不影响 letta 核心)。
+// Gitea's attachment URL format differs from GitHub's, and it does not support the body_html mediaType.
+// Use negative lookahead so both regexes never match, skipping image download (a degradation that does not affect the letta core).
 const IMAGE_REGEX = /$(?!)/g;
 const HTML_IMG_REGEX = /$(?!)/gi;
 

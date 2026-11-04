@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""issue-chat — 终端与 Gitea issue 里的 @letta-code 机器人对话（零配置）。
+"""issue-chat — chat from the terminal with the @letta-code bot in Gitea issues (zero config).
 
-用法:
-  ./issue-chat.py --new [-t 标题]      新建 issue 并开始对话
-  ./issue-chat.py 1                    在 issue #1 下继续对话
-  ./issue-chat.py --list               列出 issue
+Usage:
+  ./issue-chat.py --new [-t title]    open a new issue and start chatting
+  ./issue-chat.py 1                   continue the conversation in issue #1
+  ./issue-chat.py --list              list issues
 
-零配置: 不需要 tea、token、配置文件或密钥——克隆即用。
-内置默认身份为 Gitea 的协作账号 alice, 所有请求走 HTTP basic 认证,
-Gitea 始终收到的是 alice 的操作。仅依赖 Python 3 标准库。
+Zero config: no tea CLI, token, config file, or key needed — clone and run.
+The built-in default identity is alice, the Gitea collaboration account; every request
+uses HTTP basic auth, so Gitea always sees alice's actions. Only the Python 3 stdlib is required.
 
-对话中: 直接输入回车发送(自动补 @letta-code); 消息以 [--new] 开头 =
-机器人开全新会话; /quit 退出。等待回复时 Ctrl-C 只取消等待,
-后台任务继续, 下次进入自动补收未读回复。
+During a chat: type a message and press Enter to send (the @letta-code prefix is added
+automatically); a message starting with [--new] = the bot opens a fresh session; /quit exits.
+While waiting for a reply, Ctrl-C only cancels the wait — the background job keeps running,
+and unread replies are collected automatically the next time you enter.
 """
 
 import argparse
@@ -24,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 
-# 内置默认身份: 本项目 docker compose 部署的 Gitea 与 alice 测试账号。
+# Built-in default identity: the Gitea deployed by this project's docker compose and the alice test account.
 DEFAULT_URL = "http://localhost:3000"
 DEFAULT_USER = "alice"
 DEFAULT_PASSWORD = "alice"
@@ -36,7 +37,7 @@ QUIT = ("/quit", "/q", "quit", "exit")
 
 
 def api(cfg, method, path, data=None):
-    """以 alice 的 basic 认证调用 Gitea API。"""
+    """Call the Gitea API with alice's basic auth."""
     req = urllib.request.Request(
         cfg["url"].rstrip("/") + "/api/v1" + path,
         method=method,
@@ -59,9 +60,9 @@ def do_list(cfg, args):
     issues = api(cfg, "GET", "/repos/%s/issues?state=%s&limit=30&type=issues"
                  % (args.repo, args.state)) or []
     if not issues:
-        print("（%s 无 %s 状态 issue）" % (args.repo, args.state))
+        print("(%s has no %s issues)" % (args.repo, args.state))
         return
-    print("%-5s %-7s %-10s %-16s %s" % ("#", "状态", "作者", "更新", "标题"))
+    print("%-5s %-7s %-10s %-16s %s" % ("#", "State", "Author", "Updated", "Title"))
     for it in sorted(issues, key=lambda x: x["number"]):
         updated = (it.get("updated_at") or "")[:16].replace("T", " ")
         title = (it.get("title") or "")[:44]
@@ -75,7 +76,7 @@ def bot_comments(cfg, repo, num):
 
 
 def clean_body(body):
-    """去掉工作状态头、统计脚手架脚注和隐藏元数据, 只留回复正文。"""
+    """Strip the working-status header, stats-scaffolding footer and hidden metadata; keep only the reply body."""
     body = re.sub(r"<!-- letta-metadata.*?-->", "", body, flags=re.S)
     lines = body.splitlines()
     if lines and lines[0].startswith("**Letta Code"):
@@ -86,27 +87,27 @@ def clean_body(body):
 
 
 def print_reply(c):
-    tag = "!! 失败" if FAIL_MARK in c["body"] else "bot>"
+    tag = "!! FAILED" if FAIL_MARK in c["body"] else "bot>"
     print("\n%s %s\n" % (tag, clean_body(c["body"]).replace("\n", "\n   ")))
 
 
 def do_chat(cfg, args):
     num = None
     if args.new:
-        title = args.title or input("新 issue 标题: ").strip()
+        title = args.title or input("New issue title: ").strip()
         if not title:
-            sys.exit("标题不能为空")
+            sys.exit("title must not be empty")
     else:
         num = args.issue
         it = api(cfg, "GET", "/repos/%s/issues/%s" % (args.repo, num))
         print("issue #%s %s (%s)" % (num, it["title"], it["state"]))
 
     last_id = max((c["id"] for c in bot_comments(cfg, args.repo, num)), default=0) if num else 0
-    print("身份: %s @ %s | 输入消息回车发送; /quit 退出; [--new] 开头=机器人开新会话\n"
+    print("identity: %s @ %s | type a message and press Enter to send; /quit to exit; [--new] prefix = bot opens a new session\n"
           % (cfg["user"], cfg["url"]))
 
     while True:
-        # 先收上一轮未读回复(如上次等待被 Ctrl-C 中断)
+        # First collect unread replies from the previous round (e.g. the last wait was interrupted by Ctrl-C)
         if num:
             for c in bot_comments(cfg, args.repo, num):
                 if c["id"] > last_id and (DONE_MARK in c["body"] or FAIL_MARK in c["body"]):
@@ -130,11 +131,11 @@ def do_chat(cfg, args):
             num = iss["number"]
             args.new = False
             last_id = 0
-            print("已创建 issue #%s: %s" % (num, title))
+            print("created issue #%s: %s" % (num, title))
         else:
             api(cfg, "POST", "/repos/%s/issues/%s/comments" % (args.repo, num), {"body": body})
 
-        print("  已发送, 等待回复…(Ctrl-C 取消等待, 任务继续)")
+        print("  sent, waiting for reply... (Ctrl-C cancels the wait, the job keeps running)")
         start = time.time()
         got = None
         try:
@@ -146,42 +147,42 @@ def do_chat(cfg, args):
                     if DONE_MARK in c["body"] or FAIL_MARK in c["body"]:
                         got = c
                         break
-                print("\r  等待中 %ds" % int(time.time() - start), end="", flush=True)
+                print("\r  waiting %ds" % int(time.time() - start), end="", flush=True)
         except KeyboardInterrupt:
-            print("\n  已取消等待(后台任务继续); 回车后可查看未读回复")
+            print("\n  wait cancelled (the background job keeps running); press Enter to fetch unread replies")
             continue
         print("\r" + " " * 24 + "\r", end="")
         if got:
             last_id = got["id"]
             print_reply(got)
         else:
-            print("  超时未等到回复; 可到 Actions 页面查看或稍后重进本程序收取。")
+            print("  timed out waiting for a reply; check the Actions page, or re-enter later to collect replies.")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="终端与 Gitea issue 里的 @letta-code 对话(零配置, 身份恒为 alice)")
-    ap.add_argument("issue", nargs="?", type=int, help="issue 编号(续聊)")
-    ap.add_argument("--new", action="store_true", help="新建 issue 并开始对话")
-    ap.add_argument("-t", "--title", help="新 issue 标题(--new 时免交互)")
-    ap.add_argument("--list", action="store_true", help="列出 issue 后退出")
-    ap.add_argument("--state", default="open", choices=["open", "closed", "all"], help="--list 的状态过滤")
-    ap.add_argument("--url", default=DEFAULT_URL, help="Gitea 地址, 默认 %s" % DEFAULT_URL)
-    ap.add_argument("--user", default=DEFAULT_USER, help="Gitea 用户, 默认 %s" % DEFAULT_USER)
-    ap.add_argument("--password", default=DEFAULT_PASSWORD, help="密码, 默认同项目测试账号")
+    ap = argparse.ArgumentParser(description="chat from the terminal with @letta-code in Gitea issues (zero config, identity is always alice)")
+    ap.add_argument("issue", nargs="?", type=int, help="issue number (continue a conversation)")
+    ap.add_argument("--new", action="store_true", help="open a new issue and start chatting")
+    ap.add_argument("-t", "--title", help="new issue title (non-interactive with --new)")
+    ap.add_argument("--list", action="store_true", help="list issues and exit")
+    ap.add_argument("--state", default="open", choices=["open", "closed", "all"], help="state filter for --list")
+    ap.add_argument("--url", default=DEFAULT_URL, help="Gitea URL, default %s" % DEFAULT_URL)
+    ap.add_argument("--user", default=DEFAULT_USER, help="Gitea user, default %s" % DEFAULT_USER)
+    ap.add_argument("--password", default=DEFAULT_PASSWORD, help="password, default is the project test account")
     ap.add_argument("-r", "--repo", default=DEFAULT_REPO, help="owner/repo")
-    ap.add_argument("--timeout", type=int, default=600, help="等回复超时秒数")
-    ap.add_argument("--interval", type=int, default=5, help="轮询间隔秒数")
+    ap.add_argument("--timeout", type=int, default=600, help="seconds to wait for a reply")
+    ap.add_argument("--interval", type=int, default=5, help="polling interval in seconds")
     args = ap.parse_args()
 
     cfg = {"url": args.url, "user": args.user, "password": args.password}
     me = api(cfg, "GET", "/user")
     if me["login"] != cfg["user"]:
-        sys.exit("身份校验异常: 期望 %s, 实际 %s" % (cfg["user"], me["login"]))
+        sys.exit("identity check failed: expected %s, got %s" % (cfg["user"], me["login"]))
     if args.list:
         do_list(cfg, args)
         return
     if not args.new and not args.issue:
-        ap.error("用法: ./issue-chat.py --new [-t 标题]  或  ./issue-chat.py <issue编号>  或  --list")
+        ap.error("usage: ./issue-chat.py --new [-t title]  or  ./issue-chat.py <issue-number>  or  --list")
     do_chat(cfg, args)
 
 

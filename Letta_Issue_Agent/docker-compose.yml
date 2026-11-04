@@ -1,35 +1,35 @@
-# Gitea 与 runner；一键初始化成品角色与成品仓库。
-# 用户只需在 .env 填 ZAI_API_KEY，docker compose up -d 即得完整环境。
+# Gitea plus runner; one-shot initialization of ready-made roles and seed repositories.
+# Fill in ZAI_API_KEY in .env, run docker compose up -d, and you get the full environment.
 name: letta
 
 services:
   gitea:
-    image: gitea/gitea:1
+    image: gitea/gitea:1.27.3@sha256:87a67ee09d3ae0d1df5fda5dcda3e2a1f9236a45b0a59025d6e00e46adc43bef
     container_name: gitea
     restart: unless-stopped
     environment:
-      - GITEA__security__INSTALL_LOCK=true        # 跳过网页安装向导
-      - GITEA__service__DISABLE_REGISTRATION=true # 仅用初始化脚本建的两个账号
+      - GITEA__security__INSTALL_LOCK=true        # skip the web installation wizard
+      - GITEA__service__DISABLE_REGISTRATION=true # only the two accounts created by the init script are used
       - GITEA__actions__ENABLED=true
       - GITEA__actions__DEFAULT_ACTIONS_URL=self
     ports:
       - "3000:3000"   # Web UI
-      - "2222:22"     # SSH(git push/clone 走 ssh 也用这个)
+      - "2222:22"     # SSH (also used for git push/clone over ssh)
     volumes:
-      - gitea-data:/data   # SQLite + repo + actions 元数据,容器重建不丢
+      - gitea-data:/data   # SQLite + repos + actions metadata; survives container rebuilds
     logging:
       options:
         max-size: "5m"
         max-file: "3"
 
-  # 一次性初始化：成品角色 + 成品仓库（单提交），跑完退出
+  # One-shot initialization: ready-made roles + seed repositories (single commit), exits when done
   gitea-init:
-    image: gitea/gitea:1
+    image: gitea/gitea:1.27.3@sha256:87a67ee09d3ae0d1df5fda5dcda3e2a1f9236a45b0a59025d6e00e46adc43bef
     container_name: letta-gitea-init
     depends_on: [gitea]
     restart: "no"
-    user: "0:0"  # 初始化脚本修复共享目录权限后立即降权为 1000:1000
-    network_mode: "service:gitea"   # 共享网络：localhost:3000 即 gitea，内部 API 可达
+    user: "0:0"  # drops back to 1000:1000 as soon as the init script fixes shared-dir permissions
+    network_mode: "service:gitea"   # shared network: localhost:3000 is gitea, its internal API is reachable
     environment:
       HOME: /tmp
       GITEA_WORK_DIR: /data
@@ -39,8 +39,8 @@ services:
       ALICE_PASSWORD: ${ALICE_PASSWORD:-alice}
     volumes:
       - gitea-data:/data
-      - ./shared:/shared                # runner 注册 token 交接
-      - ./repo:/repo:ro                 # 成品仓库种子(repo)
+      - ./shared:/shared                # handoff of the runner registration token
+      - ./repo:/repo:ro                 # seed repositories (repo)
       - ./init-gitea.sh:/init-gitea.sh:ro
     entrypoint: sh /init-gitea.sh
     logging:
@@ -48,7 +48,7 @@ services:
         max-size: "5m"
         max-file: "3"
 
-  # 对外 MCP 网关：连上即 alice。l1 = Issue，l2 = Issue + 代码；Gitea token 是权限边界。
+  # External MCP gateway: connecting means acting as alice. l1 = Issues, l2 = Issues + code; the Gitea token is the permission boundary.
   gitea-mcp:
     build: ./mcp
     image: letta/gitea-mcp:1.7.0
@@ -69,7 +69,7 @@ services:
     healthcheck:
       test: ["CMD", "/app/gitea-mcp", "-healthcheck"]
     ports:
-      - "127.0.0.1:8080:8080"   # 端口可达 = 授权为 alice
+      - "127.0.0.1:8080:8080"   # port reachable = authorized as alice
     logging:
       options:
         max-size: "5m"
@@ -77,7 +77,7 @@ services:
 
   runner:
     build: .
-    image: letta/runner
+    image: letta/runner:3.4.2
     container_name: letta-runner
     init: true
     restart: unless-stopped
@@ -88,22 +88,22 @@ services:
         condition: service_completed_successfully
     environment:
       GITEA_INSTANCE_URL: http://gitea:3000
-      # token 由 gitea-init 写入 /shared，此处可留空；也可显式覆盖
+      # the token is written to /shared by gitea-init; may stay empty here, or be overridden explicitly
       GITEA_RUNNER_REGISTRATION_TOKEN: ${GITEA_RUNNER_REGISTRATION_TOKEN:-}
       RUNNER_NAME: letta-docker-1
       RUNNER_CONFIG: /config.yaml
       ZAI_API_KEY: ${ZAI_API_KEY}
       ORACLE_ENABLE: ${ORACLE_ENABLE:-}
-      # 攻击 episode 空闲判关秒数(S2: 无新攻击评论且无 agent 活动)，默认 300
+      # seconds of idleness before an attack episode is judged closed (S2: no new attacker comments and no agent activity), default 300
       EPISODE_IDLE_TIMEOUT: ${EPISODE_IDLE_TIMEOUT:-300}
       LETTA_LOCAL_BACKEND_DIR: /home/runner/letta-state
-    mem_limit: 8g        # host 执行器下 job 在容器内跑,无审批闸门,资源限额是硬防线
+    mem_limit: 8g        # with the host executor, jobs run inside the container with no approval gate; resource limits are the hard line of defense
     cpus: "4"
     pids_limit: 1024
     volumes:
-      - letta-state:/home/runner/letta-state   # agent/会话/记忆,容器重建不丢
-      - ./config.yaml:/config.yaml:ro          # runner 配置(insecure + labels)
-      - ./shared:/shared:ro                    # 读取初始化生成的注册 token
+      - letta-state:/home/runner/letta-state   # agent/session/memory; survives container rebuilds
+      - ./config.yaml:/config.yaml:ro          # runner config (insecure + labels)
+      - ./shared:/shared:ro                    # read the registration token generated by init
     logging:
       options:
         max-size: "5m"

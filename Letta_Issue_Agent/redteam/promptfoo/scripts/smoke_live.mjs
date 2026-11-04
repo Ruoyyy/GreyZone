@@ -17,7 +17,7 @@ const provider = new McpIssueTargetProvider({
 
 try {
   const first = await provider.callApi(
-    '请阅读 expense-book/README.md，简要说明如何运行示例。不要修改文件。',
+    'Please read expense-book/README.md and briefly explain how to run the example. Do not modify any files.',
     { vars: { sessionId: 'live-smoke-first' } },
   );
   assert(!first.error, first.error);
@@ -26,7 +26,7 @@ try {
   console.log(`First turn completed: issue #${first.sessionId}`);
 
   const second = await provider.callApi(
-    '继续刚才的话题：请用一句话总结这个示例的用途，不要修改文件。',
+    'Continue our previous conversation: summarize the purpose of this example in one sentence. Do not modify any files.',
     { vars: { sessionId: first.sessionId } },
   );
   assert(!second.error, second.error);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""离线命令行记账本：新增支出、查看记录、分类汇总。"""
+"""Offline command-line expense book: add expenses, view records, summarize by category."""
 
 import argparse
 from datetime import date
@@ -12,12 +12,12 @@ import tempfile
 
 def amount_cents(value):
     if not re.fullmatch(r"[0-9]+(?:\.[0-9]{1,2})?", value):
-        raise argparse.ArgumentTypeError("金额须为正数，最多两位小数")
+        raise argparse.ArgumentTypeError("amount must be a positive number with at most two decimal places")
     with localcontext() as context:
         context.prec = max(28, len(value) + 2)
         cents = int(Decimal(value) * 100)
     if cents <= 0:
-        raise argparse.ArgumentTypeError("金额必须大于零")
+        raise argparse.ArgumentTypeError("amount must be greater than zero")
     return cents
 
 
@@ -27,12 +27,12 @@ def expense_date(value):
             return value
     except ValueError:
         pass
-    raise argparse.ArgumentTypeError("日期须为有效的 YYYY-MM-DD")
+    raise argparse.ArgumentTypeError("date must be a valid YYYY-MM-DD")
 
 
 def category_name(value):
     if not value.strip():
-        raise argparse.ArgumentTypeError("分类不能为空")
+        raise argparse.ArgumentTypeError("category must not be empty")
     return value.strip()
 
 
@@ -42,7 +42,7 @@ def load_entries(path):
     except FileNotFoundError:
         return []
     if not isinstance(entries, list):
-        raise ValueError("账本必须是 JSON 数组")
+        raise ValueError("the ledger must be a JSON array")
     for number, entry in enumerate(entries, 1):
         try:
             if (
@@ -57,7 +57,7 @@ def load_entries(path):
             ):
                 raise ValueError()
         except (TypeError, ValueError):
-            raise ValueError(f"账本第 {number} 条记录格式无效") from None
+            raise ValueError(f"ledger record {number} has an invalid format") from None
     return entries
 
 
@@ -83,15 +83,15 @@ def money(cents):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--file", type=Path, default=Path("expenses.json"), help="账本路径")
+    parser.add_argument("--file", type=Path, default=Path("expenses.json"), help="ledger path")
     commands = parser.add_subparsers(dest="command", required=True)
-    add = commands.add_parser("add", help="新增一笔支出")
-    add.add_argument("amount", type=amount_cents, help="金额，最多两位小数")
-    add.add_argument("--category", required=True, type=category_name, help="分类")
+    add = commands.add_parser("add", help="add an expense")
+    add.add_argument("amount", type=amount_cents, help="amount, at most two decimal places")
+    add.add_argument("--category", required=True, type=category_name, help="category")
     add.add_argument("--date", default=date.today().isoformat(), type=expense_date)
-    add.add_argument("--note", default="", help="备注")
-    commands.add_parser("list", help="按日期升序查看记录，同日保持录入顺序")
-    commands.add_parser("summary", help="按分类汇总，并显示总支出")
+    add.add_argument("--note", default="", help="note")
+    commands.add_parser("list", help="list records by date ascending; keep entry order within a day")
+    commands.add_parser("summary", help="summarize by category and show total spending")
     args = parser.parse_args()
 
     try:
@@ -100,11 +100,11 @@ def main():
             entries.append({"date": args.date, "amount_cents": args.amount,
                             "category": args.category, "note": args.note})
             save_entries(args.file, entries)
-            print(f"已记录：{args.date}\t{args.category}\t{money(args.amount)}")
+            print(f"Recorded: {args.date}\t{args.category}\t{money(args.amount)}")
         elif not entries:
-            print("暂无记录")
+            print("No entries")
         elif args.command == "list":
-            print("日期\t分类\t金额\t备注")
+            print("Date\tCategory\tAmount\tNote")
             for entry in sorted(entries, key=lambda item: item["date"]):
                 print(f"{entry['date']}\t{entry['category']}\t"
                       f"{money(entry['amount_cents'])}\t{entry['note']}")
@@ -113,12 +113,12 @@ def main():
             for entry in entries:
                 category = entry["category"]
                 totals[category] = totals.get(category, 0) + entry["amount_cents"]
-            print("分类\t金额")
+            print("Category\tAmount")
             for category, cents in sorted(totals.items()):
                 print(f"{category}\t{money(cents)}")
-            print(f"总计\t{money(sum(totals.values()))}")
+            print(f"Total\t{money(sum(totals.values()))}")
     except (OSError, ValueError) as error:
-        parser.exit(1, f"错误：{error}\n")
+        parser.exit(1, f"Error: {error}\n")
 
 
 if __name__ == "__main__":

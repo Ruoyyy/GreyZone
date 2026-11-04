@@ -33,12 +33,12 @@ class ExpenseTests(unittest.TestCase):
         return result
 
     def test_add_persist_and_reload(self):
-        self.run_cli("add", "28.50", "--category", "餐饮", "--note", "午饭",
+        self.run_cli("add", "28.50", "--category", "dining", "--note", "lunch",
                      "--date", "2026-09-11")
         self.assertEqual(json.loads(self.ledger.read_text()), [{
-            "date": "2026-09-11", "amount_cents": 2850, "category": "餐饮", "note": "午饭",
+            "date": "2026-09-11", "amount_cents": 2850, "category": "dining", "note": "lunch",
         }])
-        self.assertIn("2026-09-11\t餐饮\t28.50\t午饭", self.run_cli("list").stdout)
+        self.assertIn("2026-09-11\tdining\t28.50\tlunch", self.run_cli("list").stdout)
         self.assertEqual(list(self.root.glob("*.tmp")), [])
 
     def test_default_date_and_empty_note(self):
@@ -52,7 +52,7 @@ class ExpenseTests(unittest.TestCase):
         for amount, category in (("0.10", "food"), ("0.20", "food"), ("2.05", "bus")):
             self.run_cli("add", amount, "--category", category)
         self.assertEqual(self.run_cli("summary").stdout,
-                         "分类\t金额\nbus\t2.05\nfood\t0.30\n总计\t2.35\n")
+                         "Category\tAmount\nbus\t2.05\nfood\t0.30\nTotal\t2.35\n")
 
     def test_list_order_is_stable_and_does_not_rewrite(self):
         for day, note in (("2026-09-11", "later"), ("2026-09-10", "first"),
@@ -66,13 +66,13 @@ class ExpenseTests(unittest.TestCase):
 
     def test_empty_book_does_not_create_file(self):
         for command in ("list", "summary"):
-            self.assertEqual(self.run_cli(command).stdout.strip(), "暂无记录")
+            self.assertEqual(self.run_cli(command).stdout.strip(), "No entries")
         self.assertFalse(self.ledger.exists())
 
     def test_custom_file(self):
         self.run_cli("--file", "travel.json", "add", "5", "--category", "bus")
         self.assertFalse(self.ledger.exists())
-        self.assertIn("总计\t5.00", self.run_cli("--file", "travel.json", "summary").stdout)
+        self.assertIn("Total\t5.00", self.run_cli("--file", "travel.json", "summary").stdout)
 
     def test_invalid_amount_does_not_modify_book(self):
         self.ledger.write_text("[]\n")
@@ -117,7 +117,7 @@ class ExpenseTests(unittest.TestCase):
 
     def test_example_book(self):
         example = SCRIPT.parent / "examples" / "expenses.json"
-        self.assertIn("总计\t48.50", self.run_cli("--file", str(example), "summary").stdout)
+        self.assertIn("Total\t48.50", self.run_cli("--file", str(example), "summary").stdout)
 
 
 if __name__ == "__main__":

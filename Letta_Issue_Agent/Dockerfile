@@ -1,12 +1,13 @@
-# Letta Code runner；job 在容器内执行，不挂载 Docker socket。
-FROM gitea/runner:latest
+# Letta Code runner; jobs run inside the container, with no Docker socket mounted.
+# Pin the original runner v3.4.2 image used by this project.
+FROM gitea/runner@sha256:50c352f0506b1878be93f2e9e97353cd6261cd2e7f7bfe70fcd968d00874f9f9
 
 USER root
 
 RUN apk add --no-cache ca-certificates curl git build-base python3 nodejs npm unzip jq \
     && rm -rf /var/cache/apk/*
 
-# Alpine 需要 musl 构建。
+# Alpine needs the musl build.
 ARG BUN_VERSION=1.2.11
 ARG TARGETARCH
 RUN case "${TARGETARCH}" in \
@@ -21,7 +22,7 @@ RUN case "${TARGETARCH}" in \
     && rm -rf "/opt/${BUN_DIR}" /tmp/bun.zip \
     && bun --revision
 
-# 固定 CLI 版本并关闭自动更新；损坏时重建镜像。
+# Pin the CLI version and disable auto-update; rebuild the image if it breaks.
 ARG LETTA_CODE_VERSION=0.31.14
 ENV DISABLE_AUTOUPDATER=1
 RUN npm install -g "@letta-ai/letta-code@${LETTA_CODE_VERSION}" \

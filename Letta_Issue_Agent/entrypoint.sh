@@ -1,44 +1,44 @@
 #!/bin/sh
 set -euo pipefail
 
-# 统一迁移状态的所有权，避免 MemFS Git 拒绝访问。
+# Normalize ownership of migrated state to prevent MemFS Git from refusing access.
 chown -R "$(id -u):$(id -g)" /home/runner/letta-state
 
-# 等待 Gitea 就绪；失败后由容器重启策略重试。
+# Wait for Gitea to be ready; the container restart policy retries after a failure.
 GITEA_READY=0
 for i in $(seq 1 30); do
-  if curl -fsS --max-time 5 -o /dev/null "${GITEA_INSTANCE_URL:?需 GITEA_INSTANCE_URL}"; then
+  if curl -fsS --max-time 5 -o /dev/null "${GITEA_INSTANCE_URL:?GITEA_INSTANCE_URL is required}"; then
     GITEA_READY=1; break
   fi
-  echo "[entrypoint] 等 Gitea 就绪...(${i}/30) -> ${GITEA_INSTANCE_URL}"
+  echo "[entrypoint] Waiting for Gitea to be ready...(${i}/30) -> ${GITEA_INSTANCE_URL}"
   sleep 2
 done
 if [ "$GITEA_READY" != "1" ]; then
-  echo "FATAL: Gitea 不可达 -> ${GITEA_INSTANCE_URL} (runner 出站需覆盖 Gitea 实例地址,见 README)"
+  echo "FATAL: Gitea is unreachable -> ${GITEA_INSTANCE_URL} (runner egress must allow access to the Gitea instance address; see README)"
   exit 1
 fi
 
-: "${GITEA_INSTANCE_URL:?需要 GITEA_INSTANCE_URL,如 http://gitea:3000}"
-# 注册 token 优先取环境变量；否则读取 gitea-init 写入的共享文件
+: "${GITEA_INSTANCE_URL:?GITEA_INSTANCE_URL is required, e.g. http://gitea:3000}"
+# Prefer the registration token from the environment; otherwise read the shared file written by gitea-init.
 if [ -z "${GITEA_RUNNER_REGISTRATION_TOKEN:-}" ] && [ -s /shared/runner-token ]; then
   GITEA_RUNNER_REGISTRATION_TOKEN=$(cat /shared/runner-token)
 fi
-: "${GITEA_RUNNER_REGISTRATION_TOKEN:?需要注册 token(环境变量或 /shared/runner-token),首次部署由 gitea-init 自动生成}"
+: "${GITEA_RUNNER_REGISTRATION_TOKEN:?A registration token is required (set it in the environment or /shared/runner-token); gitea-init generates it on first deployment}"
 RUNNER_NAME="${RUNNER_NAME:-letta-docker-1}"
 CONFIG_FILE="${RUNNER_CONFIG:-/config.yaml}"
 
-# 注册 token 与 Gitea 一致；host 标签使 job 在本容器内运行。
+# The registration token matches Gitea's; the host label runs jobs inside this container.
 if [ ! -f .runner ]; then
   gitea-runner register --instance "${GITEA_INSTANCE_URL}" \
     --token "${GITEA_RUNNER_REGISTRATION_TOKEN}" \
     --name "${RUNNER_NAME}" --labels "letta:host" --no-interactive \
     --config "${CONFIG_FILE}"
 else
-  echo "[entrypoint] .runner 已存在,跳过注册"
+  echo "[entrypoint] .runner already exists, skipping registration"
 fi
 
-# 行为日志：每 issue 一个文件（提示词/行为全量、tool 参数截断），总是记录，
-# 与 ORACLE_ENABLE 无关；Oracle 告警也会写进当前 issue 的日志。
+# Activity logs: one file per issue (full prompts/activity, truncated tool arguments), always recorded
+# regardless of ORACLE_ENABLE; Oracle alerts are also written to the current issue's log.
 BACKEND_ROOT="${LETTA_LOCAL_BACKEND_DIR:-/home/runner/letta-state}"
 mkdir -p "$BACKEND_ROOT/conversations" "$BACKEND_ROOT/memfs"
 (

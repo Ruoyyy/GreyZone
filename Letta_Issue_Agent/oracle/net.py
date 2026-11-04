@@ -109,7 +109,7 @@ class NetOracle:
                     key = ("egress", rip, rport)
                     if key in self.alerted:
                         continue
-                    comm = self.owner_comm(inode)   # 进程归因: 谁发起的外联
+                    comm = self.owner_comm(inode)   # process attribution: who initiated the outbound connection
                     self.alerted.add(key)
                     self.emit("NET_EGRESS_ALERT", alert=True, remote="%s:%s" % (rip, rport),
                               owner=comm, hint="non-HTTPS egress to a public address")

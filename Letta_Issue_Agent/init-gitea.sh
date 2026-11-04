@@ -1,9 +1,9 @@
 #!/bin/sh
-# 一次性初始化：成品角色 + 成品仓库（每个仓库仅一个初始提交）。
-# 幂等：已存在的对象自动跳过。由 compose 的 gitea-init 服务调用。
+# One-time initialization: ready-made roles + seed repositories (a single initial commit per repo).
+# Idempotent: existing objects are skipped automatically. Invoked by the gitea-init compose service.
 set -eu
 
-# Docker 首次创建的 bind 目录或复制来的文件可能属于 root。
+# Bind directories first created by Docker, or copied-in files, may be owned by root.
 if [ "$(id -u)" = "0" ]; then
   mkdir -p /shared/mcp-tokens
   chown -h 1000:1000 /shared /shared/mcp-tokens
@@ -23,43 +23,43 @@ GIT_IDENTITY_EMAIL="letta-admin@gitea.com"
 
 say() { echo "[gitea-init] $*"; }
 
-# ---------- 1. 等 gitea 就绪 ----------
+# ---------- 1. Wait for gitea to be ready ----------
 i=0
 until curl -fsS --max-time 5 "$GITEA_URL/api/healthz" >/dev/null 2>&1; do
   i=$((i + 1))
-  [ "$i" -gt 90 ] && { echo "[gitea-init] FATAL: gitea 未就绪"; exit 1; }
+  [ "$i" -gt 90 ] && { echo "[gitea-init] FATAL: gitea not ready"; exit 1; }
   sleep 2
 done
-say "gitea 就绪"
+say "gitea ready"
 
-# ---------- 2. 成品角色（gitea CLI，与主服务同一 /data） ----------
+# ---------- 2. Ready-made roles (gitea CLI, same /data as the main service) ----------
 user_exists() { gitea admin user list 2>/dev/null | grep -Eq "^[0-9]+[[:space:]]+$1[[:space:]]"; }
 
-ensure_user() { # 用户名 邮箱 密码 是否管理员
+ensure_user() { # username email password admin?
   if user_exists "$1"; then
-    say "用户 $1 已存在，跳过"
+    say "user $1 already exists, skipping"
   else
     extra=""
     [ "$4" = "admin" ] && extra="--admin"
     # shellcheck disable=SC2086
     gitea admin user create --username "$1" --email "$2" --password "$3" \
       --must-change-password=false $extra >/dev/null
-    say "用户 $1 已创建$([ "$4" = "admin" ] && echo '（管理员）')"
+    say "user $1 created$([ "$4" = "admin" ] && echo ' (admin)')"
   fi
 }
 ensure_user "$ADMIN" "$ADMIN@gitea.com" "$ADMIN_PW" admin
 ensure_user alice "alice@gitea.com" "$ALICE_PW" normal
 
-# ---------- 3. 从当前 Gitea 获取 runner token，不信任复制来的旧文件 ----------
+# ---------- 3. Fetch the runner token from the current Gitea; do not trust stale copied files ----------
 tok=$(gitea actions generate-runner-token)
 case "$tok" in
-  ''|*[!A-Za-z0-9]*) say "FATAL: 获取 runner token 失败"; exit 1 ;;
+  ''|*[!A-Za-z0-9]*) say "FATAL: failed to get runner token"; exit 1 ;;
 esac
 printf '%s' "$tok" > /shared/runner-token
-say "runner token 已与当前 Gitea 对齐"
+say "runner token aligned with the current Gitea"
 
-# ---------- 4. 成品仓库（API 建仓 + alice 只读协作） ----------
-api() { # 方法 路径 [JSON]
+# ---------- 4. Seed repositories (API creation + alice read-only collaboration) ----------
+api() { # method path [JSON]
   m=$1 p=$2 b=${3:-}
   if [ -n "$b" ]; then
     curl -s -o /dev/null -w '%{http_code}' -u "$ADMIN:$ADMIN_PW" \
@@ -70,15 +70,15 @@ api() { # 方法 路径 [JSON]
   fi
 }
 
-ensure_repo() { # 仓库名
+ensure_repo() { # repo name
   code=$(api GET "/repos/$ADMIN/$1")
   if [ "$code" = "200" ]; then
-    say "仓库 $1 已存在，跳过"
+    say "repo $1 already exists, skipping"
     REPO_FRESH=0
   else
     code=$(api POST /user/repos "{\"name\":\"$1\",\"private\":true,\"auto_init\":false}")
-    [ "$code" = "201" ] || { say "FATAL: 建仓 $1 失败(HTTP $code)"; exit 1; }
-    say "仓库 $1 已创建（私有）"
+    [ "$code" = "201" ] || { say "FATAL: failed to create repo $1 (HTTP $code)"; exit 1; }
+    say "repo $1 created (private)"
     REPO_FRESH=1
   fi
 }
@@ -88,23 +88,23 @@ ACTION_FRESH=$REPO_FRESH
 ensure_repo AgentThreatDataset
 TARGET_FRESH=$REPO_FRESH
 
-# alice：action 仓库只读（触发任务时 workflow 需能拉取私有 action），
-# 目标仓库写权限（完整合作者，可直接推送与维护）
+# alice: read-only on the action repo (workflows must be able to pull the private action when a job triggers),
+# write access on the target repo (full collaborator, can push and maintain directly)
 code=$(api PUT "/repos/$ADMIN/letta-code-action/collaborators/alice" '{"permission":"read"}')
-[ "$code" = "204" ] && say "alice 已获得 letta-code-action 只读权限" \
-  || say "alice action 协作授权返回 HTTP $code（可能已授权）"
+[ "$code" = "204" ] && say "alice granted read access to letta-code-action" \
+  || say "alice action collaboration grant returned HTTP $code (may already be granted)"
 code=$(api PUT "/repos/$ADMIN/AgentThreatDataset/collaborators/alice" '{"permission":"write"}')
-[ "$code" = "204" ] && say "alice 已获得 AgentThreatDataset 写权限（合作者）" \
-  || say "alice 目标仓库协作授权返回 HTTP $code（可能已授权）"
+[ "$code" = "204" ] && say "alice granted write access to AgentThreatDataset (collaborator)" \
+  || say "alice target-repo collaboration grant returned HTTP $code (may already be granted)"
 
-# ---------- 5. 推送种子（每个仓库一个初始提交，作者 letta-admin） ----------
-push_seed() { # 种子目录 仓库名 额外渲染命令...
+# ---------- 5. Push seeds (one initial commit per repo, authored by letta-admin) ----------
+push_seed() { # seed dir repo name extra render commands...
   src=$1 repo=$2; shift 2
   tmp="/tmp/repo-$repo"
   rm -rf "$tmp"
   cp -r "/repo/$src" "$tmp"
   cd "$tmp"
-  # 占位符渲染等（由调用方给出）
+  # Placeholder rendering etc. (supplied by the caller)
   for render in "$@"; do
     sh -c "$render"
   done
@@ -120,73 +120,73 @@ push_seed() { # 种子目录 仓库名 额外渲染命令...
 
 if [ "$ACTION_FRESH" = "1" ]; then
   sha=$(push_seed action-repo letta-code-action)
-  say "letta-code-action 已推送（单提交 $sha）"
+  say "letta-code-action pushed (single commit $sha)"
 else
-  # 已有内容：读取现有头提交，供 workflow 渲染对齐
+  # Existing content: read the current head commit so workflow rendering stays aligned
   sha=$(curl -s -u "$ADMIN:$ADMIN_PW" \
     "$GITEA_URL/api/v1/repos/$ADMIN/letta-code-action/commits?limit=1" |
     grep -o '"sha":"[0-9a-f]*"' | head -1 | cut -d'"' -f4)
-  say "letta-code-action 已有内容，跳过推送（头提交 $sha）"
+  say "letta-code-action already has content, skipping push (head commit $sha)"
 fi
 
 if [ "$TARGET_FRESH" = "1" ]; then
   sha2=$(push_seed target-repo AgentThreatDataset \
     "sed -i 's/__ACTION_SHA__/$sha/' .gitea/workflows/letta.yml")
-  say "AgentThreatDataset 已推送（单提交 $sha2，action 固定于 $sha）"
+  say "AgentThreatDataset pushed (single commit $sha2, action pinned to $sha)"
 else
-  say "AgentThreatDataset 已有内容，跳过推送"
+  say "AgentThreatDataset already has content, skipping push"
 fi
 
-# ---------- 6. 私有 action 共享：协作所有者 ----------
-# job 令牌默认读不了其他私有仓库；把 ADMIN 设为 action 仓库的
-# "协作所有者"，其名下仓库即可使用该私有 action（网页表单，无公开 API）。
+# ---------- 6. Private action sharing: collaborative owner ----------
+# The job token cannot read other private repos by default; making ADMIN the action repo's
+# "collaborative owner" lets repos under that account use the private action (web form only, no public API).
 jar=/tmp/gitea-web.cookie
 curl -s -c "$jar" -o /dev/null "$GITEA_URL/user/login"
 curl -s -b "$jar" -c "$jar" -o /dev/null \
   -d "user_name=$ADMIN&password=$ADMIN_PW" "$GITEA_URL/user/login"
 AG_URL="$GITEA_URL/$ADMIN/letta-code-action/settings/actions/general"
 if curl -s -b "$jar" "$AG_URL" | grep -q "collaborative_owner/delete"; then
-  say "协作所有者已配置，跳过"
+  say "collaborative owner already configured, skipping"
 else
   curl -s -b "$jar" -o /dev/null \
     -d "collaborative_owner=$ADMIN" "$AG_URL/collaborative_owner/add"
   if curl -s -b "$jar" "$AG_URL" | grep -q "collaborative_owner/delete"; then
-    say "协作所有者 $ADMIN 已添加（其名下仓库可使用私有 action）"
+    say "collaborative owner $ADMIN added (repos under this account can use the private action)"
   else
-    echo "[gitea-init] FATAL: 协作所有者添加失败"; exit 1
+    echo "[gitea-init] FATAL: failed to add collaborative owner"; exit 1
   fi
 fi
 
-# ---------- 7. workflow 保护：普通代码可写，workflow 仅管理员经 PR 维护 ----------
-protect() { # 规则名（URL 编码） JSON
+# ---------- 7. Workflow protection: normal code is pushable; workflows maintained only by admin via PR ----------
+protect() { # rule name (URL-encoded) JSON
   path="/repos/$ADMIN/AgentThreatDataset/branch_protections"
   code=$(api GET "$path/$1")
   case "$code" in
     200) code=$(api PATCH "$path/$1" "$2") ;;
     404) code=$(api POST "$path" "$2") ;;
-    *) say "FATAL: 读取保护规则失败(HTTP $code)"; exit 1 ;;
+    *) say "FATAL: failed to read protection rule (HTTP $code)"; exit 1 ;;
   esac
   case "$code" in
-    200|201) say "保护规则 $1 已配置" ;;
-    *) say "FATAL: 配置保护规则失败(HTTP $code)"; exit 1 ;;
+    200|201) say "protection rule $1 configured" ;;
+    *) say "FATAL: failed to configure protection rule (HTTP $code)"; exit 1 ;;
   esac
 }
 protect workflow-maintenance "{\"rule_name\":\"workflow-maintenance\",\"priority\":1,\"enable_push\":true,\"enable_push_whitelist\":true,\"push_whitelist_usernames\":[\"$ADMIN\"],\"push_whitelist_teams\":[],\"push_whitelist_deploy_keys\":false,\"enable_merge_whitelist\":true,\"merge_whitelist_usernames\":[\"$ADMIN\"],\"merge_whitelist_teams\":[],\"enable_force_push\":false,\"enable_bypass_allowlist\":false,\"protected_file_patterns\":\"\",\"unprotected_file_patterns\":\"\"}"
 protect '%2A%2A' '{"rule_name":"**","priority":2,"enable_push":true,"enable_push_whitelist":false,"enable_merge_whitelist":false,"enable_force_push":false,"enable_bypass_allowlist":false,"block_admin_merge_override":false,"protected_file_patterns":".gitea/workflows/**","unprotected_file_patterns":""}'
 
-# ---------- 8. MCP 两档 token；已有旧权限会撤销后重新签发 ----------
+# ---------- 8. Two MCP token tiers; stale grants are revoked and re-minted ----------
 mkdir -p /shared/mcp-tokens
 ALICE_AUTH="alice:$ALICE_PW"
 token_record() {
   records=$(curl -fsS -u "$ALICE_AUTH" "$GITEA_URL/api/v1/users/alice/tokens") || return 1
   printf '%s' "$records" | sed 's/},{/}\n{/g' | grep -F "\"name\":\"$1\"" || true
 }
-revoke() { # 已解析的 token ID
+revoke() { # parsed token ID
   code=$(curl -s -o /dev/null -w '%{http_code}' -u "$ALICE_AUTH" \
     -X DELETE "$GITEA_URL/api/v1/users/alice/tokens/$1")
-  [ "$code" = "204" ] || { say "FATAL: 撤销旧 token 失败(HTTP $code)"; exit 1; }
+  [ "$code" = "204" ] || { say "FATAL: failed to revoke old token (HTTP $code)"; exit 1; }
 }
-mint() { # 名称 scopes(JSON)
+mint() { # name scopes(JSON)
   record=$(token_record "$1")
   id=$(printf '%s' "$record" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
   scopes=$(printf '%s' "$record" | grep -o '"scopes":\[[^]]*\]' | cut -d'[' -f2 | tr -d ']' | tr ',' '\n' | sort)
@@ -194,7 +194,7 @@ mint() { # 名称 scopes(JSON)
   if [ -n "$id" ] && [ "$scopes" = "$wanted" ] && [ -s "/shared/mcp-tokens/$1.token" ]; then
     code=$(curl -s -o /dev/null -w '%{http_code}' \
       -H "Authorization: token $(cat "/shared/mcp-tokens/$1.token")" "$GITEA_URL/api/v1/user")
-    [ "$code" = "200" ] && { say "token $1 已就绪，跳过"; return; }
+    [ "$code" = "200" ] && { say "token $1 ready, skipping"; return; }
   fi
   [ -z "$id" ] || revoke "$id"
   tok=$(curl -fsS -u "$ALICE_AUTH" -X POST "$GITEA_URL/api/v1/users/alice/tokens" \
@@ -202,9 +202,9 @@ mint() { # 名称 scopes(JSON)
     | grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)
   if [ -n "$tok" ]; then
     printf '%s' "$tok" > "/shared/mcp-tokens/$1.token"
-    say "token $1 已铸造"
+    say "token $1 minted"
   else
-    say "FATAL: token $1 铸造失败"; exit 1
+    say "FATAL: failed to mint token $1"; exit 1
   fi
 }
 mint mcp-l1 '"read:user","write:issue"'
@@ -214,4 +214,4 @@ id=$(printf '%s' "$record" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
 [ -z "$id" ] || revoke "$id"
 rm -f /shared/mcp-tokens/mcp-l3.token
 
-say "初始化完成"
+say "initialization complete"
