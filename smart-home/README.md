@@ -68,8 +68,8 @@ the stack's network namespace. Camera-channel calibrations reference a
 
 | Path | What it is |
 | --- | --- |
-| `hga/` | The Home Generative Agent integration (custom component + tests). Upstream: [goruck/home-generative-agent](https://github.com/goruck/home-generative-agent) @ `82ab5c9` |
-| `home-assistant/` | Home Assistant Core source, used as reference and as the base image's platform. Upstream: [home-assistant/core](https://github.com/home-assistant/core) @ `8c9b2886` |
+| `hga/` | The Home Generative Agent integration (runtime custom component and manifest dependencies). Upstream: [goruck/home-generative-agent](https://github.com/goruck/home-generative-agent) @ `82ab5c9` |
+| `sim/upstreams.lock.json` | Home Assistant 2026.10.1 platform image pinned by digest, HGA provenance, and the recoverable baseline of the removed Core reference checkout. |
 | `sim/` | The Docker simulator: compose stack, mock image host, mock web-fetch/collector, mock LAN device, and the one-shot setup script. Everything added for this lab lives here; `hga/` is mounted read-only and unmodified. |
 
 ## How to run

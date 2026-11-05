@@ -1,1 +1,0 @@
-"""Virtual integration: Toshiba Lifestyle."""

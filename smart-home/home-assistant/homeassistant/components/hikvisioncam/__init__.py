@@ -1,1 +1,0 @@
-"""The Hikvision integration."""

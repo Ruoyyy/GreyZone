@@ -1,3 +1,0 @@
-"""Konnected constants."""
-
-DOMAIN = "konnected"

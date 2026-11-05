@@ -1,1 +1,0 @@
-"""The Start.ca integration."""
