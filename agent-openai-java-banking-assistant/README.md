@@ -162,12 +162,12 @@ security are out of scope. The lab is intentionally unauthenticated and local-on
 cp app/.env.example app/.env
 ```
 
-Fill in your key — it is the only required value:
+Fill in your API key and model; the API base defaults to OpenAI:
 
 ```bash
-DEEPSEEK_API_KEY=sk-...
-DEEPSEEK_BASE_URL=https://api.deepseek.com   # any OpenAI-compatible endpoint
-DEEPSEEK_MODEL=deepseek-chat
+OPENAI_API_KEY=<your-key>
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=<model-id>
 ```
 
 `app/.env` is gitignored; keep your key out of the repo.

@@ -11,22 +11,22 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class Langchain4JConfiguration {
 
-    @Value("${deepseek.base-url:https://api.deepseek.com}")
-    private String deepSeekBaseUrl;
+    @Value("${openai.base-url:https://api.openai.com/v1}")
+    private String openAiBaseUrl;
 
-    @Value("${deepseek.api-key}")
-    private String deepSeekApiKey;
+    @Value("${openai.api-key}")
+    private String openAiApiKey;
 
-    @Value("${deepseek.model:deepseek-chat}")
-    private String deepSeekModel;
+    @Value("${openai.model}")
+    private String openAiModel;
 
     @Bean
     public ChatLanguageModel chatLanguageModel() {
 
         return OpenAiChatModel.builder()
-                .baseUrl(deepSeekBaseUrl)
-                .apiKey(deepSeekApiKey)
-                .modelName(deepSeekModel)
+                .baseUrl(openAiBaseUrl)
+                .apiKey(openAiApiKey)
+                .modelName(openAiModel)
                 .temperature(0.3)
                 .logRequests(true)
                 .logResponses(true)
