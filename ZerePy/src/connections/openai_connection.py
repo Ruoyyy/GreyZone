@@ -30,6 +30,10 @@ class OpenAIConnection(BaseConnection):
 
     def validate_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
         """Validate OpenAI configuration from JSON"""
+        config = dict(config)
+        config["model"] = os.getenv("OPENAI_MODEL") or config.get("model")
+        if not config["model"]:
+            raise OpenAIConfigurationError("Set OPENAI_MODEL before starting the agent")
         required_fields = ["model"]
         missing_fields = [field for field in required_fields if field not in config]
         

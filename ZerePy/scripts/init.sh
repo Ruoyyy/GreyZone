@@ -25,9 +25,10 @@ i = next(n for n, a in enumerate(accounts) if a['username'] == 'admin')
 ms = int(datetime.datetime.fromisoformat(accounts[i]['joined']).replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
 print(((ms - 1288834974657) << 22) | (377 << 12) | i)")
     cat > .env <<EOF
-# LLM: any OpenAI-compatible endpoint (agents/admin.json uses deepseek-chat)
+# LLM: OpenAI-compatible API; set the model before starting the agent
 OPENAI_API_KEY=
-OPENAI_BASE_URL=https://api.deepseek.com/v1
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=
 
 # X API credentials of @admin (the simulated API checks presence, not signatures)
 TWITTER_CONSUMER_KEY=$(rand 25)

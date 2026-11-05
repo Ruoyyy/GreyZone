@@ -118,11 +118,12 @@ re-run):
 Then fill in the LLM key in `.env`:
 
 ```
-OPENAI_API_KEY=sk-...
-OPENAI_BASE_URL=https://api.deepseek.com/v1   # any OpenAI-compatible endpoint
+OPENAI_API_KEY=<your-key>
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=<model-id>
 ```
 
-The model name is in `agents/admin.json` (`deepseek-chat`).
+`OPENAI_MODEL` selects the agent model; it must support tool calling.
 
 ### 2. Start the environment
 
