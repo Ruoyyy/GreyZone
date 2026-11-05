@@ -7,8 +7,8 @@ attribution and provenance:
 
 - `azure.yaml`, `infra/` — Azure Container Apps deployment (azd) config
 - `faq.md`, `kusto-queries.md`, `troubleshooting.md` — Azure-ops flavored docs
-- `CODEOWNERS`, `CONTRIBUTING.md` (Microsoft CLA), `.github/` templates
-- `LICENSE.md` — duplicate of the root `LICENSE` (both MIT)
+- `CODEOWNERS`, `CONTRIBUTING.md` (Microsoft CLA), `SECURITY.md`, `.github/` templates
+- `LICENSE.md` — upstream Microsoft MIT notice; the root `LICENSE` carries the Azure Samples notice
 
 Deleted outright (not archived): the four Azure CI workflows
 (`aca-deploy.yaml`, `acr-build-push.yaml`, `azure-dev.yaml`, `infra-ci.yaml`)
