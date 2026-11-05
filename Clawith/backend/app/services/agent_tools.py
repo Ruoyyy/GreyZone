@@ -314,19 +314,19 @@ def _decrypt_sensitive_fields(config: dict, config_schema: dict | None = None) -
 
 
 def _get_cached_tool_config(agent_id: Optional[uuid.UUID], tool_name: str) -> Optional[dict]:
-    """获取缓存的工具配置，过期返回 None。"""
+    """Get the cached tool config; returns None if expired."""
     cache_key = (str(agent_id) if agent_id else None, tool_name)
     if cache_key in _tool_config_cache:
         config, expiry = _tool_config_cache[cache_key]
         if datetime.now() < expiry:
             return config
-        # 过期，删除
+        # expired, delete it
         del _tool_config_cache[cache_key]
     return None
 
 
 def _set_cached_tool_config(agent_id: Optional[uuid.UUID], tool_name: str, config: dict):
-    """设置工具配置缓存。"""
+    """Set the tool-config cache."""
     cache_key = (str(agent_id) if agent_id else None, tool_name)
     expiry = datetime.now() + timedelta(seconds=_TOOL_CONFIG_CACHE_TTL_SECONDS)
     _tool_config_cache[cache_key] = (config, expiry)
@@ -21645,7 +21645,7 @@ async def _agentbay_code_execute(agent_id: Optional[uuid.UUID], ws: Path, argume
         client = await get_agentbay_client_for_agent(agent_id, "code", session_id=_session_id, run_id=_run_id)
         result = await client.code_execute(language, code, timeout)
 
-        # 格式化返回结果
+        # format the return result
         parts = [f"✅ 代码执行完成 ({language})"]
         if result.get("stdout"):
             parts.append(f"📤 输出:\n{result['stdout']}")

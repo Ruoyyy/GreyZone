@@ -23,7 +23,7 @@ cleanup() {
   STATUS=$?
   trap - EXIT
   if [ "$STATUS" -ne 0 ]; then
-    echo "升级测试失败，输出诊断日志"
+    echo "Upgrade test failed, dumping diagnostic logs"
     docker logs --tail=300 "$OLD_CONTAINER" 2>/dev/null || true
     docker logs --tail=500 "$NEW_CONTAINER" 2>/dev/null || true
     compose logs --no-color --tail=300 postgres redis 2>/dev/null || true
@@ -94,7 +94,7 @@ docker image inspect "$OLD_IMAGE" --format '{{ index .Config.Labels "org.opencon
 OLD_REVISION=$(cat /tmp/old_revision | tr -d '\r')
 docker image inspect "$OLD_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' > /tmp/old_version
 OLD_VERSION=$(cat /tmp/old_version | tr -d '\r')
-echo "启动升级源 version=$OLD_VERSION revision=$OLD_REVISION"
+echo "Starting upgrade source version=$OLD_VERSION revision=$OLD_REVISION"
 
 SOURCE_SCHEMA_HEADS=$(run_schema_python "$OLD_IMAGE" \
   'from alembic.config import Config; from alembic.script import ScriptDirectory; script = ScriptDirectory.from_config(Config("alembic.ini")); print("\n".join(script.get_heads()))')
@@ -104,28 +104,28 @@ SOURCE_SCHEMA_ROOT_HEADS=$(run_schema_python "$OLD_IMAGE" \
   'from alembic.config import Config; from alembic.script import ScriptDirectory; script = ScriptDirectory.from_config(Config("alembic.ini")); normalize = lambda value: () if value is None else (value,) if isinstance(value, str) else tuple(value); print("\n".join(sorted(head for head in script.get_heads() if not normalize(script.get_revision(head).down_revision))))')
 
 if [ -z "$SOURCE_SCHEMA_HEADS" ]; then
-  echo "无法识别升级源 Alembic revision graph"
+  echo "Could not identify the upgrade-source Alembic revision graph"
   exit 1
 fi
 
-echo "使用升级源镜像建立并提交 source head 的父 revision"
-# 父 revision 必须完全由升级源镜像建立；任何中间 migration 失败都会直接终止。
+echo "Using the upgrade-source image to build and commit the source head's parent revision"
+# The parent revision must be built entirely by the upgrade-source image; any intermediate migration failure aborts immediately.
 for SOURCE_SCHEMA_PARENT in $SOURCE_SCHEMA_PARENT_REVISIONS; do
   case "$SOURCE_SCHEMA_PARENT" in
     *[!A-Za-z0-9_.-]*)
-      echo "升级源 Alembic parent revision 格式无效: $SOURCE_SCHEMA_PARENT"
+      echo "Upgrade-source Alembic parent revision has an invalid format: $SOURCE_SCHEMA_PARENT"
       exit 1
       ;;
   esac
   run_schema_command "$OLD_IMAGE" "alembic upgrade $SOURCE_SCHEMA_PARENT"
 done
 
-echo "使用升级源镜像逐个提交 source head"
-# source head 使用独立事务，失败时不会回滚已经提交的历史 schema。
+echo "Using the upgrade-source image to commit the source head one by one"
+# The source head uses its own transaction; on failure it does not roll back the already-committed historical schema.
 for SOURCE_SCHEMA_HEAD in $SOURCE_SCHEMA_HEADS; do
   case "$SOURCE_SCHEMA_HEAD" in
     *[!A-Za-z0-9_.-]*)
-      echo "升级源 Alembic head 格式无效: $SOURCE_SCHEMA_HEAD"
+      echo "Upgrade-source Alembic head has an invalid format: $SOURCE_SCHEMA_HEAD"
       exit 1
       ;;
   esac
@@ -143,18 +143,18 @@ for SOURCE_SCHEMA_HEAD in $SOURCE_SCHEMA_HEADS; do
   done
 
   if [ "$SOURCE_HEAD_IS_ROOT" = "true" ]; then
-    echo "升级源 root head 失败，禁止由目标镜像从空库构造旧 schema: $SOURCE_SCHEMA_HEAD"
+    echo "Upgrade-source root head failed; forbidding the target image from constructing the old schema from an empty DB: $SOURCE_SCHEMA_HEAD"
     exit 1
   fi
 
   SOURCE_HEAD_DIGEST=$(schema_revision_digest "$OLD_IMAGE" "$SOURCE_SCHEMA_HEAD")
   TARGET_HEAD_DIGEST=$(schema_revision_digest "$NEW_IMAGE" "$SOURCE_SCHEMA_HEAD")
   if [ "$SOURCE_HEAD_DIGEST" = "$TARGET_HEAD_DIGEST" ]; then
-    echo "目标镜像没有该 source head 的修复版本，拒绝掩盖 migration 错误: $SOURCE_SCHEMA_HEAD"
+    echo "The target image has no fix version for this source head; refusing to mask the migration error: $SOURCE_SCHEMA_HEAD"
     exit 1
   fi
 
-  echo "升级源 head migration 失败，使用目标镜像仅修复相同 head=$SOURCE_SCHEMA_HEAD"
+  echo "Upgrade-source head migration failed; using the target image to fix only the same head=$SOURCE_SCHEMA_HEAD"
   run_schema_command "$NEW_IMAGE" "alembic upgrade $SOURCE_SCHEMA_HEAD"
 done
 
@@ -163,13 +163,13 @@ ACTUAL_SOURCE_SCHEMA_HEADS=$(compose exec -T postgres \
   psql -U clawith -d clawith -Atc \
   "SELECT version_num FROM alembic_version ORDER BY version_num;" | tr -d '\r' | sort)
 if [ "$ACTUAL_SOURCE_SCHEMA_HEADS" != "$EXPECTED_SOURCE_SCHEMA_HEADS" ]; then
-  echo "升级源 schema head 不匹配"
+  echo "Upgrade-source schema head mismatch"
   echo "expected=$EXPECTED_SOURCE_SCHEMA_HEADS"
   echo "actual=$ACTUAL_SOURCE_SCHEMA_HEADS"
   exit 1
 fi
 
-echo "使用升级源镜像建立 LangGraph checkpoint schema"
+echo "Using the upgrade-source image to build the LangGraph checkpoint schema"
 run_schema_command "$OLD_IMAGE" "python -m app.scripts.setup_langgraph_checkpoints"
 
 docker run -d \
@@ -197,11 +197,11 @@ docker stop --time 30 "$OLD_CONTAINER" >/dev/null
 docker rm "$OLD_CONTAINER" >/dev/null
 
 if docker ps -aq --filter "name=^/$OLD_CONTAINER$" | grep -q .; then
-  echo "旧 Backend 未完全删除，禁止启动新 worker"
+  echo "The old Backend was not fully removed; refusing to start the new worker"
   exit 1
 fi
 
-echo "执行目标版本 Alembic 和 LangGraph checkpoint setup"
+echo "Running the target version's Alembic and LangGraph checkpoint setup"
 docker run --rm \
   --network "$NETWORK" \
   --entrypoint /bin/bash \
@@ -233,7 +233,7 @@ docker run -d \
 wait_healthy "$NEW_CONTAINER"
 
 if ! docker logs --tail=500 "$NEW_CONTAINER" | grep -q "durable Agent Runtime worker started"; then
-  echo "新版本 Runtime worker 未成功启动"
+  echo "The new-version Runtime worker did not start successfully"
   exit 1
 fi
 
@@ -242,10 +242,10 @@ docker exec "$NEW_CONTAINER" python -c 'from app.config import get_settings; s=g
 test "$(docker exec "$NEW_CONTAINER" /bin/bash -lc 'cat /data/agents/.ci-upgrade-sentinel' | tr -d '\r')" = "workspace-before-upgrade"
 test "$(compose exec -T postgres psql -U clawith -d clawith -Atc 'SELECT value FROM ci_upgrade_sentinel WHERE id=1;' | tr -d '\r')" = "database-before-upgrade"
 
-echo "检查升级后 Alembic heads"
+echo "Checking Alembic heads after the upgrade"
 docker exec "$NEW_CONTAINER" alembic current --check-heads
 
-echo "检查升级后 checkpoint schema"
+echo "Checking the checkpoint schema after the upgrade"
 echo "SELECT COALESCE(MAX(v),-1) FROM langgraph_checkpoint.checkpoint_migrations" | compose exec -T postgres psql -U clawith -d clawith -At | tr -d '\r' > /tmp/checkpoint_version
 CHECKPOINT_VERSION=$(cat /tmp/checkpoint_version | tr -d '\r')
 echo "checkpoint version=$CHECKPOINT_VERSION"
@@ -259,21 +259,21 @@ docker image inspect "$NEW_IMAGE" --format '{{ index .Config.Labels "org.opencon
 
 UVICORN_COUNT=$(docker top "$NEW_CONTAINER" -eo args 2>/dev/null | grep -c '[u]vicorn app.main:app' || true)
 if [ "$UVICORN_COUNT" -gt 0 ]; then
-  echo "✅ Uvicorn worker 运行状态正常 (数量: $UVICORN_COUNT)"
+  echo "✅ Uvicorn worker is running normally (count: $UVICORN_COUNT)"
 else
-  echo "⚠️ 警告: 无法使用 docker top 检测到 Uvicorn worker 进程，跳过进程数强校验"
+  echo "⚠️ Warning: could not detect the Uvicorn worker process via docker top; skipping the strict process-count check"
 fi
 
 for CONTAINER_NAME in $(docker network inspect "$NETWORK" --format '{{range .Containers}}{{.Name}} {{end}}'); do
   case "$CONTAINER_NAME" in
     "$PROJECT"*) ;;
-    *) echo "⚠️ 警告: 升级网络中发现外部容器 $CONTAINER_NAME (跳过致命错误)" ;;
+    *) echo "⚠️ Warning: found an external container in the upgrade network $CONTAINER_NAME (skipping fatal error)" ;;
   esac
 done
 
 if docker logs --tail=500 "$NEW_CONTAINER" | grep -Eqi 'migration.*fail|alembic.*error|Runtime Command Worker iteration failed'; then
-  echo "升级后 Backend 日志存在阻断错误"
+  echo "The post-upgrade Backend log contains blocking errors"
   exit 1
 fi
 
-echo "升级测试通过 source=$OLD_VERSION target=$DRONE_COMMIT project=$PROJECT concurrency=10"
+echo "Upgrade test passed source=$OLD_VERSION target=$DRONE_COMMIT project=$PROJECT concurrency=10"

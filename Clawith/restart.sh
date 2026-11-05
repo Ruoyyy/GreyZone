@@ -6,7 +6,7 @@
 set -e
 
 # ═══════════════════════════════════════════════════════
-# 配置
+# Configuration
 # ═══════════════════════════════════════════════════════
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 DATA_DIR="$ROOT/.data"
@@ -34,14 +34,14 @@ for arg in "$@"; do
 done
 
 # ═══════════════════════════════════════════════════════
-# 初始化目录
+# Initialize directories
 # ═══════════════════════════════════════════════════════
 init_dirs() {
     mkdir -p "$PID_DIR" "$LOG_DIR"
 }
 
 # ═══════════════════════════════════════════════════════
-# 加载环境变量
+# Load environment variables
 # ═══════════════════════════════════════════════════════
 load_env() {
     if [ -f "$ROOT/.env" ]; then
@@ -70,7 +70,7 @@ load_env() {
 }
 
 # ═══════════════════════════════════════════════════════
-# 清理旧进程
+# Clean up old processes
 # ═══════════════════════════════════════════════════════
 cleanup() {
     echo -e "${YELLOW}🔄 Stopping existing services...${NC}"
@@ -94,7 +94,7 @@ cleanup() {
 }
 
 # ═══════════════════════════════════════════════════════
-# 等待端口就绪
+# Wait for ports to be ready
 # ═══════════════════════════════════════════════════════
 wait_for_port() {
     local port=$1 name=$2 max=${3:-10}
@@ -158,7 +158,7 @@ PY
 }
 
 # ═══════════════════════════════════════════════════════
-# 添加 PostgreSQL 到 PATH
+# Add PostgreSQL to PATH
 # ═══════════════════════════════════════════════════════
 add_pg_path() {
     if [ -d "$ROOT/.pg/bin" ]; then
@@ -172,7 +172,7 @@ add_pg_path() {
 }
 
 # ═══════════════════════════════════════════════════════
-# 启动 PostgreSQL
+# Start PostgreSQL
 # ═══════════════════════════════════════════════════════
 start_postgres() {
     # Skip local PostgreSQL management when using an external database
@@ -219,7 +219,7 @@ start_postgres() {
 }
 
 # ═══════════════════════════════════════════════════════
-# 启动后端
+# Start the backend
 # ═══════════════════════════════════════════════════════
 start_backend() {
     echo -e "${YELLOW}🚀 Starting backend...${NC}"
@@ -245,7 +245,7 @@ start_backend() {
 }
 
 # ═══════════════════════════════════════════════════════
-# 启动前端
+# Start the frontend
 # ═══════════════════════════════════════════════════════
 start_frontend() {
     echo -e "${YELLOW}🚀 Starting frontend...${NC}"
@@ -259,7 +259,7 @@ start_frontend() {
 }
 
 # ═══════════════════════════════════════════════════════
-# 验证代理
+# Verify the proxy
 # ═══════════════════════════════════════════════════════
 verify_proxy() {
     echo -e "${YELLOW}🔍 Verifying API proxy...${NC}"
@@ -273,7 +273,7 @@ verify_proxy() {
 }
 
 # ═══════════════════════════════════════════════════════
-# 打印访问信息
+# Print access info
 # ═══════════════════════════════════════════════════════
 print_info() {
     SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -294,7 +294,7 @@ print_info() {
 }
 
 # ═══════════════════════════════════════════════════════
-# Docker 模式
+# Docker mode
 # ═══════════════════════════════════════════════════════
 run_docker_mode() {
     if [ "$FORCE_SOURCE" = true ]; then
@@ -313,7 +313,7 @@ run_docker_mode() {
 
         cd "$ROOT"
 
-        # 查找空闲端口
+        # Find a free port
         FRONTEND_PORT=3008
         while true; do
             if docker ps 2>/dev/null | grep -q ":$FRONTEND_PORT->"; then
@@ -347,7 +347,7 @@ main() {
     init_dirs
     load_env
     run_docker_mode || true
-    # 启动本地模式，如果docker 不存在
+    # Start local mode if Docker is not available
     cleanup
     start_postgres
     start_backend

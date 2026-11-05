@@ -73,17 +73,17 @@ class SandboxConfig(BaseModel):
     def from_dict(
         cls, config: dict, fallback_config: Optional["SandboxConfig"] = None
     ) -> "SandboxConfig":
-        """从 dict 构建 SandboxConfig，支持字段级 fallback。
+        """Build a SandboxConfig from a dict, with field-level fallback.
 
         Args:
-            config: 工具配置 dict
-            fallback_config: 回退配置（通常是环境变量配置）
+            config: the tool config dict
+            fallback_config: the fallback config (usually the env-var config)
 
         Returns:
-            SandboxConfig 实例
+            a SandboxConfig instance
         """
         def get_value(key: str, default=None, encrypt: bool = False):
-            """获取配置值，优先从 config 读取，缺失则使用 fallback。"""
+            """Get a config value, preferring config, falling back when missing."""
             value = config.get(key)
             if value is None or value == "":
                 if fallback_config:
@@ -93,7 +93,7 @@ class SandboxConfig(BaseModel):
             if key == "allow_network":
                 logger.info(f"[SandboxConfig] allow_network: raw={config.get(key)!r}, resolved={value!r}")
 
-            # 解密敏感字段
+            # decrypt sensitive fields
             if encrypt and value:
                 try:
                     from app.core.security import decrypt_data
@@ -104,7 +104,7 @@ class SandboxConfig(BaseModel):
                     value = decrypted
                 except Exception as e:
                     logger.warning(f"[SandboxConfig] Failed to decrypt {key}: {e}")
-                    # 解密失败，使用 fallback
+                    # decryption failed, use the fallback
                     if fallback_config:
                         value = getattr(fallback_config, key, default)
                     else:
