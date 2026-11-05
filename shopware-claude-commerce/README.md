@@ -291,8 +291,6 @@ either exists.
   container (it drops the plugin files and product images; bootstrap restores both).
   `docker compose down -v` drops the volume, and the next bootstrap loads the snapshot
   again. `.run/` holds host logs and PIDs.
-- **Zero-install demo.** A WASM build of the whole stack runs from GitHub Pages with no
-  clone; see [`browser-demo/README.md`](browser-demo/README.md).
 - **Security model.** The blueprint's safety gates stay on (fenced tool output, cart
   provenance, merchant staging previews + approval, least-privilege integrations). The
   seller MCP is a separate trust domain: it holds only alice's customer login and a
