@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).parent / "oracle"))
+sys.path.insert(0, str(Path(__file__).parent))
 os.environ.setdefault("ZAI_API_KEY", "synthetic-zai-key-123456")  # Synthetic fixture; never a real key.
 
 from common import EpisodeManager, IssueLogger, SecretBook  # noqa: E402
