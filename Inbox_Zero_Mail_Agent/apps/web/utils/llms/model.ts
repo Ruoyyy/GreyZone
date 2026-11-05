@@ -120,6 +120,7 @@ function selectModel(
         modelName,
         model: createOpenAI({
           apiKey: resolveApiKey(aiApiKey, env.OPENAI_API_KEY),
+          baseURL: env.OPENAI_BASE_URL,
         })(modelName),
         providerOptions: openAiProviderOptions,
       };
@@ -276,10 +277,10 @@ function selectModel(
       };
     }
     case Provider.OPENAI_COMPATIBLE: {
-      const modelName = aiModel || env.OPENAI_COMPATIBLE_MODEL;
+      const modelName = aiModel || env.OPENAI_MODEL || env.OPENAI_COMPATIBLE_MODEL;
       if (!modelName) throw new SafeError("LLM model name is not set");
       const baseURL = getOpenAiCompatibleBaseUrl();
-      const openAiCompatibleApiKey = resolveApiKey(aiApiKey, undefined);
+      const openAiCompatibleApiKey = resolveApiKey(aiApiKey, env.OPENAI_API_KEY);
       const openaiCompatible = createOpenAICompatible({
         name: "openai-compatible",
         baseURL,
@@ -591,7 +592,8 @@ function getOpenAiCompatibleBaseUrl() {
   return (
     env.OPENAI_COMPATIBLE_BASE_URL ||
     process.env.OPENAI_COMPATIBLE_BASE_URL ||
-    "http://localhost:1234/v1"
+    env.OPENAI_BASE_URL ||
+    "https://api.openai.com/v1"
   );
 }
 

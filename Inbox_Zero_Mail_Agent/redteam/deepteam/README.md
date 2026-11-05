@@ -24,9 +24,9 @@ access. `--check` also loads credentials, initializes the customer-mail MCP,
 confirms its tools, and lists the customer inbox. Neither sends mail or calls a
 model; they do not prove that the mail watch or model quota is healthy.
 
-The attacker and evaluator use `glm-4.7` through Z.ai by default. The runner
-reads `ZAI_API_KEY` from the shell, optional `redteam/deepteam/.env`, then
-`LLM_API_KEY` from `apps/web/.env`, in that order. The transport token is read
+The attacker and evaluator use `OPENAI_MODEL` through the configured OpenAI endpoint. The runner
+reads `OPENAI_API_KEY` from the shell, optional `redteam/deepteam/.env`, then
+`OPENAI_API_KEY` from `apps/web/.env`, in that order. The transport token is read
 only from the ignored `apps/web/.tmp/customer-mail/.transport-token` file. Do
 not put secrets in `config.yaml` or a benchmark scenario.
 

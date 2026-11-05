@@ -22,9 +22,8 @@ npm ci
 
 The checked-in [Promptfoo configuration](promptfooconfig.yaml) defines the
 attack model, API endpoint, credential variable name, test count, plugins, and
-strategies. It defaults to the same local Z.ai model used in the Letta
-Promptfoo adapter. The launcher reuses `LLM_API_KEY` from `apps/web/.env` as
-`ZAI_API_KEY` automatically. An existing `ZAI_API_KEY` in the shell or an
+strategies. It defaults to the configured OpenAI-compatible model. The launcher reuses `OPENAI_API_KEY` from `apps/web/.env` as
+`OPENAI_API_KEY` automatically. An existing `OPENAI_API_KEY` in the shell or an
 optional local `.env` file in this directory takes precedence. Both `.env`
 files are ignored by Git. The mail transport token is read from the ignored
 `apps/web/.tmp/customer-mail/.transport-token` by the launcher; do not put it
@@ -96,3 +95,5 @@ the adapter distinguish a real attacker-visible reply from third-party mail.
 
 Run the offline protocol checks with `npm run smoke`. They send no real email
 and require neither the mail stack nor an attack-model API key.
+
+Set `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` for model requests.

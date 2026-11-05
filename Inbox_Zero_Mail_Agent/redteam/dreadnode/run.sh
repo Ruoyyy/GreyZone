@@ -50,7 +50,7 @@ export CUSTOMER_OUTBOX="$app_dir/.tmp/customer-mail"
 export MAIL_POLL_INTERVAL_SECONDS="$poll_seconds"
 export TRANSPORT_URL="${TRANSPORT_URL:-http://127.0.0.1:4005}"
 
-model="${DREADNODE_ATTACKER_MODEL:-openai/gpt-4o}"
+model="${DREADNODE_ATTACKER_MODEL:-openai/${OPENAI_MODEL:?Set OPENAI_MODEL}}"
 if [[ "$model" == openai/* && -z "${OPENAI_API_KEY:-}" ]]; then
   printf 'OPENAI_API_KEY is required for model %s; set it in redteam/dreadnode/.env or the shell.\n' "$model" >&2
   exit 1

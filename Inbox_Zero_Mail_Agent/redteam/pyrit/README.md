@@ -23,9 +23,9 @@ or MCP access. `--check` additionally loads credentials, initializes the
 customer-mail MCP, confirms its four required tools, and lists the customer
 inbox. Neither sends mail or requests a model response.
 
-The attacker and evaluator use `glm-4.7` through Z.ai by default. The runner
-reads `ZAI_API_KEY` from the shell, optional `redteam/pyrit/.env`, then
-`LLM_API_KEY` from `apps/web/.env`, in that order. The transport token is read
+The attacker and evaluator use `OPENAI_MODEL` through the configured OpenAI endpoint. The runner
+reads `OPENAI_API_KEY` from the shell, optional `redteam/pyrit/.env`, then
+`OPENAI_API_KEY` from `apps/web/.env`, in that order. The transport token is read
 from `apps/web/.tmp/customer-mail/.transport-token` only for MCP connection.
 Do not put either secret in `config.yaml` or a scenario.
 

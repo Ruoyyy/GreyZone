@@ -44,7 +44,8 @@ const llmsEnv = (legacyValue: string | undefined) =>
   );
 
 const defaultLlmsEnv = z.preprocess(
-  (value) => optionalEnvValue(value) ?? legacyLlmsEnv.DEFAULT_LLMS,
+  (value) => optionalEnvValue(value) ?? legacyLlmsEnv.DEFAULT_LLMS ??
+      (process.env.OPENAI_MODEL ? `openai-compatible:${process.env.OPENAI_MODEL}` : undefined),
   z.string().min(1),
 );
 
@@ -156,6 +157,8 @@ const parsedEnv = createEnv({
 
     LLM_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
+    OPENAI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
+    OPENAI_MODEL: z.string().optional(),
     AZURE_API_KEY: z.string().optional(),
     AZURE_RESOURCE_NAME: z.string().optional(),
     AZURE_API_VERSION: z.string().optional(),

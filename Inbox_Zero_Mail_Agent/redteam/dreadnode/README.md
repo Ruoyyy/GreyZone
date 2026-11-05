@@ -14,9 +14,9 @@ scenario. It does not read the Oracle or produce a verified success verdict.
    The local integration was validated against Dreadnode 2.0.46. Node.js and
    the app's installed `tsx` dependency are needed for the MCP subprocess.
 3. Copy `.env.example` to `.env` in this directory, fill in
-   `OPENAI_API_KEY`, and restrict the file with `chmod 600`. The default
-   attacker model is `openai/gpt-4o`; this key is separate from the mail
-   agent's `LLM_API_KEY` in `apps/web/.env`. An exported `OPENAI_API_KEY`
+   `OPENAI_API_KEY` and `OPENAI_MODEL`, and restrict the file with `chmod 600`. The default
+   attacker model is `openai/${OPENAI_MODEL}`; this key is separate from the mail
+   agent's `OPENAI_API_KEY` in `apps/web/.env`. An exported `OPENAI_API_KEY`
    takes precedence over a value in the local `.env` file.
 4. From the mail project root, check the capability:
 

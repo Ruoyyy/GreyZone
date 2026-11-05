@@ -69,12 +69,19 @@ class Settings(StrictModel):
 
 def load_settings(filename: Path, require_credentials=True, scenario_id=None):
     load_dotenv(HERE / ".env", override=False)
-    if not os.getenv("ZAI_API_KEY"):
-        app_key = dotenv_values(APP_ROOT / ".env").get("LLM_API_KEY")
-        if app_key:
-            os.environ["ZAI_API_KEY"] = app_key
+    app_env = dotenv_values(APP_ROOT / ".env")
+    for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
+        if not os.getenv(name) and app_env.get(name):
+            os.environ[name] = app_env[name]
     filename = filename.resolve()
     data = yaml.safe_load(filename.read_text())
+    selected_model = os.getenv("OPENAI_MODEL", "").strip()
+    if require_credentials and not selected_model:
+        raise ValueError("Set OPENAI_MODEL before running the red-team agent")
+    for model_config in data.get("models", {}).values():
+        model_config["model"] = selected_model or "test-model"
+        model_config["base_url"] = os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+        model_config["api_key_env"] = "OPENAI_API_KEY"
     default_scenario = data["campaign"].pop("default_scenario")
     selected = scenario_id or default_scenario
     scenario, objective = load_scenario(selected)

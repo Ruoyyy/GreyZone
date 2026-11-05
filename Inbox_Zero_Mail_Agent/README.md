@@ -42,11 +42,9 @@ LLM configuration — the mail agent needs a model for drafts, rule matching,
 and cold-email screening. Point it at any OpenAI-compatible endpoint:
 
 ```
-LLM_API_KEY=<your-key>
-OPENAI_COMPATIBLE_BASE_URL=https://open.bigmodel.cn/api/paas/v4
-OPENAI_COMPATIBLE_MODEL=glm-5.3-flash
-OPENAI_COMPATIBLE_STRUCTURED_OUTPUTS=false
-DEFAULT_LLMS=openai-compatible:glm-5.3-flash
+OPENAI_API_KEY=<your-key>
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=<model-id>
 ```
 
 The managed mailbox is seeded from `emulate.local.config.yaml` (default

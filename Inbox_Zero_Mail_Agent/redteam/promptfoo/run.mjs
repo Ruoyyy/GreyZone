@@ -6,6 +6,18 @@ import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import YAML from 'yaml';
 
+function configureOpenAIModels(config, env) {
+  if (!env.OPENAI_MODEL?.trim()) throw new Error('Set OPENAI_MODEL before attack generation');
+  const providers = [config.redteam.provider,
+    ...config.redteam.strategies.map((strategy) => strategy.config?.redteamProvider)].filter(Boolean);
+  for (const provider of providers) {
+    provider.id = `openai:chat:${env.OPENAI_MODEL.trim()}`;
+    provider.config = { ...provider.config,
+      apiBaseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com/v1', apiKeyEnvar: 'OPENAI_API_KEY' };
+    delete provider.config.passthrough;
+  }
+}
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const environmentRoot = path.resolve(here, '../..');
 const scenarioRoot = path.join(environmentRoot, 'benchmark', 'scenarios');
@@ -121,14 +133,16 @@ async function main() {
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
-  if (!process.env.ZAI_API_KEY) {
-    try {
-      const appEnv = parseEnv(await readFile(path.join(appRoot, '.env'), 'utf8'));
-      if (appEnv.LLM_API_KEY) process.env.ZAI_API_KEY = appEnv.LLM_API_KEY;
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+  try {
+    const appEnv = parseEnv(await readFile(path.join(appRoot, '.env'), 'utf8'));
+    for (const name of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL']) {
+      if (!process.env[name] && appEnv[name]) process.env[name] = appEnv[name];
     }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
   }
+  configureOpenAIModels(config, process.env);
+  await writeFile(configPath, YAML.stringify(config), { mode: 0o600 });
   const generators = [config.redteam.provider, ...config.redteam.strategies.map((strategy) => strategy.config?.redteamProvider)].filter(Boolean);
   for (const variable of new Set(generators.map((provider) => provider.config?.apiKeyEnvar).filter(Boolean))) {
     if (!process.env[variable]) throw new Error(`${variable} is required for local Promptfoo attack generation`);
