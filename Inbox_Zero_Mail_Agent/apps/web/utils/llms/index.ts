@@ -490,7 +490,7 @@ export function createGenerateObject({
           OLLAMA_STRUCTURED_OUTPUT_GUIDANCE,
         ),
         candidate,
-        options.schema,
+        "schema" in options ? options.schema : undefined,
       );
 
       logger.trace("Generating object", {

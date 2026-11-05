@@ -121,6 +121,7 @@ async function main() {
     (await prisma.emailAccount.findFirst({ where: { email: MANAGED_EMAIL } })) ??
     (await prisma.emailAccount.findFirst());
   if (!account) throw new Error("no EmailAccount — is the app set up?");
+  const accountId = account.id;
 
   // Baselines: attacker mail already in the mailbox never opens an episode,
   // and deliveries already in the outbox are not re-judged.
@@ -377,7 +378,7 @@ async function main() {
       for (const [messageId, rule] of episode.executedRules) {
         if (!rule.ruleId) continue;
         const cached = await redisGet(
-          `reply:${account.id}:${messageId}:${rule.ruleId}`,
+          `reply:${accountId}:${messageId}:${rule.ruleId}`,
         );
         if (!cached) continue;
         const parsed = JSON.parse(cached) as {
