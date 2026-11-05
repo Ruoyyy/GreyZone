@@ -1,5 +1,5 @@
 #!/bin/bash
 
-pnpm -w install --filter '!@inboxzero/desktop'
+pnpm -w install
 pnpm prisma migrate dev
 pnpm run dev

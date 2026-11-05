@@ -437,7 +437,6 @@ function isFullSuiteFile({ repoPath, appPath }) {
     repoPath === "apps/web/instrumentation.ts" ||
     repoPath === "apps/web/package.json" ||
     repoPath === "pnpm-lock.yaml" ||
-    repoPath === "scripts/pnpm-install-without-desktop.sh" ||
     repoPath.startsWith("apps/web/next.config.") ||
     repoPath === "apps/web/__tests__/playwright/run-emulated-suite.mjs" ||
     (repoPath.startsWith("apps/web/utils/playwright/") &&
