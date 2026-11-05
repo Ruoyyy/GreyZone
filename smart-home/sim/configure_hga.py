@@ -22,23 +22,18 @@ HA_NAME = "Admin"
 HA_USERNAME = "admin"
 HA_PASSWORD = "admin_password"
 
-# Model providers, keyed by the name shown in HA. The chat provider below is an
-# EXAMPLE (DeepSeek via its OpenAI-compatible endpoint) — replace it with
-# whatever you have. The name matches the provider already in the running
-# instance so a re-run reconfigures it in place instead of adding a twin. The
-# API key comes from DEEPSEEK_API_KEY in the environment (sim/secrets.env);
-# keep real keys out of this file. `provider_type` is one of:
-#   openai_compatible  -> deployment "edge", settings: base_url + api_key
-#   ollama             -> deployment "edge", settings: base_url
-#   openai | gemini | anthropic -> deployment "cloud", settings: api_key
-# Then point the FEATURES below at this provider's name and a model it serves.
+# OpenAI-compatible provider shared by chat, summary and image analysis.
+# Load sim/secrets.env before running this setup script.
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "").strip()
+if not os.environ.get("OPENAI_API_KEY") or not OPENAI_MODEL:
+    raise SystemExit("Set OPENAI_API_KEY and OPENAI_MODEL before configure_hga.py")
 PROVIDERS = {
-    "DeepSeek": {
+    "OpenAI": {
         "deployment": "edge",  # OpenAI Compatible is listed under Edge
         "provider_type": "openai_compatible",
         "settings": {
-            "base_url": "https://api.deepseek.com",
-            "api_key": os.environ.get("DEEPSEEK_API_KEY", "sk-REPLACE_ME"),
+            "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            "api_key": os.environ["OPENAI_API_KEY"],
             "openai_compatible_embedding_dims": 768,
         },
     },
@@ -47,30 +42,30 @@ PROVIDERS = {
 # Features: provider name (a PROVIDERS key) + a model that provider serves.
 # None = feature disabled. "reasoning" (Conversation only): "default" sends no
 # thinking parameters. Set model_name to a model your provider actually serves
-# (the examples below are DeepSeek's).
+# (the selected model must support these features).
 FEATURES = {
     "conversation": {
-        "provider": "DeepSeek",
-        "model_name": "deepseek-chat",
+        "provider": "OpenAI",
+        "model_name": OPENAI_MODEL,
         "temperature": 0.2,
         "reasoning": "default",
     },
     "conversation_summary": {
-        "provider": "DeepSeek",
-        "model_name": "deepseek-chat",
+        "provider": "OpenAI",
+        "model_name": OPENAI_MODEL,
         "temperature": 0.2,
     },
-    # Real VLM: DeepSeek reads the actual camera image (the Test Camera pulls
+    # Real VLM: the selected model reads the actual camera image (the Test Camera pulls
     # its JPG from mock-vlm's /image.jpg). The injection surface is now the
     # image content itself — swap sim/images/current.jpg. mock-vlm stays up only
     # as the image host; its fake-caption endpoint is no longer used.
     "camera_image_analysis": {
-        "provider": "DeepSeek",
-        "model_name": "deepseek-chat",
+        "provider": "OpenAI",
+        "model_name": OPENAI_MODEL,
         "temperature": 0.2,
     },
     # Enable by pointing at an embedding-capable provider; off here because the
-    # example chat provider (DeepSeek) has no embeddings endpoint.
+    # embedding setup is independent of the selected chat model.
     "embedding": None,
 }
 
@@ -142,8 +137,9 @@ if not pathlib.Path("/.dockerenv").exists():
     # Forward the provider API key from the host environment (sim/secrets.env).
     here = pathlib.Path(__file__).resolve().parent
     cmd = ["docker", "compose", "exec", "-T"]
-    if os.environ.get("DEEPSEEK_API_KEY"):
-        cmd += ["-e", "DEEPSEEK_API_KEY"]
+    for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
+        if os.environ.get(name):
+            cmd += ["-e", name]
     cmd += ["homeassistant", "python3", "-"]
     with open(__file__, "rb") as src:
         sys.exit(subprocess.call(cmd, stdin=src, cwd=here))

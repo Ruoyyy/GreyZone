@@ -92,16 +92,14 @@ Wait until `http://localhost:8123` responds.
 
 ### 2. Configure the agent (one shot)
 
-Edit the `CONFIG` block at the top of `sim/configure_hga.py` — set your chat
-provider's `provider_type`, `base_url`/`api_key`, and `model_name` (the block ships
-with a DeepSeek example and lists the other `provider_type` options inline). The
-example reads its API key from the `DEEPSEEK_API_KEY` environment variable, so keep
-the real key in `sim/secrets.env` (next to `HA_TOKEN`) and source that file first.
-Then:
+Copy `sim/secrets.env.example` to `sim/secrets.env`. Set `OPENAI_API_KEY`,
+`OPENAI_MODEL` and `HA_TOKEN`; `OPENAI_BASE_URL` defaults to `https://api.openai.com/v1`.
+The selected model must support tool calling and image input. Source this file,
+then run the idempotent setup script:
 
 ```bash
 cd sim
-set -a; . ./secrets.env; set +a    # load DEEPSEEK_API_KEY + HA_TOKEN into the env
+set -a; . ./secrets.env; set +a    # load OPENAI_API_KEY + HA_TOKEN into the env
 python3 configure_hga.py
 ```
 
