@@ -68,14 +68,12 @@ cd sim
 cp .env.example .env
 ```
 
-`.env` is only needed to run the agent(s). Fill in one LLM — an Anthropic key, or
-any Anthropic-compatible endpoint. The example is set up for DeepSeek:
+Claude Code uses its native API. Fill in its credential; model selection can
+use the CLI default or the optional native model override:
 
-```
-ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
-ANTHROPIC_AUTH_TOKEN=<your-api-key>
-ANTHROPIC_MODEL=deepseek-flash
-ANTHROPIC_SMALL_FAST_MODEL=deepseek-flash
+```sh
+ANTHROPIC_API_KEY=<your-key>
+# ANTHROPIC_MODEL=<native-model-id>
 ```
 
 `.env` is git-ignored. The simulated world needs no keys (the `mcp` service uses
