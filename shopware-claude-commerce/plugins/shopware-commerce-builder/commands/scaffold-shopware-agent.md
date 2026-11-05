@@ -166,7 +166,7 @@ true: `storefront/` (`api/`, `data/`, `scripts/`, `web/` when a UI), `merchant/`
 `requirements.txt`, `requirements-dev.txt`, `pytest.ini`, `ruff.toml`, `package.json`, and the
 `docker/` directory when the local lane is wanted. The tests and their replay fixtures come along
 (`storefront/api/tests/`, `merchant/api/tests/`, `shopware_common/tests/`), so the suite stays
-offline. Drop `linkedin/`, `docs/media/`, and the screenshots. Nothing under `vendor/` or in a
+offline. Drop `linkedin/` and the screenshots. Nothing under `vendor/` or in a
 blueprint package is edited; Shopware-specific code lives in `storefront/`, `merchant/`,
 `shopware_common/`, and `docker/`.
 
