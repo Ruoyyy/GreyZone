@@ -1,6 +1,6 @@
 # Commonly — self-contained local stack.
 #
-#   cp docker/stack/.env.example .env     # fill MODEL_BASE_URL / MODEL_API_KEY / MODEL_NAME
+#   cp docker/stack/.env.example .env     # fill OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL
 #   docker compose up -d --build          # .env sets COMPOSE_FILE to this file
 #
 # First start on empty volumes seeds admin + alice and the pod "Pod" (see
@@ -95,9 +95,9 @@ services:
         export LITELLM_MASTER_KEY="$$(cat /run/core/litellm_master_key)"
         exec litellm --config /app/config.yaml --port 4000
     environment:
-      MODEL_BASE_URL: ${MODEL_BASE_URL:?Set MODEL_BASE_URL in .env (an OpenAI-compatible base URL)}
-      MODEL_API_KEY: ${MODEL_API_KEY:?Set MODEL_API_KEY in .env}
-      LITELLM_UPSTREAM_MODEL: openai/${MODEL_NAME:?Set MODEL_NAME in .env}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env}
+      LITELLM_UPSTREAM_MODEL: openai/${OPENAI_MODEL:?Set OPENAI_MODEL in .env}
     volumes:
       - ./docker/stack/litellm.yaml:/app/config.yaml:ro
       - core-secrets:/run/core:ro

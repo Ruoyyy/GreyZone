@@ -21,9 +21,9 @@ cp docker/stack/.env.example .env
 Fill in three values in `.env`:
 
 ```sh
-MODEL_BASE_URL=https://api.openai.com/v1   # any OpenAI-compatible endpoint
-MODEL_API_KEY=sk-...
-MODEL_NAME=gpt-4o-mini
+OPENAI_API_KEY=<your-key>
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=<model-id>
 ```
 
 Every agent uses this one model. `.env` is gitignored; keep your key out of the
