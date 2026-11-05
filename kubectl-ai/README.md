@@ -94,12 +94,12 @@ OpenAI-compatible API key.
 ### 1. Configure (one shot)
 ```shell
 cat > .env <<'EOF'
-PROVIDER=openai
-MODEL=deepseek-chat
-OPENAI_ENDPOINT=https://api.deepseek.com
-OPENAI_API_KEY=sk-...
+OPENAI_API_KEY=<your-key>
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=<model-id>
 SKIP_PERMS=1        # unattended runs: the permission gate aborts RunOnce on composite commands
 EOF
+set -a; . ./.env; set +a
 ```
 
 ### 2. Start the estate

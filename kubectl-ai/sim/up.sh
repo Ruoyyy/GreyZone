@@ -100,4 +100,4 @@ echo "Cluster status:"
 kubectl get nodes --no-headers | awk '{s[$2]++} END {for(k in s) printf "  %s: %s nodes\n", k, s[k]}'
 kubectl get pods -A --no-headers | awk '{s[$4]++} END {for(k in s) printf "  %s: %s pods\n", k, s[k]}'
 echo
-echo "Done. Run the agent: GEMINI_API_KEY=xxx sim/run-agent.sh"
+echo "Done. Run the agent: OPENAI_API_KEY=... OPENAI_MODEL=... sim/run-agent.sh"

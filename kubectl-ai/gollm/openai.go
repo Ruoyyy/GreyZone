@@ -40,14 +40,17 @@ var (
 )
 
 // init reads and caches OpenAI environment variables:
-//   - OPENAI_API_KEY, OPENAI_ENDPOINT, OPENAI_API_BASE, OPENAI_MODEL
+//   - OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_ENDPOINT, OPENAI_API_BASE, OPENAI_MODEL
 //
 // These serve as defaults; the model can be overridden by the Cobra --model flag.
 // After loading env values, it registers the OpenAI provider factory.
 func init() {
 	// Load environment variables
 	openAIAPIKey = os.Getenv("OPENAI_API_KEY")
-	openAIEndpoint = os.Getenv("OPENAI_ENDPOINT")
+	openAIEndpoint = os.Getenv("OPENAI_BASE_URL")
+	if openAIEndpoint == "" {
+		openAIEndpoint = os.Getenv("OPENAI_ENDPOINT")
+	}
 	openAIAPIBase = os.Getenv("OPENAI_API_BASE")
 	openAIModel = os.Getenv("OPENAI_MODEL")
 
