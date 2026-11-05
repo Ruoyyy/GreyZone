@@ -174,7 +174,7 @@ describe('the cutoff is measured before it becomes unmeasurable', () => {
 
   it('a MISSING row is unknown (expand); a NULL cutoff in a written row is knowledge', () => {
     // The sentence this test used to pin said the opposite — "never as
-    // unknown" — and the ruling (docs/design/threading-surface-ruling.md)
+    // unknown" — and the ruling (docs/upstream/design/threading-surface-ruling.md)
     // rejected it: collapsed hides history, so unknown must never resolve there.
     expect(SCRIPT).not.toMatch(/never as "unknown, assume everything is pre-cutoff"/);
     expect(SCRIPT).toMatch(/A MISSING ledger row means "cutoff unknown"/);

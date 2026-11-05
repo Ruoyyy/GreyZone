@@ -82,7 +82,7 @@ Commonly speaks to developers building with AI agents. The voice is **plainly te
 
 The pre-Signal values below are historical. For current screens, use
 [Identity: Signal](#identity-signal-chosen-2026-09-03), the approved artboard,
-and [the recovery boundary](../../docs/design/signal-recovery-2026-09-07.md).
+and [the recovery boundary](../../docs/upstream/design/signal-recovery-2026-09-07.md).
 In particular, the open-decision primary option is cobalt; ordinary Activity
 Reply/Open/Mark handled controls are bordered secondary controls.
 
@@ -207,7 +207,7 @@ entrance and scroll-reveal animation is allowed within these limits:
 - **Style**: outlined / line icons at `20–24px`, `1.5–2px` stroke weight (MUI default outlined). Filled variants are used for **active states only** (e.g. starred pod, selected tab).
 - **No emoji in chrome.** Emoji are reserved for user-typed content (reactions, message body). The marketplace and pods do not use emoji as identifiers.
 - **No unicode glyph icons** (no `→`, `✓`, `★` as decoration). Real SVG/icon-font icons only.
-- **Categories are glyphs; only the deciding act is a word** (Sam, 2026-09-11). Ask kinds, modes, statuses, platforms and outcomes render as 16px marks (`frontend/src/v2/icons/glyphs.tsx`); secondary acts are 32px icon buttons with the word in `title` and the accessible name; the primary act keeps its label. Full rule and the measurement behind it: `docs/design/signal-identity.md` §4 *Marks and acts*.
+- **Categories are glyphs; only the deciding act is a word** (Sam, 2026-09-11). Ask kinds, modes, statuses, platforms and outcomes render as 16px marks (`frontend/src/v2/icons/glyphs.tsx`); secondary acts are 32px icon buttons with the word in `title` and the accessible name; the primary act keeps its label. Full rule and the measurement behind it: `docs/upstream/design/signal-identity.md` §4 *Marks and acts*.
 - **Brand mark**: `assets/commonly-mark.svg` — a stylized C arc with three centered dots. Uses `currentColor` so it inherits the brand blue at 28×28 in the rail; switches to white on the marketing dark hero. Full logo PNG (`assets/commonly-logo.png`) is reserved for marketing, README, and login.
 - **Avatar fallbacks** are uppercase initials on a role-tinted circle — the "icon" of every user/agent.
 
@@ -225,7 +225,7 @@ entrance and scroll-reveal animation is allowed within these limits:
 
 Sam chose this on the Shell Parity canvas from three directions (Studio, Workshop, Signal). It is one system at two volumes, never a hybrid:
 
-- **Cobalt `#1d3fd1` is the one colour.** On marketing surfaces (landing, connect, create account) it is used as **blocks**: the hero band, the wordmark underlines. Inside the app it is only ever a **mark**: the live dot, the agent's name in mono, the one card that needs you (2px cobalt ring), a link. Ordinary filled actions such as Send are **ink** `#101828`. The primary option of an open decision card is the explicit **cobalt** exception; alternative options and Activity Reply/Open/Mark handled controls are bordered. Other… is cobalt text. Preserve the agent’s option order in the thread and Activity. Keep the first option cobalt and show plain “Recommended” text on whichever option carries `recommended`, including its accessible name; an unflagged option has no such label. Do not sort or require recommended-first authoring. See [Signal §1/§3](../../docs/design/signal-identity.md) and the [2026-09-07 recovery](../../docs/design/signal-recovery-2026-09-07.md).
+- **Cobalt `#1d3fd1` is the one colour.** On marketing surfaces (landing, connect, create account) it is used as **blocks**: the hero band, the wordmark underlines. Inside the app it is only ever a **mark**: the live dot, the agent's name in mono, the one card that needs you (2px cobalt ring), a link. Ordinary filled actions such as Send are **ink** `#101828`. The primary option of an open decision card is the explicit **cobalt** exception; alternative options and Activity Reply/Open/Mark handled controls are bordered. Other… is cobalt text. Preserve the agent’s option order in the thread and Activity. Keep the first option cobalt and show plain “Recommended” text on whichever option carries `recommended`, including its accessible name; an unflagged option has no such label. Do not sort or require recommended-first authoring. See [Signal §1/§3](../../docs/upstream/design/signal-identity.md) and the [2026-09-07 recovery](../../docs/upstream/design/signal-recovery-2026-09-07.md).
 - **Three faces, one job each.** Bricolage Grotesque for display (700/800), IBM Plex Sans for body and controls (14/20), IBM Plex Mono for meta (timestamps, ids, status, lowercase labels). Self-hosted via `@fontsource`.
 - **Hard edges, no shadows.** Radius 4 for controls and rows, 6 for cards, panels and the content card. `--v2-shadow-pending` is `none`; a pending card is a 2px cobalt ring instead. Avatars and marks are 4px squares, not circles.
 - **Grey ramp (complete):** ground `#eef0f4` · border `#d0d5dd` · divider `#e4e7ec` · tint `#f2f4f7` · panel `#f9fafb` · muted `#667085` · secondary `#475467` · placeholder `#98a2b3` · ink `#101828`.
@@ -233,4 +233,4 @@ Sam chose this on the Shell Parity canvas from three directions (Studio, Worksho
 
 The canvas is the spec of record for every screen: https://claude.ai/code/artifact/3c07344a-86f2-4296-b3f0-a49a0b451503 (pages: Workspace in C · Front door · Directions · Coverage). A screen is done when it matches its artboard at 1200 and 390 in a real browser.
 
-**The full system — state grammar, component grammar with exact values, copy rules, the process that made it land, and how to add a screen — is [`docs/design/signal-identity.md`](../../docs/design/signal-identity.md).** This section is the short form; when the two disagree, fix both in the same PR.
+**The full system — state grammar, component grammar with exact values, copy rules, the process that made it land, and how to add a screen — is [`docs/upstream/design/signal-identity.md`](../../docs/upstream/design/signal-identity.md).** This section is the short form; when the two disagree, fix both in the same PR.

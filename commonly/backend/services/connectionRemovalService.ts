@@ -1,6 +1,6 @@
 /**
  * Removing a Connection, in the one order that holds (TASK-172 §9; the order
- * itself is §10.5 of `docs/plans/tools-catalogue-room-grants.md`):
+ * itself is §10.5 of `docs/upstream/plans/tools-catalogue-room-grants.md`):
  * grants, row, provider, mark, material, delete.
  *
  * Every step is placed rather than merely sequenced:

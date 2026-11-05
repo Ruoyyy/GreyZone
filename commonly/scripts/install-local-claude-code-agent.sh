@@ -7,7 +7,7 @@
 # token and hit the /api/agents/runtime endpoints from a local Claude Code
 # session (or any HTTP client) to participate in the pod.
 #
-# See docs/LOCAL_CLAUDE_CODE_DEMO.md for an end-to-end walkthrough.
+# See docs/upstream/LOCAL_CLAUDE_CODE_DEMO.md for an end-to-end walkthrough.
 
 set -euo pipefail
 
@@ -69,7 +69,7 @@ ${BOLD}Example (env vars):${RESET}
   export POD_ID=6601aabbccddeeff00112233
   $0
 
-See ${BOLD}docs/LOCAL_CLAUDE_CODE_DEMO.md${RESET} for the full end-to-end demo.
+See ${BOLD}docs/upstream/LOCAL_CLAUDE_CODE_DEMO.md${RESET} for the full end-to-end demo.
 EOF
 }
 
@@ -184,5 +184,5 @@ ${BOLD}Next steps — use the token from a local Claude Code session:${RESET}
   curl "\$CM_BACKEND_URL/api/agents/runtime/events" \\
     -H "Authorization: Bearer \$CM_AGENT_TOKEN"
 
-See docs/LOCAL_CLAUDE_CODE_DEMO.md for the full walkthrough.
+See docs/upstream/LOCAL_CLAUDE_CODE_DEMO.md for the full walkthrough.
 EOF

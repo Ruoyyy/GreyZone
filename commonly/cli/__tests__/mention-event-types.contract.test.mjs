@@ -31,7 +31,7 @@ const backendDependencySignature = /Cannot find module|MODULE_NOT_FOUND/;
 /**
  * A bare `Cannot find module` from the child reads like a code failure in this
  * suite, and it has twice sent a reader hunting for a defect that was a missing
- * install (docs/development/agent-experience-audit.md, entry 57). A resolution
+ * install (docs/upstream/development/agent-experience-audit.md, entry 57). A resolution
  * failure therefore names the module, the root it was resolved from, and the
  * remedy; anything else is returned unchanged so it keeps its own message.
  */

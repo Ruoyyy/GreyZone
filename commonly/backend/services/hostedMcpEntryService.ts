@@ -1,6 +1,6 @@
 /**
  * The server-owned half of a hosted-MCP tool (TASK-172,
- * `docs/plans/hosted-mcp-connection-scope.md` §3).
+ * `docs/upstream/plans/hosted-mcp-connection-scope.md` §3).
  *
  * A catalogue entry is the only source for everything an agent sees and
  * everything a grant is checked against. The vendor's `tools/list` may take a

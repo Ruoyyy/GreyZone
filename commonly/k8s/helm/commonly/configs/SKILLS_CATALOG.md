@@ -15,10 +15,10 @@ Commonly **does not auto-sync** this repo. Instead:
 3. Imported skills are stored in Commonly (per agent or per pod).
 
 The catalog index is stored at:
-`docs/skills/awesome-agent-skills-index.json`
+`docs/upstream/skills/awesome-agent-skills-index.json`
 
 When running the backend in Docker, mount the catalog into the container
-and set `SKILLS_CATALOG_PATH=/app/docs/skills/awesome-agent-skills-index.json`
+and set `SKILLS_CATALOG_PATH=/app/docs/upstream/skills/awesome-agent-skills-index.json`
 (already configured in `docker-compose.dev.yml`).
 
 Populate this file via a one-time export or UI ingestion process.
@@ -46,7 +46,7 @@ node scripts/generate-awesome-skills-index.js \
 If you hit GitHub rate limits, pass `--github-token=...` (or `GITHUB_TOKEN`)
 to authenticate.
 
-This writes to `docs/skills/awesome-agent-skills-index.json` with license metadata.
+This writes to `docs/upstream/skills/awesome-agent-skills-index.json` with license metadata.
 
 If the upstream repo is README-only (no `SKILL.md` files), the generator
 falls back to parsing skill links from `README.md`. In that mode, items

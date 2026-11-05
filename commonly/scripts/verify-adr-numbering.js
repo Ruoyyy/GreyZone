@@ -3,7 +3,7 @@
  * ADR numbering guard.
  *
  * An ADR number is a name two documents can claim at once, and nothing in the
- * toolchain notices. #1295 and #1268 both added `docs/adr/ADR-025-*.md` under
+ * toolchain notices. #1295 and #1268 both added `docs/upstream/adr/ADR-025-*.md` under
  * different slugs: no textual conflict, `merge-tree` clean, every check green,
  * and main carried two ADR-025s the moment the second one merged. The same
  * thing had already happened at ADR-018 (`agent-attention-claims` and
@@ -14,7 +14,7 @@
  * third one go red.
  *
  * Checks, against the working tree:
- *   1. every file in docs/adr/ is named ADR-NNN-slug.md
+ *   1. every file in docs/upstream/adr/ is named ADR-NNN-slug.md
  *   2. no two files claim the same NNN
  *   3. the H1 title's number matches the filename's number
  *
@@ -31,7 +31,7 @@ const path = require('path');
 const dirArg = process.argv.indexOf('--dir');
 const DIR = dirArg !== -1 && process.argv[dirArg + 1]
   ? path.resolve(process.argv[dirArg + 1])
-  : path.join(__dirname, '..', 'docs', 'adr');
+  : path.join(__dirname, '..', 'docs', 'upstream', 'adr');
 const FILENAME = /^ADR-(\d{3})-[a-z0-9-]+\.md$/;
 // Titles use both "ADR-018 — x" and "ADR-018: x". Match the number only.
 const H1 = /^#\s+ADR-(\d{3})\b/m;
@@ -73,7 +73,7 @@ for (const [num, dupes] of [...byNumber].sort()) {
 }
 
 if (errors.length) {
-  for (const e of errors) console.error(`::error file=docs/adr::${e}`);
+  for (const e of errors) console.error(`::error file=docs/upstream/adr::${e}`);
   console.error(`\n${errors.length} ADR numbering problem(s) in ${files.length} files.`);
   process.exit(1);
 }

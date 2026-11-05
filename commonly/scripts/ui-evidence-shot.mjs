@@ -18,7 +18,7 @@
  * `<out>.page.png` full-page shot are still written, so the scoped shot keeps its
  * context.
  *
- * See docs/runbooks/local-ui-render-harness.md for the stack this expects.
+ * See docs/upstream/runbooks/local-ui-render-harness.md for the stack this expects.
  *
  * Usage:
  *   node scripts/ui-evidence-shot.mjs --route /v2/pods/team/<podId> --out /tmp/after.png \

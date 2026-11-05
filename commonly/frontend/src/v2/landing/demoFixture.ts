@@ -1,7 +1,7 @@
 /**
  * Fixture data for the landing hero demo (TASK-147).
  *
- * This is the sample workspace from `docs/design/landing-demo/Demo.dc.html`
+ * This is the sample workspace from `docs/upstream/design/landing-demo/Demo.dc.html`
  * (`#1841`), transcribed. Every name, count, time and PR number here is
  * invented and must stay obviously sample — the demo says so in its own
  * footer line ("sample workspace · replies are scripted"), and the hero

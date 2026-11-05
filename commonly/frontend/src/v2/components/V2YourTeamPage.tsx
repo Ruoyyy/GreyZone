@@ -7,7 +7,7 @@ import V2Avatar from './V2Avatar';
 
 /**
  * Your Team — direction C, built to `YourTeam.dc.html` (canvas: Workspace in C)
- * under the Signal identity (`docs/design/signal-identity.md`).
+ * under the Signal identity (`docs/upstream/design/signal-identity.md`).
  *
  * One card per agent in a three-column grid. The card is: a 40px square avatar,
  * with state carried by the status line and card ring, the

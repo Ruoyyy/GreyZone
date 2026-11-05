@@ -3998,7 +3998,7 @@ describe('TASK-167 row D — Use cases, Architecture, the proof panel and Pricin
   const landingTsx = read('../landing/V2LandingPage.tsx');
   const repoRoot = path.resolve(__dirname, '..', '..', '..', '..');
 
-  test("the page's ADR count equals the ADR files in docs/adr", () => {
+  test("the page's ADR count equals the ADR files in docs/upstream/adr", () => {
     // docs/ sits outside the frontend image's build context, so the page cannot
     // count at build time and the number is a literal in the TSX. This test is
     // the only thing that notices when the two disagree — and it fails in the
@@ -4006,7 +4006,7 @@ describe('TASK-167 row D — Use cases, Architecture, the proof panel and Pricin
     // carries no path filter, which is what makes that true).
     const count = Number(/^const ADR_COUNT = (\d+);$/m.exec(landingTsx)?.[1]);
     expect(Number.isInteger(count)).toBe(true);
-    const files = fs.readdirSync(path.join(repoRoot, 'docs/adr'))
+    const files = fs.readdirSync(path.join(repoRoot, 'docs/upstream/adr'))
       .filter((f) => /^ADR-\d+.*\.md$/.test(f));
     expect(files).toHaveLength(count);
   });

@@ -1,6 +1,6 @@
 name: Review Checklist Numbering Guard
 
-# The rules in docs/development/review-checklist.md are numbered, and the
+# The rules in docs/upstream/development/review-checklist.md are numbered, and the
 # numbers are cited BY NUMBER from outside the file — the file's own header
 # names three (ADR-028 rule 23, ADR-019 rule 9, REVIEW.md §7) and the rules
 # cite each other nine more times. A number is a name, and nothing mechanical
@@ -59,8 +59,8 @@ jobs:
 
           args=()
           if git rev-parse --verify -q HEAD^ >/dev/null; then
-            if git cat-file -e "HEAD^:docs/development/review-checklist.md" 2>/dev/null; then
-              git show "HEAD^:docs/development/review-checklist.md" > /tmp/prev.md
+            if git cat-file -e "HEAD^:docs/upstream/development/review-checklist.md" 2>/dev/null; then
+              git show "HEAD^:docs/upstream/development/review-checklist.md" > /tmp/prev.md
               args+=(--previous /tmp/prev.md)
             else
               echo "· the file did not exist in the previous commit; nothing to compare"
@@ -69,7 +69,7 @@ jobs:
             echo "· no parent commit on this ref; nothing to compare"
           fi
 
-          node scripts/verify-numbered-rules.js --file docs/development/review-checklist.md "${args[@]}"
+          node scripts/verify-numbered-rules.js --file docs/upstream/development/review-checklist.md "${args[@]}"
 
   review-checklist:
     name: Rule numbers are unique, cited, and stable
@@ -101,12 +101,12 @@ jobs:
           fi
           echo "· merge base $base; main is $(git rev-parse --short FETCH_HEAD)"
 
-          if ! git cat-file -e "FETCH_HEAD:docs/development/review-checklist.md" 2>/dev/null; then
+          if ! git cat-file -e "FETCH_HEAD:docs/upstream/development/review-checklist.md" 2>/dev/null; then
             echo "· main does not carry the file yet; only the in-file checks apply"
-            node scripts/verify-numbered-rules.js --file docs/development/review-checklist.md
+            node scripts/verify-numbered-rules.js --file docs/upstream/development/review-checklist.md
             exit 0
           fi
-          git show "FETCH_HEAD:docs/development/review-checklist.md" > /tmp/main.md
+          git show "FETCH_HEAD:docs/upstream/development/review-checklist.md" > /tmp/main.md
 
           # The checker itself has to be resolved the same way as the file, and
           # for the same reason adr-numbering-guard.yml does it (#1504): on a
@@ -125,8 +125,8 @@ jobs:
           # --file is passed explicitly rather than defaulted: the checker is
           # loaded from a temp dir, and a default resolved from ITS location
           # rather than the checkout is a bug this guard shipped with for one
-          # run (ENOENT /tmp/docs/development/review-checklist.md, run
+          # run (ENOENT /tmp/docs/upstream/development/review-checklist.md, run
           # 36137344359).
           node "$bin/verify-numbered-rules.js" \
-            --file docs/development/review-checklist.md \
+            --file docs/upstream/development/review-checklist.md \
             --previous /tmp/main.md

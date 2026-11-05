@@ -1,6 +1,6 @@
 /**
  * Intake for a hosted-MCP Connection (TASK-172, build-order step 3;
- * `docs/plans/hosted-mcp-connection-scope.md` §4).
+ * `docs/upstream/plans/hosted-mcp-connection-scope.md` §4).
  *
  * The order is fixed by the ruling: a pre-registered client where the vendor
  * requires one, then a Client ID Metadata Document, then Dynamic Client

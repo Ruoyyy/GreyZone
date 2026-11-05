@@ -338,7 +338,7 @@ const IntegrationSchema = new Schema<IIntegration>(
         expiresAt: Date,
       },
       // `hosted-mcp` — a per-person Connection to a vendor-hosted remote MCP
-      // server (TASK-172, docs/plans/hosted-mcp-connection-scope.md §2).
+      // server (TASK-172, docs/upstream/plans/hosted-mcp-connection-scope.md §2).
       // Every key is declared because `config` is a STRICT subdocument: an
       // undeclared `$set` is dropped in silence (see webhookUrlRef above), and
       // here the silence would be a credential reference that the row never

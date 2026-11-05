@@ -1,6 +1,6 @@
 /**
  * The landing's four feature rows show the README's frames 2-5 (Activity, Your
- * team, Connectors, Bring your own agent), per docs/design/landing-demo/
+ * team, Connectors, Bring your own agent), per docs/upstream/design/landing-demo/
  * Landing.dc.html. The frontend's build context is `frontend/` alone, so the
  * page cannot import from docs/ and carries copies. A copy drifts from its
  * source the moment either side is re-rendered, so each copy is pinned to its
@@ -16,7 +16,7 @@ import path from 'path';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
 const LANDING_ASSETS = path.join(REPO_ROOT, 'frontend/src/assets/landing');
-const README_FRAMES = path.join(REPO_ROOT, 'docs/assets/readme');
+const README_FRAMES = path.join(REPO_ROOT, 'docs/upstream/assets/readme');
 const PAGE = fs.readFileSync(path.join(__dirname, '..', 'V2LandingPage.tsx'), 'utf8');
 
 const FRAMES: Array<[landing: string, readme: string]> = [

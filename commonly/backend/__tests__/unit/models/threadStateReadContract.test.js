@@ -317,7 +317,7 @@ describe('unknown resolves to expand, never to collapse', () => {
 // reader has to reconstruct two migrations to find that out.
 //
 // The reasoning it carried survives where it is still true: in
-// docs/design/threading-surface-ruling.md, and in the three-state cutoff
+// docs/upstream/design/threading-surface-ruling.md, and in the three-state cutoff
 // comments on readThreadingCutoff and effectiveStateForPod.
 
 describe('a read failure degrades toward EXPAND, never toward collapse', () => {

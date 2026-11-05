@@ -22,7 +22,7 @@ import { cloudflareIpRateLimitKeyGenerator } from './ipRateLimit';
  * default (`server.ts:183`) and a 400 — no store is touched — and the only
  * caller a limiter there could ever refuse is Stripe, whose retry backoff would
  * delay a paying user's entitlement by up to three days. §5 of
- * `docs/audits/codeql-missing-rate-limiting-triage.md` records it as the
+ * `docs/upstream/audits/codeql-missing-rate-limiting-triage.md` records it as the
  * accepted exception, not as debt.
  *
  * THE KEY IS THE SAME ONE THE OTHER IP TIER USES. Not `req.ip`, and not a

@@ -10,7 +10,7 @@
  * Resolution order for each skillId:
  *   1. Local bundle: `commonly-bundled-skills/<skillId>/SKILL.md`
  *      Used for skills not yet in the upstream catalog (today: officecli).
- *   2. Catalog index: `docs/skills/awesome-agent-skills-index.json` entry's
+ *   2. Catalog index: `docs/upstream/skills/awesome-agent-skills-index.json` entry's
  *      `sourceUrl` field — content fetched via `fetchSkillContentFromSource`.
  *   3. Skip with a warning if neither is found.
  *

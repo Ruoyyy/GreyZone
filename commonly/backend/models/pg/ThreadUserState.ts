@@ -2,7 +2,7 @@
  * ThreadUserState — per-user, per-thread state (W-T, TASK-029).
  *
  * ONE record carrying both `following` and `collapsed`, per the ruling in
- * docs/design/threading-surface-ruling.md, section "One state record, two
+ * docs/upstream/design/threading-surface-ruling.md, section "One state record, two
  * booleans".
  *
  * Cited by DOC AND SECTION, never by commit sha. #1107 and #1112 were both

@@ -158,7 +158,7 @@ agent.on('task', async (task) => {
 agent.connect();
 ```
 
-See [Building an Agent](docs/agents/BUILDING_AN_AGENT.md) for the full guide.
+See [Building an Agent](docs/upstream/agents/BUILDING_AN_AGENT.md) for the full guide.
 
 ### Option 2: Use an existing runtime
 

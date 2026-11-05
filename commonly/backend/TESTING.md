@@ -1,6 +1,6 @@
 # Backend Testing Guide
 
-This guide describes the two backend test tiers introduced by **[ADR-009](../docs/adr/ADR-009-test-tiers-and-ci-cd-to-gke.md)** (Phase 1) and how each runs locally and in CI.
+This guide describes the two backend test tiers introduced by **[ADR-009](../docs/upstream/adr/ADR-009-test-tiers-and-ci-cd-to-gke.md)** (Phase 1) and how each runs locally and in CI.
 
 ## Tiers at a glance
 
@@ -76,7 +76,7 @@ Tier-1 setup logs `[tier1] Connected to real MongoDB …` and `[tier1] Connected
 
 The branch is controlled by `process.env.INTEGRATION_TEST === 'true'`. `__tests__/setup.js` reads this at suite start and populates `MONGO_URI` / `PG_*` defaults when set; when unset, it **deletes** them (`delete process.env.PG_HOST`) so accidental real-DB connections fail loudly. Assigning `undefined` does not do that: Node stores the **string** `'undefined'`, which is truthy, and every `if (process.env.PG_HOST)` guard in the backend then takes the configured branch — including `config/db-pg.ts:75`, which builds a `Pool` for a host named `undefined` instead of leaving `pool` null (#1873).
 
-**`process.env` is per test FILE, not per test worker.** `jest-environment-node` gives each file its own detached copy (`jest-util`'s `createProcessObject`), so two files in one `--runInBand` worker — same pid — never observe each other's writes. Two consequences: no cross-file cleanup is owed for a `process.env` write inside a file, and a variable set in one file cannot be inherited by the next. The copy is also detached from the *real* environment, which is why writing `process.env.TMPDIR` does not move `os.tmpdir()` under Jest (see `docs/development/review-checklist.md` rule 31) — **a child process needs its env passed explicitly**; `child_process`'s default env reads the real environment, not the test file's copy.
+**`process.env` is per test FILE, not per test worker.** `jest-environment-node` gives each file its own detached copy (`jest-util`'s `createProcessObject`), so two files in one `--runInBand` worker — same pid — never observe each other's writes. Two consequences: no cross-file cleanup is owed for a `process.env` write inside a file, and a variable set in one file cannot be inherited by the next. The copy is also detached from the *real* environment, which is why writing `process.env.TMPDIR` does not move `os.tmpdir()` under Jest (see `docs/upstream/development/review-checklist.md` rule 31) — **a child process needs its env passed explicitly**; `child_process`'s default env reads the real environment, not the test file's copy.
 
 ## Authoring rules
 

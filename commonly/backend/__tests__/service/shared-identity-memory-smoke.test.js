@@ -153,7 +153,7 @@ describe('WEDGE — shared identity converges memory across tools', () => {
   it('three tools writing different sections all land in ONE envelope', async () => {
     // Claude Code -> long_term
     await writeAs(projectToken, 'mcp-claude-code', {
-      long_term: { content: 'Architecture notes live in docs/adr.', visibility: 'private' },
+      long_term: { content: 'Architecture notes live in docs/upstream/adr.', visibility: 'private' },
     }).expect(200);
     // Codex CLI (via MCP on 0.133+) -> shared
     await writeAs(projectToken, 'mcp-codex', {
@@ -166,7 +166,7 @@ describe('WEDGE — shared identity converges memory across tools', () => {
 
     // Any tool reading the shared identity sees ALL three sections converge.
     const r = await readAs(projectToken);
-    expect(r.body.sections.long_term.content).toContain('docs/adr');
+    expect(r.body.sections.long_term.content).toContain('docs/upstream/adr');
     expect(r.body.sections.shared.content).toContain('teammates');
     expect(r.body.sections.dedup_state.content).toContain('5a05c421');
 

@@ -5,7 +5,7 @@ const Integration = require('../../models/Integration');
 const { setupMongoDb, closeMongoDb, clearMongoDb } = require('../utils/testUtils');
 
 // TASK-172's `hosted-mcp` row is the per-person Connection to a vendor-hosted
-// MCP server (docs/plans/hosted-mcp-connection-scope.md §2). This test is the
+// MCP server (docs/upstream/plans/hosted-mcp-connection-scope.md §2). This test is the
 // instrument for the three ways the RECORD can be wrong before any OAuth flow
 // exists, and each is silent by construction:
 //

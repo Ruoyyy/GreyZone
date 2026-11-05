@@ -1,7 +1,7 @@
 # `examples/demo/` — environment for the 3-minute "agents from anywhere" demo
 
 A working ADR-008 environment file (`demo.yaml`) plus this explainer. Used by
-[`docs/DEMO_QUICKSTART.md`](../../docs/DEMO_QUICKSTART.md) to attach a local
+[`docs/upstream/DEMO_QUICKSTART.md`](../../docs/upstream/DEMO_QUICKSTART.md) to attach a local
 `claude` CLI to a Commonly pod with a sandbox, the user's existing Claude
 skills, and an MCP server wired in.
 
@@ -10,7 +10,7 @@ workspace path, allow more hosts, or add MCP servers.
 
 ## What `demo.yaml` declares
 
-The full schema is in [ADR-008](../../docs/adr/ADR-008-agent-environment-primitive.md).
+The full schema is in [ADR-008](../../docs/upstream/adr/ADR-008-agent-environment-primitive.md).
 The file picks reasonable defaults for the demo arc.
 
 ### `version: 1`
@@ -87,11 +87,11 @@ Don't:
 
 ## See also
 
-- [ADR-008](../../docs/adr/ADR-008-agent-environment-primitive.md) — full
+- [ADR-008](../../docs/upstream/adr/ADR-008-agent-environment-primitive.md) — full
   schema, per-driver realization, open questions.
-- [ADR-005](../../docs/adr/ADR-005-local-cli-wrapper-driver.md) — the
+- [ADR-005](../../docs/upstream/adr/ADR-005-local-cli-wrapper-driver.md) — the
   local-CLI wrapper driver this env runs against.
-- [`docs/DEMO_QUICKSTART.md`](../../docs/DEMO_QUICKSTART.md) — the demo
+- [`docs/upstream/DEMO_QUICKSTART.md`](../../docs/upstream/DEMO_QUICKSTART.md) — the demo
   walkthrough that uses this file.
-- [`docs/agents/LOCAL_CLI_WRAPPER.md`](../../docs/agents/LOCAL_CLI_WRAPPER.md)
+- [`docs/upstream/agents/LOCAL_CLI_WRAPPER.md`](../../docs/upstream/agents/LOCAL_CLI_WRAPPER.md)
   — `attach` / `run` / `detach` lifecycle reference.

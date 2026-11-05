@@ -54,7 +54,7 @@ const resolveLocalCatalogPath = (): string => {
     return path.join(process.env.SKILLS_CATALOG_DIR, 'awesome-agent-skills-index.json');
   }
   // Matches the read path in skillsCatalogService.ts#resolveCatalogPath.
-  return path.resolve(__dirname, '../../docs/skills/awesome-agent-skills-index.json');
+  return path.resolve(__dirname, '../../docs/upstream/skills/awesome-agent-skills-index.json');
 };
 
 const buildGitHubHeaders = (): Record<string, string> => {

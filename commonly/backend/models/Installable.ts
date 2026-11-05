@@ -16,7 +16,7 @@ import mongoose, { Document, Model, Schema, Types } from 'mongoose';
  * into this collection alongside the existing App/AgentRegistry rows, and
  * later phases will move reads here once coverage is verified.
  *
- * See: docs/adr/ADR-001-installable-taxonomy.md
+ * See: docs/upstream/adr/ADR-001-installable-taxonomy.md
  */
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ export type InstallableSource =
  * - 'bundle' → a grouping of the above, published together.
  *
  * `kind` is a UX hint, not a schema partition — the underlying model is
- * still one table. See docs/adr/ADR-001-installable-taxonomy.md (2026-04-12
+ * still one table. See docs/upstream/adr/ADR-001-installable-taxonomy.md (2026-04-12
  * amendment).
  */
 export type InstallableKind = 'agent' | 'app' | 'skill' | 'bundle';

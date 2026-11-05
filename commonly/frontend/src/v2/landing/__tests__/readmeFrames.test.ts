@@ -1,6 +1,6 @@
 /**
  * TASK-155. README frames are 2x captures of real surfaces, placed per
- * ux-lead's artboard (docs/design/landing-demo/Readme.dc.html): a centered
+ * ux-lead's artboard (docs/upstream/design/landing-demo/Readme.dc.html): a centered
  * block, 880 wide, an italic caption under it. The README is the front door
  * and GitHub is its only renderer, so nothing here renders anything — jsdom
  * has no layout engine and GitHub's sanitizer decides what survives. What is
@@ -24,8 +24,8 @@ import path from 'path';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
 const README = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
-const FRAME_DIR = 'docs/assets/readme/';
-const HERO = 'docs/assets/readme/demo-first-state-2x.png';
+const FRAME_DIR = 'docs/upstream/assets/readme/';
+const HERO = 'docs/upstream/assets/readme/demo-first-state-2x.png';
 
 /** Every <img> in the README, with its raw attributes. */
 const images = [...README.matchAll(/<img\s+([^>]*?)\/>/g)].map((m) => {

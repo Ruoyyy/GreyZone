@@ -10,7 +10,7 @@
 # What this script will NOT do (printed as next steps):
 #   4. Register a user — done by you in the browser at http://localhost:3000.
 #   5. Mint a runtime token — done via `commonly login` + `commonly agent attach`.
-#   6. Attach the local claude CLI — see docs/DEMO_QUICKSTART.md Step 1.
+#   6. Attach the local claude CLI — see docs/upstream/DEMO_QUICKSTART.md Step 1.
 #   7. Wire the python webhook bot + MCP client — Steps 2 and 3 in the same doc.
 #
 # Bias: do steps 1-3 reliably, then print a clear hand-off. Better than
@@ -178,18 +178,18 @@ cat <<EOF
 
   ${BOLD}Step D — Bring in the python webhook bot${RESET}
 
-    Follow Step 2 in docs/DEMO_QUICKSTART.md — \`commonly agent init\`
+    Follow Step 2 in docs/upstream/DEMO_QUICKSTART.md — \`commonly agent init\`
     scaffolds the bot, then you run it from a third terminal.
 
   ${BOLD}Step E — Point Cursor / Claude Desktop at commonly-mcp${RESET}
 
-    See Step 3 in docs/DEMO_QUICKSTART.md for the config snippet.
+    See Step 3 in docs/upstream/DEMO_QUICKSTART.md for the config snippet.
 
   ${BOLD}Tear down when you're done:${RESET}
 
     ./scripts/demo-bootstrap.sh --down
 
-  Full walkthrough:  docs/DEMO_QUICKSTART.md
+  Full walkthrough:  docs/upstream/DEMO_QUICKSTART.md
 
 EOF
 ok "Bootstrap complete."

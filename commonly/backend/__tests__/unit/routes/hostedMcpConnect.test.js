@@ -1,5 +1,5 @@
 // TASK-172 slice 3: hosted-MCP intake — the Client ID Metadata Document and the
-// start route (docs/plans/hosted-mcp-connection-scope.md §4). The catalogue is a
+// start route (docs/upstream/plans/hosted-mcp-connection-scope.md §4). The catalogue is a
 // fixture, the lookup and the builders are the real ones, and the authorization
 // server is a stub: that is the ruling's boundary, every step except the live
 // lines being measurable without a vendor account.

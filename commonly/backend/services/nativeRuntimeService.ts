@@ -83,7 +83,7 @@ const LITELLM_TIMEOUT_MS = Number(process.env.NATIVE_RUNTIME_TIMEOUT_MS) || 45_0
 // callers that send this field get them. Env-overridable (comma-separated; empty
 // string disables) as a no-redeploy off-switch if it over-blocks a first-party app
 // — a backend env change + pod restart, no image build. See
-// docs/runbooks/litellm-guardrails.md.
+// docs/upstream/runbooks/litellm-guardrails.md.
 const NATIVE_RUNTIME_GUARDRAILS = (
   process.env.NATIVE_RUNTIME_GUARDRAILS ?? 'openai-moderation-enforce,injection-guard'
 ).split(',').map((s) => s.trim()).filter(Boolean);

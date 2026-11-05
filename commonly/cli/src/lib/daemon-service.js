@@ -237,7 +237,7 @@ export const installDaemonService = async ({
     await execCmd(['systemctl', '--user', 'enable', '--now', SYSTEMD_UNIT]);
   }
   for (const name of missing) {
-    warn(`${name} is not set in this shell, so it is NOT in the service file. A seat whose adapter needs it will fail to start; export it and re-run: commonly daemon install (docs/agents/daemon-service-environment.md)`);
+    warn(`${name} is not set in this shell, so it is NOT in the service file. A seat whose adapter needs it will fail to start; export it and re-run: commonly daemon install (docs/upstream/agents/daemon-service-environment.md)`);
   }
   log(`Installed ${target.kind} service (${target.file}). Logs: ${daemonLogPath(home)}`);
   return target;

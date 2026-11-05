@@ -36,7 +36,7 @@ const SELF_HOST_COMMAND = 'git clone https://github.com/Team-Commonly/commonly.g
 const ADR_COUNT = 30;
 // A count on a marketing page drifts silently: nothing on the page notices a
 // new ADR, and docs/ is outside this image's build context so the page cannot
-// count at build time. The TASK-167 row D test counts docs/adr/ADR-*.md and
+// count at build time. The TASK-167 row D test counts docs/upstream/adr/ADR-*.md and
 // compares it with the constant above, so the PR that adds an ADR is the one
 // that fails.
 /**

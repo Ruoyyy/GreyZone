@@ -1229,7 +1229,7 @@ describe('AgentMentionService', () => {
     //   3. Target is a non-specialist (specialists self-execute already)
     //   4. Event is chat.mention (not thread.mention)
     //
-    // Reference incidents in docs/audits/ui-smoke-2026-05-23/
+    // Reference incidents in docs/upstream/audits/ui-smoke-2026-05-23/
     // huddle-observations.md and the memory entries
     // feedback-agents-collab-execute-not-handoff +
     // feedback-claim-the-orphan-stalled-peer-work.
@@ -1485,7 +1485,7 @@ describe('AgentMentionService', () => {
     // tool, because "it exists" was never the question — "it exists for the
     // agent being told to call it" is.
     //
-    // READ from docs/MCP_INTEGRATION.md rather than copied out of it. The first
+    // READ from docs/upstream/MCP_INTEGRATION.md rather than copied out of it. The first
     // version of this guard hand-listed twelve tools under a `Source:` comment
     // naming that doc, which then carried twenty-six. The list went stale the
     // moment a tool was added, and the guard's first real firing was a FALSE
@@ -1497,7 +1497,7 @@ describe('AgentMentionService', () => {
     // (an extracted cue that went stale against the delivered one) and as
     // ADR-016's rule that a creation gate must consult the DM predicate rather
     // than a hand-maintained allowlist that happens to agree with it.
-    const MCP_DOC = path.join(__dirname, '../../../../docs/MCP_INTEGRATION.md');
+    const MCP_DOC = path.join(__dirname, '../../../../docs/upstream/MCP_INTEGRATION.md');
     const MCP_TOOLS = [...new Set(
       (fs.readFileSync(MCP_DOC, 'utf8').match(/commonly_[a-z][a-z0-9_]*[a-z0-9]/g) || []),
     )];

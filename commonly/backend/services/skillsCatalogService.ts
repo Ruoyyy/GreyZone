@@ -44,7 +44,7 @@ const resolveCatalogPath = (source: string): string | null => {
     if (process.env.SKILLS_CATALOG_DIR) {
       return path.join(process.env.SKILLS_CATALOG_DIR, 'awesome-agent-skills-index.json');
     }
-    return path.resolve(__dirname, '../../docs/skills/awesome-agent-skills-index.json');
+    return path.resolve(__dirname, '../../docs/upstream/skills/awesome-agent-skills-index.json');
   }
   return null;
 };

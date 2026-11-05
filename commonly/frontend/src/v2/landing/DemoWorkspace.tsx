@@ -16,7 +16,7 @@ import {
 import './demo-workspace.css';
 
 /**
- * The landing hero demo (TASK-147, spec `docs/design/landing-demo/Demo.dc.html`
+ * The landing hero demo (TASK-147, spec `docs/upstream/design/landing-demo/Demo.dc.html`
  * via #1841). An interactive fake of the workspace: four pods, a decision card
  * you can rule on, suggested prompts with timed replies, and free text. No
  * backend — every reply is scripted and delayed locally, and the demo says so

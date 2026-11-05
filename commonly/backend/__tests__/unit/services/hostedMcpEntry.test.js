@@ -1,5 +1,5 @@
 // TASK-172 slice 2: the catalogue entry, its projection and drift
-// (docs/plans/hosted-mcp-connection-scope.md §3). Every arm here is the
+// (docs/upstream/plans/hosted-mcp-connection-scope.md §3). Every arm here is the
 // entry-owned half of the decision; nothing in this file reaches a vendor or a
 // database, which is what lets the slice land before §4's intake.
 const {

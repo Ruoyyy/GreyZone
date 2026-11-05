@@ -41,8 +41,8 @@ spec:
               fi
               echo "Download failed, falling back to image file";
             fi
-            if [ -f /app/docs/skills/awesome-agent-skills-index.json ]; then
-              cp /app/docs/skills/awesome-agent-skills-index.json /catalog/awesome-agent-skills-index.json;
+            if [ -f /app/docs/upstream/skills/awesome-agent-skills-index.json ]; then
+              cp /app/docs/upstream/skills/awesome-agent-skills-index.json /catalog/awesome-agent-skills-index.json;
               exit 0;
             fi
             echo "skills catalog not found in image or download URL, skipping bootstrap";
@@ -496,7 +496,7 @@ spec:
         - name: CODEX_BYPASS_LITELLM
           value: {{ .Values.backend.env.codexBypassLitellm | default "true" | quote }}
         - name: SKILLS_CATALOG_PATH
-          value: /app/docs/skills/awesome-agent-skills-index.json
+          value: /app/docs/upstream/skills/awesome-agent-skills-index.json
         - name: MARKETPLACE_MANIFEST_PATH
           value: {{ .Values.backend.env.marketplaceManifestPath | default "/app/packages/commonly-marketplace/marketplace.json" | quote }}
 
@@ -526,7 +526,7 @@ spec:
         {{- end }}
 
         # Native-runtime guardrail set (comma-separated; see
-        # docs/runbooks/litellm-guardrails.md). Helm-tracked so the value
+        # docs/upstream/runbooks/litellm-guardrails.md). Helm-tracked so the value
         # survives deploys — a kubectl-set env is drift the next upgrade
         # silently reverts (the cloud-codex replicas lesson, PR #900).
         {{- if .Values.backend.env.nativeRuntimeGuardrails }}
@@ -550,7 +550,7 @@ spec:
           mountPath: /app/packages/commonly-marketplace
           readOnly: true
         - name: skills-catalog
-          mountPath: /app/docs/skills
+          mountPath: /app/docs/upstream/skills
           # RW so backend/services/skillsRefreshService.ts can persist
           # refreshed star counts until the next pod replacement. Writes are
           # atomic (full-file writeFileSync), and the init container reseeds

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Numbered-rule guard for `docs/development/review-checklist.md`.
+ * Numbered-rule guard for `docs/upstream/development/review-checklist.md`.
  *
  * The rules in that file are numbered, and the numbers are cited BY NUMBER from
  * outside it — the file's own header names three (`ADR-028` rule 23, `ADR-019`
@@ -78,9 +78,9 @@ const argValue = (name, fallback) => {
 // this script from a temp dir (so that a PR branched before the guard landed
 // still runs the checker from main — see the workflow), and __dirname there
 // would point the file lookup at /tmp. The first run of this guard redded on
-// exactly that: ENOENT /tmp/docs/development/review-checklist.md.
+// exactly that: ENOENT /tmp/docs/upstream/development/review-checklist.md.
 const ROOT = process.cwd();
-const DEFAULT = path.join('docs', 'development', 'review-checklist.md');
+const DEFAULT = path.join('docs', 'upstream', 'development', 'review-checklist.md');
 const FILE = path.resolve(argValue('--file', DEFAULT));
 const PREVIOUS = argValue('--previous', null);
 

@@ -29,7 +29,7 @@
  * If you change the cycles-write contract, change it in THREE places:
  *   1. this module (the inline cue — the strongest surface)
  *   2. routes/registry/presets.ts (the HEARTBEAT.md trailer)
- *   3. docs/adr/ADR-012 §10.3 — the canonical cue text, which STILL showed the
+ *   3. docs/upstream/adr/ADR-012 §10.3 — the canonical cue text, which STILL showed the
  *      rolled-back call as late as 2026-08-04 with the correction sitting ~40
  *      lines downstream under "What actually shipped". This header cites §10.3
  *      as its authority, so a reader who jumps to the cited section rather than

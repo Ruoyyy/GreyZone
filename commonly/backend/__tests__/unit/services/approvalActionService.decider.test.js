@@ -1,6 +1,6 @@
 /**
  * W1 commit 0 — the decider derivation (ADR-020 D2/D3, plan
- * docs/plans/2026-08-13-agent-platform-consolidation.md).
+ * docs/upstream/plans/2026-08-13-agent-platform-consolidation.md).
  *
  * `ownerUserId = pod.createdBy` made cards undecidable by construction in
  * bot-created pods — 63 of 261 production pods, measured. The owner-only

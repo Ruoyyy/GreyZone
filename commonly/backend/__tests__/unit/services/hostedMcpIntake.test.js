@@ -1,5 +1,5 @@
 // TASK-172 slice 3: intake — the client identity, the authorization request and
-// PKCE (docs/plans/hosted-mcp-connection-scope.md §4). Nothing here reaches a
+// PKCE (docs/upstream/plans/hosted-mcp-connection-scope.md §4). Nothing here reaches a
 // vendor: the authorization server is a stub the test passes in, which is the
 // ruling's point that every step except the live lines is testable without one.
 const {

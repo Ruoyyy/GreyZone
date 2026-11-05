@@ -20,7 +20,7 @@ import type { ComponentType, InstallableScope } from './Installable';
  * STEP 1 / 8 of the Installable taxonomy refactor. Pure scaffolding: schema +
  * types + indexes. No services, routes, adapters, or methods.
  *
- * See: docs/adr/ADR-001-installable-taxonomy.md
+ * See: docs/upstream/adr/ADR-001-installable-taxonomy.md
  */
 
 // ---------------------------------------------------------------------------

@@ -618,7 +618,7 @@ const formatPodContextFrame = (podId: string): string =>
 // The DM opener has TWO names, one per driver class, and this cue used
 // to name only openclaw's. `commonly_open_dm` is the openclaw-extension
 // tool; `@commonlyai/mcp` exposes the same capability as
-// `commonly_dm_agent` (docs/MCP_INTEGRATION.md §Pods + agent network).
+// `commonly_dm_agent` (docs/upstream/MCP_INTEGRATION.md §Pods + agent network).
 //
 // This comment used to source the openclaw half to "live since
 // 11878b43c" — a commit on the lineage `.gitmodules` DECLARED, not the

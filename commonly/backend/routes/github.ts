@@ -228,7 +228,7 @@ router.post('/issues/:number/close', anyAuth, async (req: AuthReq, res: Res) => 
 // and a GitHub credential of its own: local wrappers use the operator's `gh`
 // keyring auth (PR #963 was opened that way), and cluster runtimes get `gh`
 // plus a credential helper at image build. The tools were an ergonomic wrapper
-// (docs/audits/ui-smoke-2026-05-23: agents "have to know the gh CLI is
+// (docs/upstream/audits/ui-smoke-2026-05-23: agents "have to know the gh CLI is
 // available"), and convenience is not a reason to proxy a shared credential for
 // untrusted callers.
 //

@@ -168,7 +168,7 @@ describe('V2Composer send button', () => {
     expect(screen.getByRole('button', { name: /cancel reply/i }).closest('.v2-composer__tag')).not.toBeNull();
   });
 
-  // W-T 4/4, constraint 4 (docs/design/threading-surface-ruling.md; ux-lead
+  // W-T 4/4, constraint 4 (docs/upstream/design/threading-surface-ruling.md; ux-lead
   // 57449): the composer has ONE target with two kinds. "Reply in thread"
   // sends threadRootId and NO reply edge; "Reply to <person>" sends the reply
   // edge and NO thread root; aiming at one clears the other.

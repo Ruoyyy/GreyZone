@@ -2,7 +2,7 @@
  * Per-user, per-thread state — follow and collapse (W-T, TASK-029, 2/4).
  *
  * Two independent booleans on ONE record, per the threading surface ruling
- * (docs/design/threading-surface-ruling.md, "One state record, two booleans").
+ * (docs/upstream/design/threading-surface-ruling.md, "One state record, two booleans").
  * They are written by SEPARATE endpoints even so: following never implies
  * expanded, and one PATCH taking both invites a client to send the pair and
  * clobber the half the user did not touch.
@@ -54,7 +54,7 @@ async function resolveRoot(messageId: number): Promise<{ rootId: number; podId: 
 /**
  * The threading cutoff from the migration ledger, and whether it is knowable.
  *
- * Final shape per the merged ruling (docs/design/threading-surface-ruling.md,
+ * Final shape per the merged ruling (docs/upstream/design/threading-surface-ruling.md,
  * "Pre-cutoff roots default to expanded"), which went further than my first
  * two attempts and is worth restating because both were wrong in the same
  * direction — toward collapsing:

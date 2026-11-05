@@ -15,7 +15,7 @@ const DEFAULT_LLM_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_MS) || 120
 // blocked (no false-positives on coding prompts). Env-overridable (comma-separated;
 // empty string disables) as a no-redeploy off-switch if the injection filter's
 // keyword matching over-blocks legitimate pod content. Symmetric with
-// NATIVE_RUNTIME_GUARDRAILS. See docs/runbooks/litellm-guardrails.md.
+// NATIVE_RUNTIME_GUARDRAILS. See docs/upstream/runbooks/litellm-guardrails.md.
 const LLMSERVICE_GUARDRAILS = (
   process.env.LLMSERVICE_GUARDRAILS ?? 'openai-moderation-enforce,injection-guard'
 ).split(',').map((s) => s.trim()).filter(Boolean);

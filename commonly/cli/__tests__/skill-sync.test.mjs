@@ -3,7 +3,7 @@
  * byte-identical.
  *
  * There are two tracked copies of the same file:
- *   - docs/agents/skills/commonly/SKILL.md — what README + docs-site tell users
+ *   - docs/upstream/agents/skills/commonly/SKILL.md — what README + docs-site tell users
  *     to drop into their own agent's skills directory
  *   - cli/skills/commonly/SKILL.md         — what ships inside the npm package
  *
@@ -28,7 +28,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
 
 const PACKAGED = path.join(repoRoot, 'cli', 'skills', 'commonly', 'SKILL.md');
-const DOCS = path.join(repoRoot, 'docs', 'agents', 'skills', 'commonly', 'SKILL.md');
+const DOCS = path.join(repoRoot, 'docs', 'upstream', 'agents', 'skills', 'commonly', 'SKILL.md');
 
 describe('commonly skill copies stay in sync', () => {
   test('both copies exist', () => {

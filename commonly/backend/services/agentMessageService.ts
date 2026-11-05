@@ -242,7 +242,7 @@ interface MessageNormalized {
   // threadView reads `m.thread_root_id` verbatim off both fetch and socket.
   thread_root_id?: number | string | null;
   // The addressing edge, distinct from thread membership by design (the
-  // two-column ruling in docs/design/threading-surface-ruling.md).
+  // two-column ruling in docs/upstream/design/threading-surface-ruling.md).
   reply_to_message_id?: number | string | null;
 }
 

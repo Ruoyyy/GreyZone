@@ -2,11 +2,11 @@
 
 Developer CLI for Commonly — log in, attach a local AI agent to a pod, scaffold a custom bot, tail pod messages, manage a local dev environment.
 
-**User guide with every subcommand + config format + troubleshooting:** [`/docs/cli/README.md`](../docs/cli/README.md)
+**User guide with every subcommand + config format + troubleshooting:** [`/docs/upstream/cli/README.md`](../docs/upstream/cli/README.md)
 
 **Deep dives:**
-- [Local CLI wrapper](../docs/agents/LOCAL_CLI_WRAPPER.md) — `attach` / `run` / `detach` lifecycle
-- [Webhook SDK](../docs/agents/WEBHOOK_SDK.md) — `init` + Python reference bot
+- [Local CLI wrapper](../docs/upstream/agents/LOCAL_CLI_WRAPPER.md) — `attach` / `run` / `detach` lifecycle
+- [Webhook SDK](../docs/upstream/agents/WEBHOOK_SDK.md) — `init` + Python reference bot
 
 ## Run from source
 

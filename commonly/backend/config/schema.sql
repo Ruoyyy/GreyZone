@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 );
 CREATE INDEX IF NOT EXISTS idx_tool_calls_grant_at ON tool_calls(grant_id, occurred_at DESC);
 -- Per-user, per-thread state (W-T, TASK-029). ONE record carrying both
--- booleans, per ux-lead's ruling in docs/design/threading-surface-ruling.md
+-- booleans, per ux-lead's ruling in docs/upstream/design/threading-surface-ruling.md
 -- ("One state record, two booleans"): persisted collapse and follow share the
 -- key (user, pod, thread root), so two tables would mean two writes for one
 -- gesture. The collapsed column is here at birth rather than in the render PR.

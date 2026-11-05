@@ -2,7 +2,7 @@ name: ADR Numbering Guard
 
 # An ADR number is a name two documents can claim at once, and every mechanical
 # check we own is blind to it. #1295 and #1268 both added
-# `docs/adr/ADR-025-*.md` under different slugs: different filenames, so no
+# `docs/upstream/adr/ADR-025-*.md` under different slugs: different filenames, so no
 # textual conflict, `merge-tree` clean, all checks green — and main carried two
 # ADR-025s from the moment the second merged. It had already happened at
 # ADR-018, where the duplicate lived long enough that #963's author followed
@@ -87,13 +87,13 @@ jobs:
           # will hold after the merge, and unlike the merge ref it is fresh as
           # of this run.
           eff=$(mktemp -d)
-          mkdir -p "$eff/docs/adr"
-          git archive FETCH_HEAD docs/adr | tar -x -C "$eff"
+          mkdir -p "$eff/docs/upstream/adr"
+          git archive FETCH_HEAD docs/upstream/adr | tar -x -C "$eff"
 
           # --no-renames so a rename shows up as delete + add; rename detection
           # would hide exactly the "renumbered but the H1 still says the old
           # number" case this guard checks for.
-          git diff --no-renames --name-status "$base" HEAD -- docs/adr \
+          git diff --no-renames --name-status "$base" HEAD -- docs/upstream/adr \
             | while IFS=$'\t' read -r status file; do
                 case "$status" in
                   D) rm -f "$eff/$file" ;;
@@ -118,7 +118,7 @@ jobs:
             git show "FETCH_HEAD:scripts/verify-adr-numbering.js" > "$bin/verify-adr-numbering.js"
           fi
 
-          node "$bin/verify-adr-numbering.js" --dir "$eff/docs/adr"
+          node "$bin/verify-adr-numbering.js" --dir "$eff/docs/upstream/adr"
 
       # The check above cannot see a collision between two PRs that are both
       # still open — neither tree contains the other's file. That is the state
@@ -146,7 +146,7 @@ jobs:
               echo "::error::gh api failed reading PR #$1. This guard cannot see the open-PR set; it will not pass on a check it could not run." >&2
               return 1
             fi
-            printf '%s\n' "$raw" | sed -n 's#^docs/adr/ADR-\([0-9]\{3\}\)-.*\.md$#\1#p' | sort -u
+            printf '%s\n' "$raw" | sed -n 's#^docs/upstream/adr/ADR-\([0-9]\{3\}\)-.*\.md$#\1#p' | sort -u
           }
 
           mine=$(added_adrs "$PR")
@@ -170,7 +170,7 @@ jobs:
             clash=$(comm -12 <(printf '%s\n' "$mine") <(printf '%s\n' "$theirs")) || true
             [ -z "$clash" ] && continue
             for n in $clash; do
-              echo "::error file=docs/adr::ADR-$n is already claimed by the older open PR #$other. Two open PRs adding the same number both merge green and leave main with a duplicate — this is how main got two ADR-025s. #$other keeps $n; renumber here."
+              echo "::error file=docs/upstream/adr::ADR-$n is already claimed by the older open PR #$other. Two open PRs adding the same number both merge green and leave main with a duplicate — this is how main got two ADR-025s. #$other keeps $n; renumber here."
             done
             fail=1
           done

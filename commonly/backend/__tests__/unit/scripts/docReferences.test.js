@@ -4,7 +4,7 @@
  * Earned 2026-09-20. The "Documentation:" block printed by
  * `scripts/test-discord.sh`, the recording-guide line in `scripts/setup-demo.sh`
  * and the setup-guide line in `backend/test-discord-integration.ts` all pointed
- * at docs that are not in the tree — the Discord ones live under `docs/discord/`.
+ * at docs that are not in the tree — the Discord ones live under `docs/upstream/discord/`.
  * A pointer to a file that is not there is AX entry 57's failure mode: the
  * operator follows the message their own tool just printed and finds nothing.
  *
@@ -111,8 +111,8 @@ describe('code does not point at docs that are not there', () => {
     // contiguous pointer in this file for the scan to follow. The forms under
     // test are unchanged — non-root-relative, root-relative, and the URL tail
     // that has to stay excluded even with a real path behind it.
-    const setupGuide = ['docs', 'discord', 'DISCORD_SETUP.md'].join('/');
-    const designDoc = ['docs', 'discord', 'DISCORD_INTEGRATION_ARCHITECTURE.md'].join('/');
+    const setupGuide = ['docs', 'upstream', 'discord', 'DISCORD_SETUP.md'].join('/');
+    const designDoc = ['docs', 'upstream', 'discord', 'DISCORD_INTEGRATION_ARCHITECTURE.md'].join('/');
     expect(extractDocReferences(
       `echo "   Setup Guide: ${setupGuide}"`,
     )).toEqual([setupGuide]);
@@ -152,7 +152,7 @@ describe('code does not point at docs that are not there', () => {
   it('a root-relative pointer to a file that is not there would be reported (positive control)', () => {
     // Assembled, not written down: a dead literal in this file is scanned by
     // this guard too, and repeating one would make the guard flag its own test.
-    const absent = ['docs/agents', 'no-such-anchor-fixture.md'].join('/');
+    const absent = ['docs/upstream/agents', 'no-such-anchor-fixture.md'].join('/');
     const docs = extractDocReferences(`see \`/${absent}\` for the shape`);
     expect(docs).toEqual([absent]);
     expect(docs.every((doc) => !fs.existsSync(path.join(REPO_ROOT, doc)))).toBe(true);
