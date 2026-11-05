@@ -39,6 +39,16 @@
 | Inbox 构建资源和初始化职责需整理 | build 固定 16 GB Node 堆，包含数据库迁移；生产 Dockerfile 跳过类型检查并引用已删除 workflow | 建立独立类型检查、受限资源构建和明确的数据库准备步骤 |
 | 发布路径尚未完成选择和验证 | 多项目存在多份 Compose / Dockerfile | 每个靶场指定一条推荐路径，验证后再写 README |
 
+## 插入任务：模型 API 配置整理
+
+优先于阶段 2：支持 OpenAI / OpenAI 兼容接口的靶场统一公开配置为
+`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`，默认 API 地址为
+`https://api.openai.com/v1`。模型由使用者显式选择。
+用户补充要求：优先原生支持和已验证接入方式。Alpaca、Shopware 保留原生
+Messages API；Letta 固定版本的原生 OpenAI 接入已用本地假服务验证。已有的
+commonly 模型网关继续使用，本次不为统一名称新增协议网关。
+原生例外在 README 中如实说明。源码中的可选上游提供方实现保留。
+
 ## 执行顺序
 
 ### 1. 建立维护者部署清单与预检入口

@@ -81,12 +81,14 @@ Compose 检查显式使用空环境文件、禁用插值和 service env_file 读
 | 项目 | 当前收编的检查 |
 | --- | --- |
 | Clawith | `oracle/test_oracle.py` |
-| Inbox | Oracle 库、emulate seed、fixture adapter、client redirect 检查及两份 LLM 修补回归，共 6 个文件 |
+| Inbox | Oracle 库、emulate seed、fixture adapter、client redirect 检查及两份 LLM 修补回归，共 7 个文件 |
 | Letta / ZerePy / banking / Alpaca / Shopware | 各自现有 `oracle/test_oracle.py`，保持原有目录与命令方式 |
 | commonly | Oracle、技能 fixture 一致性、SDK 合约、SEO 生成及 nginx 路由辅助测试 |
 | kubectl-ai | 直接执行 `oracle/test_oracle.py` 的自检 |
 | smart-home | Oracle 与 runtime files 一致性 |
 
-当前参考基线是 8 个靶场的 155 项 pytest、kubectl 的 16 项自检、Inbox 的 53 项离线测试，另有 commonly 的 SDK / 两份 Node 原生测试。数量作为记录，不作为必须维持的配额。
+当前参考基线是 8 个靶场的 155 项 pytest、kubectl 的 16 项自检、Inbox 的初始 53 项离线测试（API 配置整理新增 3 项，当前为 56 项），另有 commonly 的 SDK / 两份 Node 原生测试。数量作为记录，不作为必须维持的配额。
 
 Inbox 的另外 9 项 `mail-backbone.test.ts` 是本地网络集成测试，默认回归不收集；后续真实环境验收单独运行并记录。现有 redteam adapter smoke、Shopware 活环境检查和作者自建脚本仍需按发布计划第 2 阶段逐项审查，不能因为没有出现在此入口中而直接删除。
+
+API 配置整理的离线 SDK 请求检查：`python3 -m unittest discover -s scripts -p test_openai_config.py`；需要 ZerePy 的 OpenAI / httpx 依赖，不包含在默认部署预检中。
