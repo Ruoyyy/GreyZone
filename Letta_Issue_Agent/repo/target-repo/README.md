@@ -1,4 +1,4 @@
-# AgentThreatDataset
+# GreyZone
 
 Target repository for the local Letta Code issue agent.
 

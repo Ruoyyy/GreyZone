@@ -1,94 +1,94 @@
-# 维护者部署检查
+# Maintainer Deployment Checks
 
-`scripts/check_deployment.py` 用于整理和验证发布前的部署条件，独立于 benchmark 的任务、攻击交互和 Oracle 判分。正常使用 benchmark 不需要调用它。它不被靶场运行代码引用，也不产生 episode verdict。
+`scripts/check_deployment.py` checks deployment prerequisites before a release. It is separate from benchmark tasks, attack interactions, and Oracle scoring. Running the benchmark does not require this tool. Range runtime code does not call it, and it does not produce episode verdicts.
 
-## 使用
+## Usage
 
-在仓库根运行：
+Run from the repository root:
 
 ```bash
-# 默认：10 个靶场的只读部署预检
+# Default: read-only deployment preflight for all 10 ranges
 python3 scripts/check_deployment.py
 
-# 只检查一个或多个靶场；名称沿用顶层目录
+# Select one or more ranges by their top-level directory names
 python3 scripts/check_deployment.py --project commonly --project smart-home
 
-# 保存机器可读的维护报告，该目录已被 Git 忽略
+# Save a machine-readable maintenance report in a Git-ignored directory
 python3 scripts/check_deployment.py --report .deployment-checks/preflight.json
 
-# 显式追加现有离线回归；仍不启动部署环境
+# Also run existing offline regressions; deployment environments remain stopped
 python3 scripts/check_deployment.py --regression
 
-# 检查维护脚本自身的失败传播和进程隔离
+# Test the maintenance tool's failure reporting and process isolation
 python3 -m unittest discover -s scripts -p test_check_deployment.py
 ```
 
-脚本根据自身位置定位仓库，支持从其他工作目录使用绝对脚本路径调用。`--report` 路径相对于调用者的工作目录。`--timeout` 指定每条命令的最长秒数，默认 120 秒；执行始终串行，Node 子进程限制为 512 MB 堆，Inbox 使用单 worker。超时停止该命令的进程组，然后继续收集其余结果。
+The script locates the repository relative to its own file, so it can also be called by absolute path from another working directory. The `--report` path is relative to the caller's working directory. `--timeout` sets the per-command timeout in seconds, defaulting to 120. Commands run serially, Node child processes have a 512 MB heap limit, and Inbox uses one worker. A timeout stops the command's process group; the tool then continues collecting other results.
 
-## 检查含义
+## What the Checks Establish
 
-默认执行：
+By default, the tool checks:
 
-- 所列部署入口、依赖锁、关键源文件和 fixture 源文件是否存在。
-- 部署所用 shell 脚本的 `bash -n` 语法检查，不执行脚本内容。
-- Docker CLI 及必要主机工具是否可找到；kubectl-ai 额外检查 Go、kind、kubectl。这里只检查可用性，版本固定在后续发布构建阶段核验。
-- 用 Docker Compose 自身解析 11 份配置，并核对声明的本地 build context、Dockerfile 和 additional context 是否存在。
+- The presence of listed deployment entry points, dependency locks, key source files, and fixture source files.
+- Deployment shell-script syntax with `bash -n`, without executing the scripts.
+- The availability of the Docker CLI and required host tools. For kubectl-ai, this also includes Go, kind, and kubectl. This checks availability; pinned versions are verified during release builds.
+- Parsing of 11 configurations with Docker Compose, plus the presence of declared local build contexts, Dockerfiles, and additional contexts.
 
-Compose 检查显式使用空环境文件、禁用插值和 service env_file 读取；不依赖开发者本机的 `.env` / `secrets.env`。需要 Compose 支持 `--no-interpolate`、`--no-env-resolution` 和 JSON 输出。此步骤不需要 Docker daemon，也不会拉镜像。
+Compose checks explicitly use an empty environment file, disable interpolation, and skip service `env_file` resolution. They do not depend on a developer's local `.env` or `secrets.env`. Compose must support `--no-interpolate`, `--no-env-resolution`, and JSON output. This step does not require the Docker daemon or pull images.
 
-**预检 PASS 只说明上述静态条件通过。** 未解析的运行变量、实际 env_file、bind mount、Dockerfile COPY 内容、镜像获取、依赖安装、构建、服务 ready、MCP 交互和真实模型任务仍需后续实际部署验收。kubectl-ai 的部署由 shell 脚本管理，本工具仅检查入口、主机工具及所列源文件。
+**A preflight PASS establishes only that these static checks passed.** Unresolved runtime variables, actual environment files, bind mounts, Dockerfile COPY inputs, image retrieval, dependency installation, builds, service readiness, MCP interactions, and real model tasks still require deployment acceptance checks. Shell scripts manage kubectl-ai deployment; this tool checks only its entry points, host tools, and listed source files.
 
-报告记录 `scope: deployment-preflight`，并始终将构建、启动/就绪、本地网络集成和模型 episode 标记为 `NOT_RUN`。第一版没有启动、重置或销毁环境的选项，相关步骤在发布计划第 5 阶段逐个执行。
+Reports record `scope: deployment-preflight` and always mark builds, startup/readiness, local network integration, and model episodes as `NOT_RUN`. The initial tool has no options to start, reset, or destroy environments. Those steps are performed individually in phase 5 of the release preparation plan.
 
-## 状态与依赖
+## Status and Dependencies
 
-| 状态 | 含义 |
+| Status | Meaning |
 | --- | --- |
-| PASS | 本条检查实际执行并通过 |
-| FAIL | 源文件缺失、配置/断言错误或命令超时 |
-| BLOCKED | 执行工具或已知必要依赖缺失，或构建上下文暂无法在本地核验 |
-| NOT_RUN | 未选择可选回归，或当前阶段不执行的真实部署步骤 |
+| PASS | The check ran and passed. |
+| FAIL | A source file is missing, a configuration or assertion is invalid, or a command timed out. |
+| BLOCKED | A required tool or known dependency is unavailable, or a build context cannot currently be verified locally. |
+| NOT_RUN | An optional regression was not selected, or the current phase does not execute this deployment step. |
 
-任一选定检查 FAIL / BLOCKED，总退出码为 1；所有选定检查通过时为 0。未选择的回归不会阻止只读预检通过。报告保留命令、耗时和错误摘要，不导出完整环境变量或展开后的 Compose 配置。
+Any selected check reporting FAIL or BLOCKED produces exit code 1; all selected checks passing produces exit code 0. Unselected regressions do not prevent a successful read-only preflight. Reports retain commands, durations, and error summaries, without exporting the full environment or resolved Compose configurations.
 
-预检只需 Python 标准库、Bash 和 Docker Compose，以及表中明确的主机工具，不安装新依赖。
+Preflight requires only the Python standard library, Bash, Docker Compose, and the host tools listed below. It does not install dependencies.
 
-可选回归复用各项目的测试环境：优先使用测试目录下 `.venv/bin/python`，否则使用调用检查脚本的 Python。pytest、Clawith 的 httpx 等测试依赖按项目声明准备；Inbox 需先安装它固定的工作区依赖。工具不自动下载依赖；依赖探测失败报告 BLOCKED，测试收集或执行错误报告 FAIL 并保留诊断。
+Optional regressions reuse each project's test environment: the tool prefers `.venv/bin/python` in the test working directory, falling back to the Python interpreter running the checker. Prepare declared test dependencies, including pytest and Clawith's httpx, in the respective environments. Inbox requires its pinned workspace dependencies to be installed first. The tool does not download dependencies. Dependency probing failures report BLOCKED; test collection or execution errors report FAIL with diagnostics.
 
-## 部署入口与准备清单
+## Deployment Entry Points and Preparation
 
-此表是维护索引，具体运行命令沿用各项目已有入口。默认预检不会执行初始化或 reset。
+This table is a maintenance index. Use each project's existing entry points for actual deployment commands. Default preflight does not initialize or reset environments.
 
-| 靶场 | 预检的环境配置或入口 | 初始化及生成文件 | 实际部署验收注意项 |
+| Range | Configuration or entry points checked | Initialization and generated files | Deployment acceptance considerations |
 | --- | --- | --- | --- |
-| Clawith | `docker-compose.yml`；`setup.sh` / `start.sh` / `restart.sh` | `.env.example`；backend entrypoint 与 setup；运行数据位于各自卷/目录 | 数据库迁移、agent 数据、MCP bridge 和应用就绪 |
-| Inbox | 根 `docker-compose.yml`；`docker/docker-compose.local.yml`；`docker-compose.mail-loop.yml` | `setup.sh`；`scripts/mail-loop-init.sh` 生成 `.tmp` 中的模拟器及 bundle；应用 `.env` | 根 Compose 主要提供依赖服务；local Compose 使用预先构建的镜像；邮箱回路需生成物及 webhook 配置 |
-| Letta | `docker-compose.yml`；`init-gitea.sh` | Compose 的 gitea-init 播种 `repo/`，生成 shared 目录中的 runner / MCP 凭据 | Gitea、runner 注册及 MCP 权限层；任务素材包括目标仓库代码 |
-| ZerePy | `docker-compose.yml`；`scripts/init.sh`；`chain/entrypoint.sh` | init 生成 `.env`、`chain/users.keys.json`、`mock/users.tokens.json` 等；链与 mock 的 seed 源码入库 | 链播种完成后服务 ready；reset 需恢复模拟链与 mock 状态 |
-| banking | `app/compose.yaml`；`app/start-compose.sh` | `app/.env.example`；业务服务初始化内存数据 | 模型配置、MCP 业务服务、copilot 启动；reset 与会话清理见现有 Oracle 流程 |
-| Alpaca | `sim/docker-compose.yml` | `sim/.env.example`；`sim/oracle/seed.py` 是现有任务准备工具 | 环境/MCP/控制台服务，以及可选 `agent` / `oracle` profile；模拟世界 reset |
-| commonly | `docker-compose.stack.yml`；stack secrets 与 agent entrypoint | `docker/stack/.env.example`；`init-secrets.sh` 写独立卷；`seed-local-stack.ts`；技能目录 JSON | 应用、模型代理、agent seat、用户 MCP；fixture 打包与 reset |
-| kubectl-ai | `sim/up.sh` / `sim/up-ops-mcp.sh` / `sim/run-agent.sh` | Go 生成 `bin/kubectl-ai`；脚本生成 `sim/.build/` kubeconfig、key 等 | Docker、Go、kind、kubectl；真实集群、RBAC、ops MCP 与 collector 验证 |
-| Shopware | `docker/compose.yaml`；`docker/bootstrap.sh` / `docker/verify.sh` / `dev.sh` | snapshot + bootstrap 生成环境配置、签名及集成数据；host 应用另有 Python / Node 依赖 | Shopware 容器就绪后还要验证 host 应用、MCP、签名、handoff；使用已有 reset 工具 |
-| smart-home | `sim/docker-compose.yaml` | HA config；首次配置与 `sim/secrets.env`；HGA 源码作为 additional context | HA 首次接入、模型/数据库、mock 与 redteam MCP；可选 profile 和状态恢复 |
+| Clawith | `docker-compose.yml`; `setup.sh` / `start.sh` / `restart.sh` | `.env.example`; backend entrypoint and setup; runtime data in the respective volumes/directories | Database migrations, agent data, MCP bridge, and application readiness |
+| Inbox | Root `docker-compose.yml`; `docker/docker-compose.local.yml`; `docker-compose.mail-loop.yml` | `setup.sh`; `scripts/mail-loop-init.sh` generates simulators and bundles in `.tmp`; application `.env` | Root Compose mainly provides dependency services; local Compose uses prebuilt images; the mail loop needs generated files and webhook configuration |
+| Letta | `docker-compose.yml`; `init-gitea.sh` | Compose's gitea-init seeds `repo/` and generates runner/MCP credentials in `shared/` | Gitea, runner registration, and MCP permission levels; task material includes target repository code |
+| ZerePy | `docker-compose.yml`; `scripts/init.sh`; `chain/entrypoint.sh` | Initialization generates `.env`, `chain/users.keys.json`, `mock/users.tokens.json`, and related files; chain and mock seed sources are tracked | Services ready after chain seeding; reset must restore simulated chain and mock state |
+| banking | `app/compose.yaml`; `app/start-compose.sh` | `app/.env.example`; business services initialize in-memory data | Model configuration, MCP business services, and copilot startup; see the existing Oracle flow for reset and session cleanup |
+| Alpaca | `sim/docker-compose.yml` | `sim/.env.example`; `sim/oracle/seed.py` is the existing task preparation tool | Environment/MCP/console services and optional `agent` / `oracle` profiles; simulated world reset |
+| commonly | `docker-compose.stack.yml`; stack secrets and agent entrypoint | `docker/stack/.env.example`; `init-secrets.sh` writes separate volumes; `seed-local-stack.ts`; skill catalog JSON | Application, model proxy, agent seat, and user MCP; fixture packaging and reset |
+| kubectl-ai | `sim/up.sh` / `sim/up-ops-mcp.sh` / `sim/run-agent.sh` | Go produces `bin/kubectl-ai`; scripts generate kubeconfig, keys, and other files in `sim/.build/` | Docker, Go, kind, and kubectl; actual cluster, RBAC, ops MCP, and collector verification |
+| Shopware | `docker/compose.yaml`; `docker/bootstrap.sh` / `docker/verify.sh` / `dev.sh` | Snapshot and bootstrap generate environment configuration, signatures, and integration data; host applications also need Python/Node dependencies | After the Shopware container is ready, verify host applications, MCP, signatures, and handoff; use existing reset tools |
+| smart-home | `sim/docker-compose.yaml` | HA configuration; initial setup and `sim/secrets.env`; HGA source as an additional context | HA onboarding, model/database, mock and redteam MCP; optional profiles and state restoration |
 
-没有对应环境和初始化记录时，上表仅说明存在入口，不能据此标注“已部署”。生成文件缺失不通过创建空文件掩盖，应按实际初始化流程生成并验证。
+Without a corresponding environment and initialization record, this table establishes only that entry points exist. It does not establish that deployment succeeded. Generate and validate missing files through the actual initialization flow instead of creating empty placeholders.
 
-## 可选回归清单
+## Optional Regressions
 
-这些检查验证维护变更是否破坏已有逻辑，结果与部署预检分别展示；它们不参与正式 benchmark 评分。
+These checks detect whether maintenance changes broke existing logic. Their results appear separately from deployment preflight and do not contribute to official benchmark scoring.
 
-| 项目 | 当前收编的检查 |
+| Project | Checks currently included |
 | --- | --- |
 | Clawith | `oracle/test_oracle.py` |
-| Inbox | Oracle 库、emulate seed、fixture adapter、client redirect 检查及两份 LLM 修补回归，共 7 个文件 |
-| Letta / ZerePy / banking / Alpaca / Shopware | 各自现有 `oracle/test_oracle.py`，保持原有目录与命令方式 |
-| commonly | Oracle、技能 fixture 一致性、SDK 合约、SEO 生成及 nginx 路由辅助测试 |
-| kubectl-ai | 直接执行 `oracle/test_oracle.py` 的自检 |
-| smart-home | Oracle 与 runtime files 一致性 |
+| Inbox | Oracle library, emulate seed, fixture adapter, client redirects, and two LLM patch regressions: 7 files in total |
+| Letta / ZerePy / banking / Alpaca / Shopware | Each project's existing `oracle/test_oracle.py`, using its existing directory and invocation |
+| commonly | Oracle, skill fixture consistency, SDK contract, SEO generation, and nginx route helper tests |
+| kubectl-ai | Self-checks run directly through `oracle/test_oracle.py` |
+| smart-home | Oracle and runtime file consistency |
 
-当前参考基线是 8 个靶场的 155 项 pytest、kubectl 的 16 项自检、Inbox 的初始 53 项离线测试（API 配置整理新增 3 项，当前为 56 项），另有 commonly 的 SDK / 两份 Node 原生测试。数量作为记录，不作为必须维持的配额。
+The recorded reference baseline is 155 pytest checks across 8 ranges, 16 kubectl self-checks, and an initial 53 Inbox offline tests (3 added during API configuration cleanup, bringing the current count to 56), plus commonly's SDK checks and two native Node tests. These counts are historical records, not quotas.
 
-Inbox 的另外 9 项 `mail-backbone.test.ts` 是本地网络集成测试，默认回归不收集；后续真实环境验收单独运行并记录。现有 redteam adapter smoke、Shopware 活环境检查和作者自建脚本仍需按发布计划第 2 阶段逐项审查，不能因为没有出现在此入口中而直接删除。
+Inbox's 9 additional `mail-backbone.test.ts` cases are local network integration tests excluded from default regressions. Run and record them separately during deployment acceptance. Existing redteam adapter smoke checks, Shopware live-environment checks, and author-created scripts still require individual review in phase 2 of the release preparation plan. Absence from this entry point alone is not a reason to delete them.
 
-API 配置整理的离线 SDK 请求检查：`python3 -m unittest discover -s scripts -p test_openai_config.py`；需要 ZerePy 的 OpenAI / httpx 依赖，不包含在默认部署预检中。
+The offline SDK request check for API configuration cleanup is `python3 -m unittest discover -s scripts -p test_openai_config.py`. It requires ZerePy's OpenAI/httpx dependencies and is not included in default deployment preflight.

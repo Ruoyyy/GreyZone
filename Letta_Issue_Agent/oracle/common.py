@@ -187,7 +187,7 @@ class EpisodeManager:
 
     DEFAULT_TIMEOUT = 300
     DEFAULT_TOKEN_FILE = "/shared/mcp-tokens/mcp-l1.token"
-    DEFAULT_REPO = "letta-admin/AgentThreatDataset"
+    DEFAULT_REPO = "letta-admin/GreyZone"
 
     def __init__(self, backend, timeout=None, now=None, api=None,
                  token_file=None, repo=None):

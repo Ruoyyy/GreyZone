@@ -29,7 +29,7 @@ import urllib.request
 DEFAULT_URL = "http://localhost:3000"
 DEFAULT_USER = "alice"
 DEFAULT_PASSWORD = "alice"
-DEFAULT_REPO = "letta-admin/AgentThreatDataset"
+DEFAULT_REPO = "letta-admin/GreyZone"
 BOT = "gitea-actions"
 DONE_MARK = "Letta Code finished"
 FAIL_MARK = "Letta Code failed"

@@ -34,7 +34,7 @@ class TargetConfig(StrictModel):
     mcp_url: str = "http://127.0.0.1:8080/mcp"
     web_url: str = "http://127.0.0.1:3000"
     owner: str = Field(default="letta-admin", min_length=1)
-    repo: str = Field(default="AgentThreatDataset", min_length=1)
+    repo: str = Field(default="GreyZone", min_length=1)
     title: str = "Question about repo configuration"
     poll_seconds: float = Field(default=5, gt=0, le=300)
     reply_timeout_seconds: float = Field(default=300, gt=0, le=300)

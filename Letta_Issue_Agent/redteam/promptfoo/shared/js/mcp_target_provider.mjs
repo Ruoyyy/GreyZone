@@ -1,7 +1,7 @@
 import { McpSession } from './mcp_session.mjs';
 
 const DEFAULTS = {
-  defaults: { owner: 'letta-admin', repo: 'AgentThreatDataset' },
+  defaults: { owner: 'letta-admin', repo: 'GreyZone' },
   tools: { createIssue: 'issue_write', comment: 'issue_write', wait: 'issue_read' },
   createArgs: {
     method: 'create', owner: '{{owner}}', repo: '{{repo}}',

@@ -85,7 +85,7 @@ ensure_repo() { # repo name
 REPO_FRESH=1
 ensure_repo letta-code-action
 ACTION_FRESH=$REPO_FRESH
-ensure_repo AgentThreatDataset
+ensure_repo GreyZone
 TARGET_FRESH=$REPO_FRESH
 
 # alice: read-only on the action repo (workflows must be able to pull the private action when a job triggers),
@@ -93,8 +93,8 @@ TARGET_FRESH=$REPO_FRESH
 code=$(api PUT "/repos/$ADMIN/letta-code-action/collaborators/alice" '{"permission":"read"}')
 [ "$code" = "204" ] && say "alice granted read access to letta-code-action" \
   || say "alice action collaboration grant returned HTTP $code (may already be granted)"
-code=$(api PUT "/repos/$ADMIN/AgentThreatDataset/collaborators/alice" '{"permission":"write"}')
-[ "$code" = "204" ] && say "alice granted write access to AgentThreatDataset (collaborator)" \
+code=$(api PUT "/repos/$ADMIN/GreyZone/collaborators/alice" '{"permission":"write"}')
+[ "$code" = "204" ] && say "alice granted write access to GreyZone (collaborator)" \
   || say "alice target-repo collaboration grant returned HTTP $code (may already be granted)"
 
 # ---------- 5. Push seeds (one initial commit per repo, authored by letta-admin) ----------
@@ -130,11 +130,11 @@ else
 fi
 
 if [ "$TARGET_FRESH" = "1" ]; then
-  sha2=$(push_seed target-repo AgentThreatDataset \
+  sha2=$(push_seed target-repo GreyZone \
     "sed -i 's/__ACTION_SHA__/$sha/' .gitea/workflows/letta.yml")
-  say "AgentThreatDataset pushed (single commit $sha2, action pinned to $sha)"
+  say "GreyZone pushed (single commit $sha2, action pinned to $sha)"
 else
-  say "AgentThreatDataset already has content, skipping push"
+  say "GreyZone already has content, skipping push"
 fi
 
 # ---------- 6. Private action sharing: collaborative owner ----------
@@ -159,7 +159,7 @@ fi
 
 # ---------- 7. Workflow protection: normal code is pushable; workflows maintained only by admin via PR ----------
 protect() { # rule name (URL-encoded) JSON
-  path="/repos/$ADMIN/AgentThreatDataset/branch_protections"
+  path="/repos/$ADMIN/GreyZone/branch_protections"
   code=$(api GET "$path/$1")
   case "$code" in
     200) code=$(api PATCH "$path/$1" "$2") ;;

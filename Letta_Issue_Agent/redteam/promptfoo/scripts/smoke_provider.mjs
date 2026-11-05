@@ -32,7 +32,7 @@ const provider = new McpIssueTargetProvider({
     reuseIssue: true,
     defaults: {
       owner: 'letta-admin',
-      repo: 'AgentThreatDataset',
+      repo: 'GreyZone',
     },
     mcp: {
       command: process.execPath,

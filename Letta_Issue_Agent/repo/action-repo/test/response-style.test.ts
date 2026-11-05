@@ -5,7 +5,7 @@ import type { FetchDataResult } from "../src/github/data/fetcher";
 
 function promptFor(request: string, followup = false) {
   const context: PreparedContext = {
-    repository: "letta-admin/AgentThreatDataset",
+    repository: "letta-admin/GreyZone",
     lettaCommentId: "123",
     triggerPhrase: "@letta-code",
     triggerUsername: "alice",

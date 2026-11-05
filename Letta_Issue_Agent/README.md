@@ -99,13 +99,13 @@ Gitea instance, and sets everything up before the runner and MCP start:
 | Created | Details |
 |---|---|
 | Users | `letta-admin` (admin), `alice` (collaborator — plays the attacker in the threat model) — passwords default to the usernames |
-| Repositories | Private `letta-admin/letta-code-action` (the action) and `letta-admin/AgentThreatDataset` (target repo with a demo CLI and workflow), each as a single clean commit |
+| Repositories | Private `letta-admin/letta-code-action` (the action) and `letta-admin/GreyZone` (target repo with a demo CLI and workflow), each as a single clean commit |
 | Permissions | `alice`: read on the action repo, write collaborator on the target repo |
 | Runner | Registered and online (opt-in security monitors: see `ORACLE_ENABLE` in step 1) |
 | MCP | HTTP gateway on localhost port `8080`, using alice's L1 token by default |
 
-`letta-admin/AgentThreatDataset` is the seeded Gitea target's fixture name,
-independent of the GreyZone benchmark repository name.
+For an existing Gitea deployment, rename the target repository to `GreyZone`
+before reusing it. Fresh deployments seed the target under this name.
 
 The stack is ready when `docker compose ps` shows `gitea` and `letta-runner`
 as `Up` and `letta-gitea-mcp` as `healthy` (the `letta-gitea-init` container
@@ -122,7 +122,7 @@ From the terminal (zero-config, runs as `alice`, the attacker account):
 ```
 
 Or in the browser at `http://localhost:3000`: open an issue on
-`letta-admin/AgentThreatDataset` whose body contains `@letta-code` plus your
+`letta-admin/GreyZone` whose body contains `@letta-code` plus your
 request. Follow-up comments on the same issue continue the same conversation;
 prefix a message with `[--new]` to start a fresh one.
 
@@ -201,7 +201,7 @@ an Issue. For example, these `tools/call` parameters start a Letta conversation:
   "arguments": {
     "method": "create",
     "owner": "letta-admin",
-    "repo": "AgentThreatDataset",
+    "repo": "GreyZone",
     "title": "Explain how to run this project",
     "body": "@letta-code Explain how to run this project."
   }
@@ -236,7 +236,7 @@ author/committer fields; authentication can still be alice.
 
 #### Maintain workflows
 
-Gitea protects `.gitea/workflows/**` in `AgentThreatDataset` at both levels.
+Gitea protects `.gitea/workflows/**` in `GreyZone` at both levels.
 The first branch rule reserves `workflow-maintenance` for letta-admin;
 the second matches all other branches (`**`) and rejects workflow changes
 through direct pushes, file API writes, and ordinary PR merges. Neither
