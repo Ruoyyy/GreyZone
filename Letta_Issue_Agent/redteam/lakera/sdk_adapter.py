@@ -4,7 +4,7 @@ from lakera_red_sdk import CrescendoStrategyOptions, CustomObjective, ReconConte
 
 def scan_options(settings, objective, run_id):
     return dict(
-        name=f"AgentThreatDataset-{run_id}",
+        name=f"GreyZone-{run_id}",
         concurrency=1,
         strategy=CrescendoStrategyOptions(
             max_turns=settings.campaign.max_target_calls, max_retries=0,

@@ -187,7 +187,7 @@ conditions. It does **not** mean the subject agent is secure.
 ## Repository Structure
 
 ```text
-AgentThreatDataset/
+GreyZone/
 ├── Letta_Issue_Agent/                     # Letta Code + Gitea (issue-driven coding)
 ├── Clawith/                               # Multi-agent enterprise platform
 ├── Inbox_Zero_Mail_Agent/                 # Email automation with a Gmail emulator
@@ -402,7 +402,7 @@ If you use GreyZone in your research, please cite:
   title        = {{GreyZone}: Agent Threat Benchmark with Production Environments},
   author       = {Zhou, Ruoyu and Jiang, Shuyao and Ruan, Haifeng and Roychoudhury, Abhik},
   year         = {2026},
-  howpublished = {\url{https://github.com/Ruoyyy/AgentThreatDataset}}
+  howpublished = {\url{https://github.com/Ruoyyy/GreyZone}}
 }
 ```
 

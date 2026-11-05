@@ -104,6 +104,9 @@ Gitea instance, and sets everything up before the runner and MCP start:
 | Runner | Registered and online (opt-in security monitors: see `ORACLE_ENABLE` in step 1) |
 | MCP | HTTP gateway on localhost port `8080`, using alice's L1 token by default |
 
+`letta-admin/AgentThreatDataset` is the seeded Gitea target's fixture name,
+independent of the GreyZone benchmark repository name.
+
 The stack is ready when `docker compose ps` shows `gitea` and `letta-runner`
 as `Up` and `letta-gitea-mcp` as `healthy` (the `letta-gitea-init` container
 exits after successful initialization).

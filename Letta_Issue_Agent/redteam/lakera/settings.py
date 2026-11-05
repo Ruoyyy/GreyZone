@@ -45,7 +45,7 @@ class TargetConfig(StrictModel):
 class RedConfig(StrictModel):
     base_url: str = "https://red-webhooks.lakera.ai"
     api_key_env: str = "LAKERA_RED_API_KEY"
-    target_name: str = Field(default="AgentThreatDataset-Letta-MCP-L1", min_length=1)
+    target_name: str = Field(default="GreyZone-Letta-MCP-L1", min_length=1)
     response_timeout_seconds: float = Field(default=60, gt=0, le=60)
     _url = field_validator("base_url")(valid_url)
 
