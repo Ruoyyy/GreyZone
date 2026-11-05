@@ -15,8 +15,7 @@ CONTAINER="${SHOPWARE_CONTAINER:-commerce-agents-shopware}"
 SNAPSHOT="$ROOT/docker/snapshot"
 MYSQL=(mysql -h127.0.0.1 -uroot -proot --default-character-set=utf8mb4)
 
-# shellcheck source=/dev/null
-source "$SNAPSHOT/snapshot.env"
+SNAPSHOT_TAKEN_AT="$(cat "$SNAPSHOT/captured-at.txt")"
 
 echo "database: dropping and importing shopware.sql.gz (taken ${SNAPSHOT_TAKEN_AT} UTC)"
 docker exec "$CONTAINER" "${MYSQL[@]}" -e \

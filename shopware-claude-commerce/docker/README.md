@@ -135,6 +135,9 @@ active shop signing key, one agent signing key.
 
 ## Starting data (`docker/snapshot/`)
 
+`captured-at.txt` records the snapshot's UTC capture time alongside its database
+and media fixtures, so a fresh clone can restore and shift order dates correctly.
+
 The curated shop — catalog, images, cost prices, policy pages, seeded order history — ships as
 a snapshot. Between the plugin steps and the agent key, bootstrap restores it
 (`docker/restore_snapshot.sh`) when the database has never been seeded (no `CA-OIL`, i.e. a

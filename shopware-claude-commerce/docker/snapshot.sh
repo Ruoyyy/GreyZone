@@ -6,7 +6,7 @@
 #                    sessions/tokens, profile cache) keep their structure but no rows
 #   media.tar.gz     public/media and public/thumbnail — files live in the container, not
 #                    in the MySQL volume, so product images need their own copy
-#   snapshot.env     SNAPSHOT_TAKEN_AT (UTC); the restore shifts order dates by the age
+#   captured-at.txt  capture time (UTC); the restore shifts order dates by the age
 #
 #     docker/snapshot.sh            # from the repository root, with the stack running
 set -euo pipefail
@@ -38,6 +38,6 @@ dump=(mysqldump "${MYSQL_AUTH[@]}" --single-transaction --hex-blob --default-cha
 docker exec "$CONTAINER" bash -c 'cd /var/www/html/public && tar -cf - media $(test -d thumbnail && echo thumbnail)' \
   | gzip -n -9 > "$OUT/media.tar.gz"
 
-echo "SNAPSHOT_TAKEN_AT='${taken_at}'" > "$OUT/snapshot.env"
+printf '%s\n' "$taken_at" > "$OUT/captured-at.txt"
 echo "snapshot written to docker/snapshot/ (taken ${taken_at} UTC):"
 ls -la "$OUT" | awk 'NR > 3 {print "  " $5 "\t" $9}'
