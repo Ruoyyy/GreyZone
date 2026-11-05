@@ -17,13 +17,11 @@ python3.11 -m venv redteam/pyrit/.venv
 redteam/pyrit/.venv/bin/python -m pip install -r redteam/pyrit/requirements.txt
 ```
 
-The root `.env` must contain a fixed `MCP_API_KEY` matching the bridge and a
-`ZHIPU_API_KEY` for the default attacker model, `glm-4.7`. Alternatively, set
-`PYRIT_ATTACKER_API_KEY`, `PYRIT_ATTACKER_BASE_URL`, and optionally
-`PYRIT_ATTACKER_MODEL` in the shell for another OpenAI-compatible attacker
-model. The runner checks credentials and the PyRIT version before preparing an
-Oracle episode. The Python environment must satisfy all packages in
-`requirements.txt` because it runs PyRIT, the MCP gateway, and Oracle.
+Set `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` in `Clawith/.env`
+(or export them in the shell). The default API base is `https://api.openai.com/v1`.
+Set a fixed `MCP_API_KEY` matching the bridge. The selected model must support
+this adapter's tool calling / structured outputs. Credentials are checked before
+preparing an Oracle episode. Explicit `--model` overrides remain available.
 
 ## Run
 

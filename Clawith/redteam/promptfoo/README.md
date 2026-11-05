@@ -22,7 +22,7 @@ cd redteam/promptfoo
 npm ci
 ```
 
-The root `.env` must contain `ZHIPU_API_KEY` and a fixed `MCP_API_KEY` matching
+The root `.env` must contain `OPENAI_API_KEY` and a fixed `MCP_API_KEY` matching
 the bridge. If `MCP_API_KEY` is blank, set a random value in `.env` and restart
 the bridge before running the benchmark. `uv`, Node 22.22+, Docker, and the
 running Clawith stack are required. Do not put API key values in Promptfoo

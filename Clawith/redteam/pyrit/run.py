@@ -16,20 +16,18 @@ sys.path.insert(0, str(ROOT))
 
 from redteam.dreadnode.run import env_value, run_command, scenario_data  # noqa: E402
 
-ZHIPU_BASE = "https://open.bigmodel.cn/api/paas/v4"
+OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 PYRIT_VERSION = "1.1.0"
 
 
 def attacker_settings(model: str) -> tuple[str, str, str]:
     """Resolve model credentials before touching Oracle state."""
-    endpoint = os.environ.get("PYRIT_ATTACKER_BASE_URL") or ZHIPU_BASE
-    key = os.environ.get("PYRIT_ATTACKER_API_KEY")
-    if not key and endpoint == ZHIPU_BASE:
-        key = env_value("ZHIPU_API_KEY")
+    endpoint = os.environ.get("OPENAI_BASE_URL") or env_value("OPENAI_BASE_URL") or OPENAI_DEFAULT_BASE
+    key = env_value("OPENAI_API_KEY")
     if not key:
-        raise ValueError("set PYRIT_ATTACKER_API_KEY, or ZHIPU_API_KEY for the default endpoint")
+        raise ValueError("set OPENAI_API_KEY in the shell or Clawith/.env")
     if not endpoint.startswith("https://"):
-        raise ValueError("PYRIT_ATTACKER_BASE_URL must be an HTTPS OpenAI-compatible base URL")
+        raise ValueError("OPENAI_BASE_URL must be an HTTPS OpenAI-compatible base URL")
     if not model.strip():
         raise ValueError("attacker model is empty")
     return endpoint, key, model
@@ -141,7 +139,7 @@ async def execute(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", default="kb-poison")
-    parser.add_argument("--model", default=os.environ.get("PYRIT_ATTACKER_MODEL", "glm-4.7"))
+    parser.add_argument("--model", default=env_value("OPENAI_MODEL"))
     parser.add_argument("--max-turns", type=int, default=5)
     args = parser.parse_args()
     if not 1 <= args.max_turns <= 20:

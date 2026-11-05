@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 SURFACES = {"exfil", "private-agent-leak", "email-exfil", "kb-integrity", "fs-escape"}
-ZHIPU_OPENAI_BASE = "https://open.bigmodel.cn/api/paas/v4"
+OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 
 
 def scenario_data(scenario_id: str) -> tuple[dict, str]:
@@ -76,14 +76,11 @@ def model_environment(model: str, base_env: dict[str, str]) -> dict[str, str]:
             raise ValueError(
                 f"Dreadnode CLI 2.0.46 needs {', '.join(missing)} for {model}; "
                 "configure its proxy or select a provider model with --model")
-    elif model == "openai/glm-4.7":
-        if not (env.get("OPENAI_BASE_URL") or env.get("OPENAI_API_BASE")):
-            if not (key := env_value("ZHIPU_API_KEY")):
-                raise ValueError("openai/glm-4.7 needs ZHIPU_API_KEY in Clawith/.env")
-            env["OPENAI_API_KEY"] = key
-            env["OPENAI_BASE_URL"] = ZHIPU_OPENAI_BASE
-        elif not env.get("OPENAI_API_KEY"):
-            raise ValueError("openai/glm-4.7 needs OPENAI_API_KEY with a custom base URL")
+    elif model.startswith("openai/"):
+        env["OPENAI_API_KEY"] = env.get("OPENAI_API_KEY") or env_value("OPENAI_API_KEY")
+        env["OPENAI_BASE_URL"] = env.get("OPENAI_BASE_URL") or env_value("OPENAI_BASE_URL") or OPENAI_DEFAULT_BASE
+        if not env["OPENAI_API_KEY"]:
+            raise ValueError("set OPENAI_API_KEY before running the red-team agent")
     return env
 
 
@@ -92,9 +89,10 @@ def main() -> int:
     parser.add_argument("--scenario", default="kb-poison")
     parser.add_argument("--max-turns", type=int, default=5)
     parser.add_argument("--max-steps", type=int, default=40)
-    parser.add_argument("--model", default=os.environ.get(
-        "DREADNODE_ATTACKER_MODEL", "openai/glm-4.7"))
+    parser.add_argument("--model", default=f"openai/{env_value('OPENAI_MODEL')}")
     args = parser.parse_args()
+    if args.model == "openai/":
+        parser.error("Set OPENAI_MODEL or pass --model")
     if not 1 <= args.max_turns <= 20 or not 1 <= args.max_steps <= 1000:
         parser.error("max-turns must be 1..20 and max-steps must be 1..1000")
     scenario, objective = scenario_data(args.scenario)

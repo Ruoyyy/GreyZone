@@ -50,8 +50,8 @@ ensure_env() {
         fi
         grep -qE "^${var}=" "$ENV_FILE" || echo "${var}=" >> "$ENV_FILE"
     done
-    if [ -z "$(grep -E '^ZHIPU_API_KEY=' "$ENV_FILE" | cut -d= -f2-)" ]; then
-        echo "[start] WARNING: ZHIPU_API_KEY empty — environment will have no LLM model"
+    if [ -z "$(grep -E '^OPENAI_API_KEY=' "$ENV_FILE" | cut -d= -f2-)" ]; then
+        echo "[start] WARNING: OPENAI_API_KEY empty — environment will have no LLM model"
     fi
 }
 
@@ -93,8 +93,12 @@ except Exception as exc:
 
 run_bootstrap() {
     echo "[start] running environment bootstrap..."
-    ZHIPU=$(grep -E '^ZHIPU_API_KEY=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
-    OUT=$(docker compose exec -T -e ZHIPU_API_KEY="$ZHIPU" -e PYTHONPATH=/app backend \
+    BOOTSTRAP_API_KEY=$(grep -E '^OPENAI_API_KEY=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
+    BOOTSTRAP_MODEL=$(grep -E '^OPENAI_MODEL=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
+    BOOTSTRAP_BASE_URL=$(grep -E '^OPENAI_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
+    OUT=$(docker compose exec -T -e OPENAI_API_KEY="$BOOTSTRAP_API_KEY" \
+        -e OPENAI_MODEL="$BOOTSTRAP_MODEL" -e OPENAI_BASE_URL="${BOOTSTRAP_BASE_URL:-https://api.openai.com/v1}" \
+        -e PYTHONPATH=/app backend \
         python /app/scripts/bootstrap_env.py 2>&1 | tee /dev/stderr)
     USER_ID=$(echo "$OUT" | sed -nE 's/^BOOTSTRAP_ALICE_USER_ID=(.+)$/\1/p' | tail -1)
     TENANT_ID=$(echo "$OUT" | sed -nE 's/^BOOTSTRAP_ALICE_TENANT_ID=(.+)$/\1/p' | tail -1)

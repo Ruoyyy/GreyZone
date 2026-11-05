@@ -6,7 +6,7 @@ Target state (see start.sh):
   - alice:  alice@clawith.com / alice  (member, MCP bridge identity)
   - agents: Morty (company, in group) + Meeseeks (private), both created by admin
   - group:  one group with admin + alice + Morty
-  - LLM:    zhipu glm-4.7 platform model + runtime planning/compact settings
+  - LLM:    OpenAI-compatible platform model + runtime planning/compact settings
 
 Run inside the backend container:  python /app/scripts/bootstrap_env.py
 Prints BOOTSTRAP_ALICE_USER_ID / BOOTSTRAP_ALICE_TENANT_ID for start.sh.
@@ -129,37 +129,42 @@ async def _ensure_models(db, tenant_id: uuid.UUID):
     """Create the two model rows this environment needs (idempotent):
     a tenant-scoped row for agent chat (visible in Company Settings) and a
     platform row for group-runtime planning/compaction."""
-    api_key = os.environ.get("ZHIPU_API_KEY", "").strip()
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    model_name = os.environ.get("OPENAI_MODEL", "").strip()
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    if not api_key or not model_name:
+        raise RuntimeError("Set OPENAI_API_KEY and OPENAI_MODEL before bootstrap")
     tenant_model = (
         await db.execute(
             select(LLMModel).where(
-                LLMModel.model == "glm-4.7", LLMModel.tenant_id == tenant_id
+                LLMModel.model == model_name, LLMModel.provider == "openai", LLMModel.tenant_id == tenant_id
             )
         )
     ).scalars().one_or_none()
     platform_model = (
         await db.execute(
             select(LLMModel).where(
-                LLMModel.model == "glm-4.7", LLMModel.tenant_id.is_(None)
+                LLMModel.model == model_name, LLMModel.provider == "openai", LLMModel.tenant_id.is_(None)
             )
         )
     ).scalars().one_or_none()
-    if not api_key and (tenant_model is None or platform_model is None):
-        print("BOOTSTRAP_WARN no ZHIPU_API_KEY; LLM untouched")
-        return None, None
     encrypted = encrypt_data(api_key, settings.SECRET_KEY)
     if tenant_model is None:
         tenant_model = LLMModel(
-            id=uuid.uuid4(), tenant_id=tenant_id, provider="zhipu", model="glm-4.7",
-            label="GLM-4.7 (Z.ai)", api_key_encrypted=encrypted, enabled=True,
+            id=uuid.uuid4(), tenant_id=tenant_id, provider="openai", model=model_name, base_url=base_url,
+            label=f"OpenAI: {model_name}", api_key_encrypted=encrypted, enabled=True,
         )
         db.add(tenant_model)
     if platform_model is None:
         platform_model = LLMModel(
-            id=uuid.uuid4(), tenant_id=None, provider="zhipu", model="glm-4.7",
-            label="GLM-4.7 (Z.ai)", api_key_encrypted=encrypted, enabled=True,
+            id=uuid.uuid4(), tenant_id=None, provider="openai", model=model_name, base_url=base_url,
+            label=f"OpenAI: {model_name}", api_key_encrypted=encrypted, enabled=True,
         )
         db.add(platform_model)
+    for configured_model in (tenant_model, platform_model):
+        configured_model.api_key_encrypted = encrypted
+        configured_model.base_url = base_url
+        configured_model.enabled = True
     await db.flush()
 
     from app.models.system_settings import SystemSetting

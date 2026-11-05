@@ -23,13 +23,11 @@ python3.11 -m venv redteam/deepteam/.venv
 redteam/deepteam/.venv/bin/python -m pip install -r redteam/deepteam/requirements.txt
 ```
 
-Set a fixed `MCP_API_KEY` and `ZHIPU_API_KEY` in `Clawith/.env`. The default
-attacker model is `glm-4.7` through Zhipu's OpenAI-compatible endpoint. For a
-different endpoint, set `DEEPTEAM_ATTACKER_BASE_URL` and
-`DEEPTEAM_ATTACKER_API_KEY`; set `DEEPTEAM_ATTACKER_MODEL` or `--model` for its
-model name. The runner checks the package version, credentials, and one
-structured model response before preparing Oracle. Telemetry from DeepTeam
-and DeepEval is disabled by the runner.
+Set `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` in `Clawith/.env`
+(or export them in the shell). The default API base is `https://api.openai.com/v1`.
+Set a fixed `MCP_API_KEY` matching the bridge. The selected model must support
+this adapter's tool calling / structured outputs. Credentials are checked before
+preparing an Oracle episode. Explicit `--model` overrides remain available.
 
 ## Run
 

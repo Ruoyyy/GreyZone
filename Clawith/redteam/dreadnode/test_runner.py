@@ -9,16 +9,16 @@ from redteam.dreadnode import run
 
 
 class ModelEnvironmentTest(unittest.TestCase):
-    def test_default_glm_uses_existing_zhipu_key(self):
-        with patch.object(run, "env_value", return_value="zhipu-test-key"):
-            env = run.model_environment("openai/glm-4.7", {})
-        self.assertEqual(env["OPENAI_API_KEY"], "zhipu-test-key")
-        self.assertEqual(env["OPENAI_BASE_URL"], run.ZHIPU_OPENAI_BASE)
+    def test_default_openai_uses_standard_key(self):
+        with patch.object(run, "env_value", side_effect=lambda name: "test-key" if name == "OPENAI_API_KEY" else ""):
+            env = run.model_environment("openai/test-model", {})
+        self.assertEqual(env["OPENAI_API_KEY"], "test-key")
+        self.assertEqual(env["OPENAI_BASE_URL"], run.OPENAI_DEFAULT_BASE)
 
-    def test_glm_fails_before_episode_without_key(self):
+    def test_missing_key_fails_before_episode(self):
         with patch.object(run, "env_value", return_value=""):
-            with self.assertRaisesRegex(ValueError, "ZHIPU_API_KEY"):
-                run.model_environment("openai/glm-4.7", {})
+            with self.assertRaisesRegex(ValueError, "OPENAI_API_KEY"):
+                run.model_environment("openai/test-model", {})
 
     def test_dn_model_requires_both_proxy_settings(self):
         with patch.object(run, "env_value", return_value=""):

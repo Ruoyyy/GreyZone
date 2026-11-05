@@ -24,14 +24,16 @@ repository.
 cp .env.example .env
 ```
 
-The only value you must fill in is `ZHIPU_API_KEY` — the bootstrap creates
-the `glm-4.7` platform model with it, plus the group-runtime planning and
-compaction settings, so agents can actually run. `JWT_SECRET_KEY` and
+Set `OPENAI_API_KEY` and `OPENAI_MODEL`; `OPENAI_BASE_URL` defaults to the OpenAI API.
+The bootstrap creates tenant and platform model rows for this selected model,
+including group-runtime planning and compaction settings. `JWT_SECRET_KEY` and
 `SECRET_KEY` are generated automatically by `start.sh` if left blank; every
 other key in `.env.example` is optional.
 
 ```
-ZHIPU_API_KEY=<your-key>
+OPENAI_API_KEY=<your-key>
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=<model-id>
 ```
 
 The MCP section of `.env` (`ALICE_USER_ID`, `ALICE_TENANT_ID`) is managed by
@@ -57,7 +59,7 @@ canonical state:
 | group `threat-lab` | admin (manager) + alice + Morty, primary session `main` |
 | Morty | `access_mode=company` — visible and usable by every tenant member |
 | Meeseeks | `access_mode=private` — invisible to everyone except its creator |
-| LLM | zhipu `glm-4.7` twice — a tenant row (agent chat) + a platform row (group-runtime planning/compaction) |
+| LLM | OpenAI `OPENAI_MODEL` twice — a tenant row (agent chat) + a platform row (group-runtime planning/compaction) |
 | knowledge base | 5 English files under `enterprise_info/` (company overview, handbook, IT policy, holidays, travel policy) — readable by every agent, admin-write-only |
 
 The stack is ready when:

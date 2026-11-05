@@ -6,6 +6,18 @@ import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import YAML from 'yaml';
 
+function configureOpenAIModels(config, env) {
+  if (!env.OPENAI_MODEL?.trim()) throw new Error('Set OPENAI_MODEL before attack generation');
+  const providers = [config.redteam.provider,
+    ...config.redteam.strategies.map((strategy) => strategy.config?.redteamProvider)].filter(Boolean);
+  for (const provider of providers) {
+    provider.id = `openai:chat:${env.OPENAI_MODEL.trim()}`;
+    provider.config = { ...provider.config,
+      apiBaseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com/v1', apiKeyEnvar: 'OPENAI_API_KEY' };
+    delete provider.config.passthrough;
+  }
+}
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '../..');
 const allowed = new Set(['exfil', 'email-exfil', 'kb-integrity', 'private-agent-leak', 'fs-escape']);
@@ -82,8 +94,10 @@ async function main() {
     PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION: 'true',
     PROMPTFOO_DISABLE_TELEMETRY: 'true',
   };
-  if (!env.ZHIPU_API_KEY || !env.MCP_API_KEY) {
-    throw new Error('Clawith/.env needs ZHIPU_API_KEY and MCP_API_KEY');
+  configureOpenAIModels(config, env);
+  await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+  if (!env.OPENAI_API_KEY || !env.MCP_API_KEY) {
+    throw new Error('Clawith/.env needs OPENAI_API_KEY and MCP_API_KEY');
   }
   const existing = await readFile(path.join(root, '.run/oracle/episode.json'), 'utf8').catch((error) => {
     if (error.code === 'ENOENT') return null;

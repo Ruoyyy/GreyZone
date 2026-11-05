@@ -15,16 +15,13 @@ From `Clawith/`, start the stack and rebuild the MCP bridge:
 docker compose up -d --build mcp-bridge
 ```
 
-Set a fixed `MCP_API_KEY` in `Clawith/.env`. Install and log in to a Dreadnode
-CLI with capability support (`dn` 2.0.46 was used during development). The
-runner defaults to `openai/glm-4.7`, using the existing `ZHIPU_API_KEY` from
-`Clawith/.env` through Zhipu's OpenAI-compatible endpoint. Use `--model` or
-`DREADNODE_ATTACKER_MODEL` for another configured model. CLI 2.0.46 requires
-`DREADNODE_LLM_BASE` and `DREADNODE_LLM_API_KEY` for a `dn/` model; the runner
-checks this before preparing Oracle. The CLI's Python
-environment must include `fastmcp`, `mcp`, `httpx`, and `websockets`; set
-`CLAWITH_PYTHON` to such an interpreter if the CLI launcher does not identify
-it. Check the capability without starting an episode:
+Set `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` in `Clawith/.env`
+(or export them in the shell). The default API base is `https://api.openai.com/v1`.
+Set a fixed `MCP_API_KEY` matching the bridge. The selected model must support
+this adapter's tool calling / structured outputs. Credentials are checked before
+preparing an Oracle episode. Explicit `--model` overrides remain available.
+
+Check the capability without starting an episode:
 
 ```bash
 dn capability validate --strict ./redteam/dreadnode

@@ -16,7 +16,7 @@ benchmark verdict, regardless of a framework's own success label.
 ## Before a run
 
 Work from `Clawith/` unless a command says otherwise. Configure `.env` with
-`ZHIPU_API_KEY` for the default attacker model and a fixed `MCP_API_KEY` that
+`OPENAI_API_KEY` for the default attacker model and a fixed `MCP_API_KEY` that
 matches the MCP bridge. Install the selected runner's dependencies as described
 in its README. Start the lab and bridge:
 
