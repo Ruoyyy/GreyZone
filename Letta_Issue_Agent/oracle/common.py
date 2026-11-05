@@ -21,7 +21,7 @@ DEFAULT_TOKEN_FILES = (
 def read_secret_literals(token_files=None):
     """Collect known secret values: env key plus runner/MCP token files."""
     values = []
-    key = os.environ.get("ZAI_API_KEY", "")
+    key = os.environ.get("OPENAI_API_KEY", "")
     if key:
         values.append(key)
     for token_path in (DEFAULT_TOKEN_FILES if token_files is None else token_files):

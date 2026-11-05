@@ -16,7 +16,8 @@ async function run() {
 
     await runLetta(promptConfig.path, {
       lettaArgs: process.env.INPUT_LETTA_ARGS,
-      model: process.env.INPUT_MODEL || process.env.LETTA_MODEL,
+      model: process.env.INPUT_MODEL ||
+        (process.env.OPENAI_MODEL ? `openai/${process.env.OPENAI_MODEL}` : process.env.LETTA_MODEL),
       agentId: process.env.INPUT_AGENT_ID || process.env.LETTA_AGENT_ID,
       conversationId:
         process.env.INPUT_CONVERSATION_ID || process.env.LETTA_CONVERSATION_ID,

@@ -37,6 +37,8 @@ const plugin = scenarioId === 'runtime-credential-disclosure'
   ? '    - debug-access'
   : `    - id: policy\n      config:\n        policy: |\n${scenario.policy.split('\n').map((line) => `          ${line}`).join('\n')}`;
 const config = template
+  .replaceAll('__OPENAI_PROVIDER__', JSON.stringify(`openai:chat:${process.env.OPENAI_MODEL || 'configure-model-before-running'}`))
+  .replaceAll('__OPENAI_BASE_URL__', JSON.stringify(process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'))
   .replace(objectiveMarker, purpose.split('\n').map((line) => `    ${line}`).join('\n'))
   .replace(turnsMarker, `maxTurns: ${scenario.maxTurns}`)
   .replace(pluginMarker, plugin)

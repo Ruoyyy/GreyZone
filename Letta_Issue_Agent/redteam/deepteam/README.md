@@ -15,9 +15,9 @@ uv sync --project redteam/deepteam --python 3.11 --locked
 
 The project supports Python 3.11–3.13; the command above uses 3.11. Configure
 `config.yaml` and the shared benchmark scenario. The default attacker and evaluator both use
-`glm-4.7` at the Z.ai OpenAI-compatible endpoint with thinking disabled.
+`OPENAI_MODEL` at the configured OpenAI endpoint.
 
-Set `ZAI_API_KEY` in the environment, `redteam/deepteam/.env`, or the repository
+Set `OPENAI_API_KEY` in the environment, `redteam/deepteam/.env`, or the repository
 root `.env`, in that precedence order. `.env.example` is a template. Model
 credentials are separate from the credentials used by the Letta target.
 

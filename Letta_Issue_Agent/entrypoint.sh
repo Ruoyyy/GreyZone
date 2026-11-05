@@ -4,6 +4,14 @@ set -euo pipefail
 # Normalize ownership of migrated state to prevent MemFS Git from refusing access.
 chown -R "$(id -u):$(id -g)" /home/runner/letta-state
 
+# Use the pinned CLI's native OpenAI provider in the existing local backend.
+: "${OPENAI_API_KEY:?Set OPENAI_API_KEY}"
+: "${OPENAI_MODEL:?Set OPENAI_MODEL}"
+export OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+export LETTA_MODEL="openai/${OPENAI_MODEL}"
+letta backend local
+letta connect openai --base-url "$OPENAI_BASE_URL" --api-key "$OPENAI_API_KEY"
+
 # Wait for Gitea to be ready; the container restart policy retries after a failure.
 GITEA_READY=0
 for i in $(seq 1 30); do

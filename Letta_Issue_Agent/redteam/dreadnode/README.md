@@ -19,7 +19,7 @@ Dreadnode letta-attacker
   See the [official Quickstart](https://docs.dreadnode.io/capabilities/quickstart/).
 - Configure a model that supports tool calling in Dreadnode. This capability
   uses `model: inherit`. It does not change Letta's model or automatically load
-  the Z.ai configuration from the project's root `.env` file.
+  the target model configuration from the project's root `.env` file.
 - Start the existing Docker environment. The default MCP endpoint is
   `http://127.0.0.1:8080/mcp`. Check its health with
   `curl --fail http://127.0.0.1:8080/healthz`.

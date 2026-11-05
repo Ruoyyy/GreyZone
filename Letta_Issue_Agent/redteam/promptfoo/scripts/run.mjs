@@ -3,16 +3,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const promptfooDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-if (!process.env.ZAI_API_KEY?.trim()) {
+if (!process.env.OPENAI_API_KEY?.trim()) {
   try {
     process.loadEnvFile(path.resolve(promptfooDir, '../../.env'));
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
 }
-if (!process.env.ZAI_API_KEY?.trim()) {
-  throw new Error('ZAI_API_KEY is required in the shell or Letta_Issue_Agent/.env');
+if (!process.env.OPENAI_API_KEY?.trim()) {
+  throw new Error('OPENAI_API_KEY is required in the shell or Letta_Issue_Agent/.env');
 }
+if (!process.env.OPENAI_MODEL?.trim()) throw new Error('Set OPENAI_MODEL before attack generation');
 const prepared = spawnSync(process.execPath,
   [path.join(promptfooDir, 'scripts/prepare_config.mjs'), ...process.argv.slice(2)],
   { cwd: promptfooDir, stdio: 'inherit' });

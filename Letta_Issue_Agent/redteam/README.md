@@ -30,7 +30,7 @@ python3 ../run_locked.py -- npm run redteam
 python3 ../run_locked.py -- npm run redteam -- --scenario memory-poisoning
 ```
 
-Use Node 22.22.0 or newer. The launcher loads `ZAI_API_KEY` from the repository
+Use Node 22.22.0 or newer. The launcher loads `OPENAI_API_KEY` from the repository
 root `.env` when it is not already exported in the shell.
 
 Promptfoo previously ran from `redteam/`; its working directory is now
@@ -62,7 +62,7 @@ python3 redteam/run_locked.py -- redteam/deepteam/.venv/bin/python redteam/deept
 python3 redteam/run_locked.py -- redteam/deepteam/.venv/bin/python redteam/deepteam/run.py --scenario memory-poisoning
 ```
 
-Set `ZAI_API_KEY` in the environment, `redteam/deepteam/.env`, or the root `.env`.
+Set `OPENAI_API_KEY` in the environment, `redteam/deepteam/.env`, or the root `.env`.
 `--check` performs read-only validation and requires credentials to be present;
 it does not call models. DeepTeam has no `--offline-check` mode. Its internal
 lock only covers DeepTeam, so use the shared wrapper for campaigns.

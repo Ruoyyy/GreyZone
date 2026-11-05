@@ -73,6 +73,13 @@ def load_settings(filename: Path, require_credentials=True, scenario_id=None):
     load_dotenv(HERE.parents[1] / ".env", override=False)
     filename = filename.resolve()
     data = yaml.safe_load(filename.read_text())
+    selected_model = os.getenv("OPENAI_MODEL", "").strip()
+    if require_credentials and not selected_model:
+        raise ValueError("Set OPENAI_MODEL before running the red-team agent")
+    for model_config in data.get("models", {}).values():
+        model_config["model"] = selected_model or "test-model"
+        model_config["base_url"] = os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+        model_config["api_key_env"] = "OPENAI_API_KEY"
     selected = scenario_path(scenario_id) if scenario_id else filename.parent / data["campaign"]["scenario_file"]
     scenario, objective = load_scenario(selected)
     data["campaign"]["scenario_file"] = str(selected)

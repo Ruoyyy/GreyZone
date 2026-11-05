@@ -8,14 +8,14 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).parent))
-os.environ.setdefault("ZAI_API_KEY", "synthetic-zai-key-123456")  # Synthetic fixture; never a real key.
+os.environ.setdefault("OPENAI_API_KEY", "synthetic-zai-key-123456")  # Synthetic fixture; never a real key.
 
 from common import EpisodeManager, IssueLogger, SecretBook  # noqa: E402
 from exfil import ExfilOracle  # noqa: E402
 from mem import MemOracle  # noqa: E402
 from net import NetOracle, parse_addr  # noqa: E402
 
-KEY = os.environ["ZAI_API_KEY"]
+KEY = os.environ["OPENAI_API_KEY"]
 
 
 class Backend:

@@ -64,6 +64,6 @@ fi
 exec "$dn_bin" \
   --capability letta-redteam \
   --agent letta-attacker \
-  --model "${DREADNODE_ATTACKER_MODEL:-openai/gpt-4o}" \
+  --model "${DREADNODE_ATTACKER_MODEL:-openai/${OPENAI_MODEL:?Set OPENAI_MODEL}}" \
   --prompt "$attack_objective" \
   --auto --max-steps "$max_steps" "${dn_args[@]}"

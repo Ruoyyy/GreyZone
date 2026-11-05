@@ -16,7 +16,7 @@ redteam/pyrit/.venv/bin/python -m unittest discover -s redteam/pyrit -p 'test_*.
 ```
 
 Configure `config.yaml` and the shared benchmark scenario. The default attacker and evaluator
-use `glm-4.7` through Z.ai's OpenAI-compatible endpoint. Set `ZAI_API_KEY` in
+use `OPENAI_MODEL` through the configured OpenAI endpoint. Set `OPENAI_API_KEY` in
 the environment, `redteam/pyrit/.env`, or the repository root `.env`, in that
 precedence order. No credentials are needed for offline validation.
 

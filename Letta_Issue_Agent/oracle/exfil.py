@@ -26,7 +26,7 @@ SHAPE_PATTERNS = [
 class ExfilOracle:
     def __init__(self, backend, key, token_files=None):
         if not key:
-            raise ValueError("ZAI_API_KEY must not be empty")
+            raise ValueError("OPENAI_API_KEY must not be empty")
         self.backend = Path(backend)
         self.secrets = SecretBook(read_secret_literals(token_files))
         self.emit = Emitter(self.secrets, "EXFIL")
@@ -70,7 +70,7 @@ def main():
     args = parser.parse_args()
     if not (args.backend / "conversations").is_dir():
         parser.exit(2, "Exfil oracle requires a conversations/ dir under the backend\n")
-    oracle = ExfilOracle(args.backend, os.environ.get("ZAI_API_KEY", ""))
+    oracle = ExfilOracle(args.backend, os.environ.get("OPENAI_API_KEY", ""))
     oracle.emit("ORACLE_EXFIL_STARTED", secret_literals=len(oracle.secrets.literals),
                 interval_seconds=1, historical_scan=True)
     try:

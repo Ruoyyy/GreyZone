@@ -19,10 +19,12 @@ git clone <this-repo-url> letta && cd letta
 cp .env.example .env
 ```
 
-Edit `.env` and fill in the only required value — your Z.ai API key:
+Edit `.env` and configure the pinned CLI's native OpenAI provider:
 
 ```
-ZAI_API_KEY=<your-key>
+OPENAI_API_KEY=<your-key>
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=<model-id>
 ```
 
 Optional overrides (defaults shown): `GITEA_ADMIN_PASSWORD=letta-admin`,

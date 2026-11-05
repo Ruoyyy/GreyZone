@@ -115,7 +115,7 @@ Issue **creation** bodies still need `@letta-code` in the body (`ensureMention`)
 
 | Field | Purpose |
 |---|---|
-| `id` | Provider/model string, here the Z.ai OpenAI-compatible endpoint |
+| `id` | Provider/model string, here the configured OpenAI endpoint |
 | `config.apiBaseUrl` | Endpoint base URL |
 | `config.apiKeyEnvar` | Env var holding the API key |
 | `config.passthrough` | Raw request-body keys promptfoo forwards unchanged; used here to send `thinking: disabled` |
@@ -147,7 +147,7 @@ python3 ../run_locked.py -- npm run redteam   # promptfoo 0.122.2, serial target
 PROMPTFOO_CONFIG_DIR="$PWD/.promptfoo" npx promptfoo redteam report
 ```
 
-The launcher loads `ZAI_API_KEY` from the root `.env` when it is not already
+The launcher loads `OPENAI_API_KEY` from the root `.env` when it is not already
 exported. Run from `redteam/promptfoo/`:
 
 ```bash
@@ -155,8 +155,8 @@ python3 ../run_locked.py -- npm run redteam
 ```
 
 `npm run redteam` uses the promptfoo pinned in `package.json` / `package-lock.json`
-and sets `PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=true` (local Z.ai generation,
-no Promptfoo remote attack generation; prompts still go to the configured Z.ai
+and sets `PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION=true` (local model generation,
+no Promptfoo remote attack generation; prompts still go to the configured model
 model API). Use `npx promptfoo@latest` only if you
 deliberately want a different version — it is not what this config is tested against.
 
@@ -193,3 +193,5 @@ above. `npm run smoke:live` posts two real benign turns; run it as
 - [Custom Provider](https://www.promptfoo.dev/docs/providers/custom-api/)
 - [Red team configuration](https://www.promptfoo.dev/docs/red-team/configuration/)
 - [Multi-turn strategies](https://www.promptfoo.dev/docs/red-team/strategies/multi-turn/)
+
+Set `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` for model requests.

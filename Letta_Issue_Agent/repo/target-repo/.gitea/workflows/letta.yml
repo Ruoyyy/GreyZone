@@ -11,10 +11,9 @@
 # as the remote credential (what actions/checkout does in GitHub mode; here a single git line
 # handles it, with no dependency on any external action repo).
 #
-# LLM: direct Z.ai GLM connection (natively supported by letta; env vars verified against the 0.31.14 source)
-#   ZAI_API_KEY is passed down into the runner container env (compose environment section), and the letta
-#   process inherits it via process.env (run-letta.ts spawn env:{...process.env}); no secrets reference needed here.
-#   Model: -m glm-5.3-flash in letta_args
+# LLM: the runner configures the pinned CLI's native OpenAI provider from
+# OPENAI_API_KEY, OPENAI_BASE_URL and OPENAI_MODEL. LETTA_MODEL is inherited
+# by the action; agent/session/memory remain on the existing local backend.
 #
 # Action source: the local Gitea private repo letta-admin/letta-code-action, pinned to a fixed commit SHA.
 # The action repo's Actions → General page has sharing enabled for repos under letta-admin.
@@ -72,7 +71,6 @@ jobs:
           path_to_bun_executable: /usr/local/bin/bun   # Alpine musl build, preinstalled by the Dockerfile
           label_trigger: letta-code
           # No Letta Cloud: local backend; agent/session/memory live in the in-container letta-state volume
-          model: glm-5.3-flash
           letta_args: "--backend local"
           # Continue an independent session per conversation_id from the issue comment, on the same agent
           # agent_id left unspecified: the action auto-creates/reuses an agent by tag
