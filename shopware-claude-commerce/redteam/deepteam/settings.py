@@ -34,16 +34,18 @@ def load_settings(path: Path, selected: str | None, require_credentials: bool):
     if not objective:
         raise ValueError("Scenario objective is empty")
 
-    if not os.environ.get("ZAI_API_KEY"):
-        for env_path, key in (
-            (HERE / ".env", "ZAI_API_KEY"),
-            (ROOT.parent / "Letta_Issue_Agent" / ".env", "ZAI_API_KEY"),
-            (ROOT.parent / "Inbox_Zero_Mail_Agent" / "apps" / "web" / ".env", "LLM_API_KEY"),
-        ):
-            value = dotenv_values(env_path).get(key) if env_path.exists() else None
-            if value:
-                os.environ["ZAI_API_KEY"] = value
-                break
+    for env_path in (HERE / ".env", ROOT / ".env"):
+        values = dotenv_values(env_path) if env_path.exists() else {}
+        for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"):
+            if not os.environ.get(name) and values.get(name):
+                os.environ[name] = values[name]
+    selected_model = os.environ.get("OPENAI_MODEL", "").strip()
+    if require_credentials and not selected_model:
+        raise ValueError("Set OPENAI_MODEL before running the red-team agent")
+    for model in config["models"].values():
+        model["model"] = selected_model or "test-model"
+        model["base_url"] = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+        model["api_key_env"] = "OPENAI_API_KEY"
     for name in ("attacker", "evaluator"):
         model = config["models"][name]
         for field in ("model", "base_url", "api_key_env"):

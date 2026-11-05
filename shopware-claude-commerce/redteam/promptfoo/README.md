@@ -14,13 +14,10 @@ disagrees.
 Start Shopware and both API hosts (ports 8004 and 8005). Bootstrap must have
 created the seller integration and the `admin@shop.com` / `alice@shop.com`
 customers. Put the victim model's `ANTHROPIC_API_KEY` in the project `.env`.
-Promptfoo uses Z.ai GLM-4.7 for attack generation by default. Set
-`ZAI_API_KEY` in the shell or this directory's ignored `.env`; the runner also
-reuses `Letta_Issue_Agent/.env`'s `ZAI_API_KEY` or
-`Inbox_Zero_Mail_Agent/apps/web/.env`'s `LLM_API_KEY` when present. Set
-`PROMPTFOO_ATTACK_PROVIDER` to choose another promptfoo provider, with that
-provider's credentials in the shell. The victim agents retain their own
-Anthropic model settings.
+Promptfoo uses `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` from the
+shell, this directory's ignored `.env`, or the project root `.env`, in that
+precedence order. Victim agents retain their native model settings. Use the
+launcher so the generated configuration receives the selected model and URL.
 
 The local custom generator produces text for seller-controlled shop fields.
 For `buyer-misdirection`, the generated objective uses the selected

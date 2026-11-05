@@ -25,10 +25,9 @@ network traffic, seller writes, or model requests. `--check` also verifies
 credentials, the shopping and merchant health endpoints, and a read-only
 seller-MCP product search. Neither starts a victim task.
 
-The attacker and advisory evaluator default to Z.ai `glm-4.7`. The runner
-reads `ZAI_API_KEY` from the shell, optional ignored `redteam/pyrit/.env`,
-`Letta_Issue_Agent/.env`, or the Inbox Zero web app's `LLM_API_KEY`, in that
-order. Change `config.yaml` to use another OpenAI-compatible model. The victim
+The attacker and advisory evaluator use `OPENAI_MODEL` through the OpenAI-compatible API. The runner
+reads `OPENAI_API_KEY` from the shell, optional ignored `redteam/pyrit/.env`,
+the project root `.env`; shell values take precedence. Change `config.yaml` to use another OpenAI-compatible model. The victim
 agents keep their existing project model settings. Secrets are never written
 to `config.yaml` or the scenario.
 

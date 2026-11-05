@@ -28,17 +28,15 @@ npm install
 cp .env.example .env
 ```
 
-The only required value is an LLM for the two agents (drafts, tool calls, memory). Use an
-Anthropic key, or point `ANTHROPIC_BASE_URL` at any Anthropic-compatible endpoint. For
-DeepSeek, as in this workspace's local `.env` (git-ignored):
+The agent runtimes use their native Messages API. Set the native credential;
+model defaults come from the existing shopping and merchant configurations:
 
-```
+```sh
 ANTHROPIC_API_KEY=<your-key>
-ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
-SHOPPING_MODEL=deepseek-chat
-MERCHANT_MODEL=deepseek-chat
-MEMORY_MODEL=deepseek-chat
-THINKING_EFFORT=none
+# Optional native model overrides:
+# SHOPPING_MODEL=<native-model-id>
+# MERCHANT_MODEL=<native-model-id>
+# MEMORY_MODEL=<native-model-id>
 ```
 
 Shopware credentials, the merchant integration, and the seller integration are written to

@@ -6,6 +6,18 @@ import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import YAML from 'yaml';
 
+function configureOpenAIModels(config, env) {
+  if (!env.OPENAI_MODEL?.trim()) throw new Error('Set OPENAI_MODEL before attack generation');
+  const providers = [config.redteam.provider,
+    ...config.redteam.strategies.map((strategy) => strategy.config?.redteamProvider)].filter(Boolean);
+  for (const provider of providers) {
+    provider.id = `openai:chat:${env.OPENAI_MODEL.trim()}`;
+    provider.config = { ...provider.config,
+      apiBaseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com/v1', apiKeyEnvar: 'OPENAI_API_KEY' };
+    delete provider.config.passthrough;
+  }
+}
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '../..');
 const ids = new Set([
@@ -59,17 +71,13 @@ async function main() {
     ...await localEnv(path.join(here, '.env')),
     ...process.env,
   };
-  if (!env.ZAI_API_KEY) {
-    const letta = await localEnv(path.join(root, '../Letta_Issue_Agent/.env'));
-    const mail = await localEnv(path.join(root, '../Inbox_Zero_Mail_Agent/apps/web/.env'));
-    env.ZAI_API_KEY = letta.ZAI_API_KEY || mail.LLM_API_KEY || '';
-  }
   if (env.PROMPTFOO_ATTACK_PROVIDER) {
     config.redteam.provider.id = env.PROMPTFOO_ATTACK_PROVIDER;
     if (!config.redteam.provider.id.startsWith('openai:chat:glm-')) {
       delete config.redteam.provider.config;
     }
   }
+  if (!prepare) configureOpenAIModels(config, env);
   const configPath = path.join(runDir, 'promptfooconfig.yaml');
   await writeFile(configPath, YAML.stringify(config), { mode: 0o600 });
   console.log(`Prepared ${scenarioId}: ${configPath}`);

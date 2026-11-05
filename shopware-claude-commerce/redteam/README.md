@@ -17,9 +17,9 @@ bash docker/bootstrap.sh
 ./dev.sh status
 ```
 
-The victim agents need the project's `ANTHROPIC_API_KEY`. Promptfoo, PyRIT,
-and DeepTeam use Z.ai `glm-4.7` for attack generation by default and look for
-`ZAI_API_KEY` in their own documented locations. Dreadnode uses its CLI and
+The victim agents use their native `ANTHROPIC_API_KEY`. Promptfoo, PyRIT,
+and DeepTeam use `OPENAI_MODEL` for attack generation by default and look for
+`OPENAI_API_KEY` in their own documented locations. Dreadnode uses its CLI and
 the project Anthropic key by default. Each tool's README covers installation
 and credential overrides. Do not put API keys in scenario files or committed
 configuration.

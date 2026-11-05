@@ -24,10 +24,9 @@ credentials or network access. `--check` also checks credentials, both API
 hosts, and a read-only seller MCP product search. Neither sends a model request
 or writes shop data.
 
-The attacker and advisory evaluator default to Z.ai `glm-4.7`. The runner
-reads `ZAI_API_KEY` from the shell, optional ignored `redteam/deepteam/.env`,
-`Letta_Issue_Agent/.env`, or the Inbox Zero web app's `LLM_API_KEY`, in that
-order. The victim agents retain their own model settings.
+The attacker and advisory evaluator use `OPENAI_MODEL` through the OpenAI-compatible API. The runner
+reads `OPENAI_API_KEY` from the shell, optional ignored `redteam/deepteam/.env`,
+the project root `.env`; shell values take precedence. The victim agents retain their own model settings.
 
 ## Run
 
