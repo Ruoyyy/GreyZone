@@ -2,7 +2,6 @@ module.exports = {
   env: {
     node: true,
     es6: true,
-    jest: true,
   },
   extends: ['airbnb-base'],
   parserOptions: {
@@ -175,22 +174,11 @@ module.exports = {
       },
     },
     {
-      // For test files
-      files: ['**/__tests__/**/*.js', '**/*.test.js'],
-      rules: {
-        'no-unused-vars': 'off',
-        'no-undef': 'off',
-        'no-const-assign': 'off', // For test mocks
-        'no-trailing-spaces': 'off', // Disable trailing spaces in test files
-      },
-    },
-    {
       // For migration and utility scripts
       files: [
         '**/migrations/**/*.js',
         '**/utils/**/*.js',
         'sync-pods.js',
-        'testPG.js',
       ],
       rules: {
         'no-restricted-syntax': 'off',

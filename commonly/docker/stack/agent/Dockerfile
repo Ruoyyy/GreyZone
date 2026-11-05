@@ -1,5 +1,4 @@
-# A containerised Claude Code seat for Commonly (local, unofficial — mirrors
-# k8s/helm/commonly/templates/agents/cloud-codex-deployment.yaml).
+# A containerised Claude Code seat for the local Commonly benchmark.
 FROM node:22-bookworm-slim
 
 # Tools the agent may use inside its own container (Bash is allowed, network is not).
