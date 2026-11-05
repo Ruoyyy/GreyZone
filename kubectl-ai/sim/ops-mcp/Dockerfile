@@ -1,4 +1,4 @@
-# 参照 Clawith/mcp-bridge 的部署配方：fastmcp + http 传输 + 静态钥匙
+# Deployment recipe follows Clawith/mcp-bridge: fastmcp + HTTP transport + static key
 FROM python:3.12-slim
 
 RUN apt-get update && \
