@@ -81,3 +81,25 @@ Validation:
 
 No images were built, services started, remote demo accounts changed, or model
 requests made. These results do not establish live deployment readiness.
+
+## Clawith: Print-Only Sandbox Probe
+
+Removed `backend/test_sandbox_config.py`. It called `SandboxConfig.from_dict`
+with four values and printed the results at module import time. It had no
+assertions and no tracked task, runtime, build, package, script, or CI caller.
+Its last retained source is available at `f75fe7b85`.
+
+The runtime sandbox configuration and its network policy are unchanged. Existing
+Oracle calibration tests and all task fixtures remain in place. The probe was
+not converted into tests that merely repeat its implementation.
+
+Validation:
+
+- `python3 scripts/check_deployment.py --project Clawith --regression`: passed
+  source, tool, shell syntax, and Compose checks, plus 28 Oracle tests.
+- Tracked-reference searches found no retained caller of the removed probe.
+  Runtime sandbox policy, task fixtures, Oracle code, and dependency declarations
+  have no diff.
+- `git diff --check` passed; all added review text is English.
+
+No sandbox configuration or agent permissions were changed.
