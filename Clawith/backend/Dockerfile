@@ -12,17 +12,23 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     apt-get install -y --no-install-recommends gcc libpq-dev libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 shared-mime-info pango1.0-tools && \
     rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 ARG UV_VERSION=0.11.15
 ARG CLAWITH_PIP_INDEX_URL
 ARG CLAWITH_PIP_TRUSTED_HOST
-RUN if [ -n "$CLAWITH_PIP_INDEX_URL" ] && [ -n "$CLAWITH_PIP_TRUSTED_HOST" ]; then \
-        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" --trusted-host "$CLAWITH_PIP_TRUSTED_HOST" . "uv==${UV_VERSION}"; \
-    elif [ -n "$CLAWITH_PIP_INDEX_URL" ]; then \
-        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" . "uv==${UV_VERSION}"; \
-    else \
-        pip install --no-cache-dir . "uv==${UV_VERSION}"; \
-    fi
+RUN set --; \
+    if [ -n "$CLAWITH_PIP_INDEX_URL" ]; then \
+        set -- "$@" --index-url "$CLAWITH_PIP_INDEX_URL"; \
+        if [ -n "$CLAWITH_PIP_TRUSTED_HOST" ]; then \
+            set -- "$@" --trusted-host "$CLAWITH_PIP_TRUSTED_HOST"; \
+        fi; \
+    fi; \
+    pip install --no-cache-dir "$@" "uv==${UV_VERSION}" && \
+    UV_PYTHON_DOWNLOADS=never uv lock --check --offline && \
+    uv export --frozen --no-dev --no-emit-project --format requirements.txt \
+        --output-file /tmp/runtime-requirements.txt > /dev/null && \
+    pip install --no-cache-dir "$@" --require-hashes -r /tmp/runtime-requirements.txt && \
+    pip install --no-cache-dir "$@" --no-deps .
 
 # ─── Production ─────────────────────────────────────────
 FROM python:3.12-slim AS production
