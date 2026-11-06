@@ -2,7 +2,7 @@
 
 CLI tool for managing [Inbox Zero](https://www.getinboxzero.com) through the external API.
 
-This package is separate from `@inbox-zero/cli`, which is focused on self-hosting and deployment.
+For benchmark deployment and simulated mail setup, use the [range README](../../README.md).
 
 ## Installation
 
