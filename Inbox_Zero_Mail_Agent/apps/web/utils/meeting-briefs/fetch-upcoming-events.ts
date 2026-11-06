@@ -6,7 +6,7 @@ import { partitionAttendeesForBriefing } from "./attendees";
 
 const MAX_EVENTS_PER_PROVIDER = 20;
 
-// Must match the /api/meeting-briefs cron schedule in vercel.json.
+// Match the interval of the scheduler invoking /api/meeting-briefs.
 // The lookahead window extends by one cron interval so an event whose lead
 // window opens and closes between two cron ticks is still picked up at the
 // last tick before it starts. Duplicate sends are prevented by the
