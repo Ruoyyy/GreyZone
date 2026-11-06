@@ -2,7 +2,7 @@
  * OpenAI Image Generation Service
  *
  * Thin wrapper around the OpenAI SDK's `images.generate` endpoint.
- * Used by the agent avatar generation flow and the generate-team-avatars script.
+ * Used by the agent avatar generation flow.
  *
  * Supports `gpt-image-1` (newer, unified) and `dall-e-3` as a fallback. Initializes
  * the client lazily so unit tests and environments without OPENAI_API_KEY do not
