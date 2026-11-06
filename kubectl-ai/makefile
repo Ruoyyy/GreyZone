@@ -84,21 +84,12 @@ verify-gomod: ## Verify go.mod files are tidy
 	@echo "λ Verifying go.mod files..."
 	./dev/ci/presubmits/verify-gomod.sh
 
-verify-autogen: ## Verify auto-generated files are up to date
-	@echo "λ Verifying auto-generated files..."
-	./dev/ci/presubmits/verify-autogen.sh
-
 generate:
 	go generate ./internal/mocks
 
 verify-mocks:
 	@echo "λ Verifying mocks..."
 	./dev/ci/presubmits/verify-mocks.sh
-# --- Generation Tasks ---
-generate-actions: ## Generate GitHub Actions workflows
-	@echo "λ Generating GitHub Actions workflows..."
-	./dev/tasks/generate-github-actions.sh
-
 # --- Threat Lab Tasks ---
 threat-lab-up: ## Build agent image and provision the threat-lab kind cluster (1 real node + kwok fake fleet)
 	@echo "λ Provisioning threat-lab..."
@@ -108,18 +99,9 @@ threat-lab-agent: ## Run the kubectl-ai agent container against threat-lab (env 
 	@echo "λ Running kubectl-ai agent against threat-lab..."
 	./sim/run-agent.sh $(ARGS)
 
-# --- Evaluation Tasks ---
-run-evals: ## Run evaluations (periodic task)
-	@echo "λ Running evaluations..."
-	./dev/ci/periodics/run-evals.sh
-
-analyze-evals: ## Analyze evaluations (periodic task)
-	@echo "λ Analyzing evaluations..."
-	./dev/ci/periodics/analyze-evals.sh $(ARGS)
-
 # --- Combined Tasks ---
 # 'check' depends on other verification tasks. They will run as prerequisites.
-check: verify-format verify-gomod verify-autogen build-recursive vet ## Run all verification checks (presubmit-style)
+check: verify-format verify-gomod build-recursive vet ## Run all verification checks (presubmit-style)
 	@echo "λ All checks completed."
 
 # --- Development Workflow ---

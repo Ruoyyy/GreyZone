@@ -140,3 +140,52 @@ Validation:
 
 Maven validation does not compile or package the application. No cloud example
 was executed and no model request was made during this cleanup.
+
+## kubectl-ai: Upstream CI, Release, and External Evaluation Scaffolding
+
+Removed 11 files whose last retained source is available at `3cdcf66fd` under
+`kubectl-ai/`:
+
+| Removed candidates | Purpose and requirements | Decision |
+| --- | --- | --- |
+| Four `.github/workflows/` files | Upstream presubmit, periodic Vertex AI evaluation, on-demand external benchmark evaluation, and standalone agent releases. They assume the agent is the top-level repository. | Remove the inherited workflow set; retain useful local build and verification helpers. |
+| `.github/actions/kind-cluster-setup/action.yaml` | Creates a CI cluster and authenticates using an upstream GCP project/workload identity. | Remove with its two evaluation workflow callers. |
+| `.goreleaser.yaml` and `.krew.yaml` | Package and publish standalone kubectl-ai releases to the upstream distribution channels. | Remove the upstream release configuration; benchmark image packaging remains a later release phase. |
+| `dev/tasks/generate-github-actions.sh` and `dev/ci/presubmits/verify-autogen.sh` | Generate and compare the removed workflows. The generator resolves the Git root, which is the GreyZone root in this checkout. | Remove both producer and checker rather than leave a command that recreates upstream workflows. |
+| `dev/ci/periodics/run-evals.sh` and `analyze-evals.sh` | Install an upstream agent and clone/build `gke-labs/k8s-ai-bench` without a source pin. | Remove this separate benchmark's runner and analyzer. |
+
+Removed the corresponding `generate-actions`, `verify-autogen`, `run-evals`, and
+`analyze-evals` Make targets, and dropped only `verify-autogen` from `check`.
+Kept the native build, tests, mocks, formatting, module checks, and threat-lab
+targets. Native Go tests, agent sources, Go dependency locks, `sim/`,
+`benchmark/`, and `oracle/` are unchanged.
+
+Validation:
+
+- `python3 scripts/check_deployment.py --project kubectl-ai --regression`:
+  passed source/tool checks, deployment shell syntax, and all 16 Oracle
+  self-checks.
+- Make dry runs for `build`, `threat-lab-up`, and `threat-lab-agent` produced
+  identical commands before and after cleanup. The help output no longer lists
+  removed targets. Checks ran outside the repository to avoid loading `.env`.
+- Tracked-reference searches found no retained active caller of the removed
+  scripts, action, workflows, or release configuration files.
+- `git diff --check` and the English-only added-text check passed.
+
+No cluster was created and no Go compilation, native Go test suite, image build,
+cloud evaluation, or model episode was executed in this batch.
+
+## Remaining Phase 2 Review
+
+- Review Commonly's remaining migrations and acceptance helpers individually.
+- Review kubectl-ai's GKE and separate model-serving deployment tools as a
+  dependency group before deciding whether to retain them.
+- Review Inbox cloud installers and the author-created smoke/adapter scripts in
+  Inbox, Letta, Shopware, and the remaining ranges. Preserve calibration,
+  protocol, fixture/reset, and benchmark behavior regressions.
+- Record any readiness assertion changes as separate behavior fixes with checks
+  for success, not-ready responses, and failures.
+
+Version pinning, actual release builds, clean deployment acceptance, and release
+packaging remain later phases. Passing this cleanup batch does not complete
+those phases.
