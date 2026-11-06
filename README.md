@@ -1,6 +1,7 @@
 # GreyZone: Agent Threat Benchmark with Production Environments
 
 [![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b.svg)](GreyZone.pdf)
+[![Citation](https://img.shields.io/badge/Citation-BibTeX-gray.svg)](#citation)
 ![Applications](https://img.shields.io/badge/applications-10-blue.svg)
 ![Scenarios](https://img.shields.io/badge/attack%20scenarios-46-blue.svg)
 
@@ -400,6 +401,8 @@ services, or produce verdicts. See [`docs/deployment-checks.md`](docs/deployment
 python3 scripts/check_deployment.py                      # all applications
 python3 scripts/check_deployment.py --project Clawith    # a single application
 ```
+
+## Citation
 
 ## License and Acknowledgements
 
