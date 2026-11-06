@@ -38,7 +38,7 @@ Compose checks explicitly use an empty environment file, disable interpolation, 
 
 **A preflight PASS establishes only that these static checks passed.** Unresolved runtime variables, actual environment files, bind mounts, Dockerfile COPY inputs, image retrieval, dependency installation, builds, service readiness, MCP interactions, and real model tasks still require deployment acceptance checks. Shell scripts manage kubectl-ai deployment; this tool checks only its entry points, host tools, and listed source files.
 
-Reports record `scope: deployment-preflight` and always mark builds, startup/readiness, local network integration, and model episodes as `NOT_RUN`. The initial tool has no options to start, reset, or destroy environments. Those steps are performed individually in phase 5 of the release preparation plan.
+Reports record `scope: deployment-preflight` and always mark builds, startup/readiness, local network integration, and model episodes as `NOT_RUN`. The initial tool has no options to start, reset, or destroy environments. Use each range's documented lifecycle tools for separate deployment acceptance runs.
 
 ## Status and Dependencies
 
@@ -89,6 +89,6 @@ These checks detect whether maintenance changes broke existing logic. Their resu
 
 The recorded reference baseline is 155 pytest checks across 8 ranges, 16 kubectl self-checks, and an initial 53 Inbox offline tests (3 added during API configuration cleanup, bringing the current count to 56), plus commonly's SDK checks and two native Node tests. These counts are historical records, not quotas.
 
-Inbox's 9 additional `mail-backbone.test.ts` cases are local network integration tests excluded from default regressions. Run and record them separately during deployment acceptance. Existing redteam adapter smoke checks, Shopware live-environment checks, and author-created scripts still require individual review in phase 2 of the release preparation plan. Absence from this entry point alone is not a reason to delete them.
+Inbox's 9 additional `mail-backbone.test.ts` cases are local network integration tests excluded from default regressions. Run and record them separately during deployment acceptance. Review existing redteam adapter smoke checks, Shopware live-environment checks, and author-created scripts individually before deciding whether to retain them. Absence from this entry point alone is not a reason to delete them.
 
 The offline SDK request check for API configuration cleanup is `python3 -m unittest discover -s scripts -p test_openai_config.py`. It requires ZerePy's OpenAI/httpx dependencies and is not included in default deployment preflight.
