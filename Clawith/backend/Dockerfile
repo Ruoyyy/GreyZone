@@ -13,14 +13,15 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
+ARG UV_VERSION=0.11.15
 ARG CLAWITH_PIP_INDEX_URL
 ARG CLAWITH_PIP_TRUSTED_HOST
 RUN if [ -n "$CLAWITH_PIP_INDEX_URL" ] && [ -n "$CLAWITH_PIP_TRUSTED_HOST" ]; then \
-        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" --trusted-host "$CLAWITH_PIP_TRUSTED_HOST" . uv; \
+        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" --trusted-host "$CLAWITH_PIP_TRUSTED_HOST" . "uv==${UV_VERSION}"; \
     elif [ -n "$CLAWITH_PIP_INDEX_URL" ]; then \
-        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" . uv; \
+        pip install --no-cache-dir --index-url "$CLAWITH_PIP_INDEX_URL" . "uv==${UV_VERSION}"; \
     else \
-        pip install --no-cache-dir . uv; \
+        pip install --no-cache-dir . "uv==${UV_VERSION}"; \
     fi
 
 # ─── Production ─────────────────────────────────────────
