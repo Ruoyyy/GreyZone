@@ -103,3 +103,40 @@ Validation:
 - `git diff --check` passed; all added review text is English.
 
 No sandbox configuration or agent permissions were changed.
+
+## Banking: Upstream Manual Integration Examples
+
+Removed 13 files from the upstream Java test trees. Their last retained source
+is available at `c38c5a079` under `agent-openai-java-banking-assistant/`.
+
+| Removed candidate | Purpose and requirements | Decision |
+| --- | --- | --- |
+| Account service's `AccountMCPClient.java` | A `main()` program that prints account MCP tool results against a manually started localhost service. No assertions. | Remove the upstream client demonstration. |
+| Copilot backend's `AccountAgentIntegrationTest.java` | An empty `main()` method. | Remove the empty placeholder. |
+| Seven `langchain4j-agents/src/test/java/dev/langchain4j/openapi/mcp/` examples | Account, payment, payment-with-image, transaction history, and three supervisor conversations. All use `main()`, not test assertions; they require manually started services and Azure model credentials, with blob storage/OCR in some examples. | Remove the upstream manual examples; retain the benchmark's configured agent and scenario runners. |
+| Four `langchain4j-agents/src/test/resources/` files | Unreferenced OpenAPI copies and test logging configuration. No build plugin reads this directory as a main resource input. | Remove with the test examples; preserve every `src/main/resources/` API specification. |
+
+Removed the six direct test-scoped dependencies from the agents module:
+`langchain4j-azure-open-ai`, `azure-identity`, `junit-jupiter-api`,
+`logback-classic`, `assertj-core`, and `wiremock`. The module's non-test dependency
+declarations are unchanged. Runtime Azure libraries declared in other modules
+remain; removing their optional runtime implementations is a separate decision.
+
+No retained source, task, Oracle, package, build script, or active CI caller
+references the removed example classes. The main Java sources, application
+resources, Compose stack, task scenarios, and Oracle are unchanged.
+
+Validation:
+
+- `python3 scripts/check_deployment.py --project
+  agent-openai-java-banking-assistant --regression`: passed deployment preflight
+  and 13 Oracle tests.
+- `mvn -o -B -q -f
+  agent-openai-java-banking-assistant/app/copilot/pom.xml validate`: passed for the
+  copilot reactor using cached dependencies and a 512 MB Maven heap.
+- POM XML and non-test dependency declarations were checked before and after the
+  edit; no retained dependency version changed.
+- `git diff --check` and the English-only added-text check passed.
+
+Maven validation does not compile or package the application. No cloud example
+was executed and no model request was made during this cleanup.
