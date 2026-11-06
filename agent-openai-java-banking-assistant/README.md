@@ -177,7 +177,8 @@ OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 
 ```bash
 cd app
-docker compose up -d --build
+python3 ../../scripts/build_images.py --project agent-openai-java-banking-assistant
+docker compose up -d --no-build
 ```
 
 The first build downloads Maven and npm dependencies and takes a few minutes. The stack

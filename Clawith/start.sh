@@ -118,14 +118,14 @@ main() {
         printf '[]\n' > ss-nodes.json
     fi
     echo "[start] building images..."
-    docker compose build
+    python3 ../scripts/build_images.py --project Clawith
     echo "[start] starting core services..."
-    docker compose up -d postgres redis backend frontend
+    docker compose up -d --no-build postgres redis backend frontend
     wait_for_backend
     register_first_admin
     run_bootstrap
     echo "[start] starting MCP bridge..."
-    docker compose up -d mcp-bridge
+    docker compose up -d --no-build mcp-bridge
     sleep 5
     MCP_KEY=$(docker compose logs mcp-bridge 2>&1 | sed -nE 's/^.*MCP API key: ([^[:space:]]+).*$/\1/p' | tail -1)
     echo

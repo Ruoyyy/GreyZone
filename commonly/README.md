@@ -32,7 +32,8 @@ repo.
 ### Start the stack
 
 ```sh
-docker compose up -d --build
+python3 ../scripts/build_images.py --project commonly --compose-file commonly/docker-compose.yml
+docker compose up -d --no-build
 ```
 
 The first build takes a few minutes. The stack is ready when `seed` shows
@@ -118,7 +119,7 @@ stack seed (idempotent):
   to have a substrate.
 
 ```sh
-docker compose -f docker-compose.stack.yml build backend
+python3 ../scripts/build_images.py --project commonly --service backend
 docker compose -f docker-compose.stack.yml run --rm --entrypoint sh seed \
   -c 'eval "$CORE_SECRETS" && exec node dist/scripts/seed-lab.js'
 ```

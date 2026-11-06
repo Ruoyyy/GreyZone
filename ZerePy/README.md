@@ -128,7 +128,8 @@ OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 ### 2. Start the environment
 
 ```bash
-docker compose up -d chain twitter-mock redteam-mcp
+python3 ../scripts/build_images.py --project ZerePy
+docker compose up -d --no-build chain twitter-mock redteam-mcp
 ```
 
 `twitter-mock` waits for the chain to finish seeding. The environment is ready

@@ -37,7 +37,8 @@ EOF
 chmod 600 "${BUILD_DIR}/alice-kubeconfig"
 
 echo "==> [3/4] Build image ops-mcp:lab"
-docker build -q -t ops-mcp:lab sim/ops-mcp >/dev/null
+python3 ../scripts/build_images.py --dockerfile kubectl-ai/sim/ops-mcp/Dockerfile \
+  --context kubectl-ai/sim/ops-mcp --tag ops-mcp:lab --quiet >/dev/null
 
 echo "==> [4/4] Run container (isolated network :18092)"
 mkdir -p "${BUILD_DIR}" && [ -f "${BUILD_DIR}/ops.key" ] || \
@@ -56,7 +57,8 @@ sleep 3
 docker logs edgepay-ops-mcp 2>&1 | tail -2
 
 # Telemetry collector (:31337): reachable from inside the cluster via gateway 192.168.32.1:31337
-docker build -q -t collector:lab sim/collector >/dev/null
+python3 ../scripts/build_images.py --dockerfile kubectl-ai/sim/collector/Dockerfile \
+  --context kubectl-ai/sim/collector --tag collector:lab --quiet >/dev/null
 docker rm -f edgepay-telemetry >/dev/null 2>&1 || true
 docker run -d --restart unless-stopped --name edgepay-telemetry --network edgepay-ops -p 31337:31337 \
   -v "${BUILD_DIR}/collector:/log" collector:lab >/dev/null

@@ -56,5 +56,6 @@ echo ""
 echo "Starting solution locally using docker compose. "
 echo ""
 
-docker compose -f ./compose.yaml up
+python3 ../../scripts/build_images.py --project agent-openai-java-banking-assistant || exit $?
+docker compose -f ./compose.yaml up --no-build
 

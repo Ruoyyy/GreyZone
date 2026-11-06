@@ -8,7 +8,7 @@
 # Prerequisites:
 #   - gh CLI authenticated: gh auth login
 #   - Docker with buildx support
-#   - 3GB+ RAM allocated to Docker
+#   - Python 3 and at least 4.5 GiB RAM allocated to Docker
 #
 # Usage:
 #   pnpm docker:local:build                       # build locally only (faster)
@@ -117,14 +117,13 @@ FULL_IMAGE="${REGISTRY}/${GITHUB_USERNAME}/${IMAGE_NAME}"
 echo "Building ${FULL_IMAGE}:${TAG}"
 
 if [ "$LOCAL_ONLY" = true ]; then
-  echo "Mode: local build (native Docker, no buildx container)"
+  echo "Mode: local build with the benchmark memory ceiling"
 
-  # Build with native Docker (avoids buildx container memory limits)
-  docker build \
-    --file "${DOCKERFILE}" \
+  python3 "$(dirname "$0")/../../../scripts/build_images.py" \
+    --dockerfile "Inbox_Zero_Mail_Agent/${DOCKERFILE}" \
+    --context Inbox_Zero_Mail_Agent \
     --tag "${FULL_IMAGE}:${TAG}" \
-    --tag "${FULL_IMAGE}:latest" \
-    .
+    --tag "${FULL_IMAGE}:latest"
 
   echo ""
   echo "Built locally:"
@@ -145,13 +144,13 @@ else
   gh auth token | docker login ghcr.io -u "${GITHUB_USERNAME}" --password-stdin
 
   # Build and push (amd64 only - arm64 has pnpm/next resolution issues)
-  docker buildx build \
+  python3 "$(dirname "$0")/../../../scripts/build_images.py" \
     --platform linux/amd64 \
-    --file "${DOCKERFILE}" \
+    --dockerfile "Inbox_Zero_Mail_Agent/${DOCKERFILE}" \
+    --context Inbox_Zero_Mail_Agent \
     --tag "${FULL_IMAGE}:${TAG}" \
     --tag "${FULL_IMAGE}:latest" \
-    --push \
-    .
+    --push
 
   echo ""
   echo "Published:"

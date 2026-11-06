@@ -85,7 +85,8 @@ the stack's network namespace. Camera-channel calibrations reference a
 
 ```bash
 cd sim
-docker compose up -d --build      # HA + Postgres/pgvector + image host
+python3 ../../scripts/build_images.py --project smart-home
+docker compose up -d --no-build   # HA + Postgres/pgvector + image host
 ```
 
 Wait until `http://localhost:8123` responds.

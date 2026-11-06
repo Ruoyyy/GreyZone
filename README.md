@@ -229,6 +229,8 @@ Each application directory follows the same layout, with small deviations noted 
 - **Host:** Linux x86-64 with Docker Engine and Docker Compose v2. Run **one application at a
   time**. Image builds for the larger applications (for example, Clawith and Inbox Zero) are
   memory-intensive; we recommend at least 16 GB of RAM and tens of GB of free disk space.
+  Use [`scripts/build_images.py`](scripts/build_images.py) for image builds: it applies
+  per-image memory ceilings and serializes builds. See [build resource limits](docs/build-resources.md).
 - **Tooling:** Python 3 with [`uv`](https://docs.astral.sh/uv/) for the oracles; Node.js for the
   Promptfoo adapter and Node-based applications; Go, `kind`, and `kubectl` for kubectl-ai.
 - **Models:** an OpenAI-compatible endpoint for most applications and adapters, configured

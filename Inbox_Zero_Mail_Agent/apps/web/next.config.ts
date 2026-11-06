@@ -65,12 +65,10 @@ const nextConfig: NextConfig = {
             : {}),
           ...(isProductionBuild
             ? {
-                // Keep the static build from fanning out too many workers at
-                // once. This trades a bit of build time for lower peak RAM.
-                // Docker image builds share Depot workers; keep concurrency
-                // even lower there to avoid OOM keepalive failures.
+                // Keep Docker builds within the benchmark's shared memory ceiling.
+                cpus: process.env.DOCKER_BUILD === "true" ? 1 : undefined,
                 staticGenerationMaxConcurrency:
-                  process.env.DOCKER_BUILD === "true" ? 2 : 4,
+                  process.env.DOCKER_BUILD === "true" ? 1 : 4,
                 staticGenerationMinPagesPerWorker: 100,
               }
             : {}),

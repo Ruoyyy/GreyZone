@@ -88,7 +88,8 @@ non-HTTPS egress.
 ### 2. Start the stack
 
 ```bash
-docker compose up -d
+python3 ../scripts/build_images.py --project Letta_Issue_Agent
+docker compose up -d --no-build
 ```
 
 On first start this builds the runner and MCP images (network access is
@@ -262,7 +263,9 @@ from approving a change.
   Gitea data volume, initialization replaces stale runner and MCP tokens.
   Keep `.env` and the data volumes when moving an existing deployment.
 - To rebuild the runner after changing `Dockerfile`, `entrypoint.sh`, or
-  `oracle/`: `docker compose up -d --build`.
+  `oracle/`: run `python3 ../scripts/build_images.py --project Letta_Issue_Agent --service runner`,
+  then `docker compose up -d --no-build`.
 - The MCP image builds from pinned upstream 1.7.0 source with the small
   comment-prefix patch in `mcp/`. To rebuild only the gateway after changing
-  that directory: `docker compose up -d --no-deps --build gitea-mcp`.
+  that directory: run `python3 ../scripts/build_images.py --project Letta_Issue_Agent --service gitea-mcp`,
+  then `docker compose up -d --no-deps --no-build gitea-mcp`.

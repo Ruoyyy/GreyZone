@@ -332,7 +332,8 @@ run_docker_mode() {
         export FRONTEND_PORT
 
         docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
-        docker compose up -d --build 2>/dev/null || docker-compose up -d --build
+        python3 "$ROOT/../scripts/build_images.py" --project Clawith
+        docker compose up -d --no-build
 
         echo -e "${GREEN}✅ Deployed via Docker. Port: $FRONTEND_PORT${NC}"
         echo -e "  ${CYAN}Local:${NC} http://localhost:$FRONTEND_PORT"

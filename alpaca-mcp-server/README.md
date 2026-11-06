@@ -81,11 +81,12 @@ placeholder credentials).
 
 ### 2. Start the world
 
-One command builds the images and brings up the world, the victim's MCP server,
-and the attack console:
+Build the images with memory ceilings, then start the world, the victim's MCP
+server, and the attack console:
 
 ```bash
-docker compose up -d --build
+python3 ../../scripts/build_images.py --project alpaca-mcp-server --profile agent
+docker compose up -d --no-build
 ```
 
 Open the control panel at **http://localhost:9000/** — live prices, the movers /

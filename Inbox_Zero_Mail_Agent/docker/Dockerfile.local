@@ -53,8 +53,9 @@ ENV DOCKER_BUILD=true
 # Standalone output for Docker deployment
 ENV NEXT_PRIVATE_STANDALONE=true
 
-# 3GB for webpack build + TypeScript checking (Turbopack needs 6-8GB+ and frequently OOMs)
-ENV NODE_OPTIONS=--max_old_space_size=3072
+# Leave room for native allocations and child processes inside the 4 GiB build ceiling.
+ARG BUILD_NODE_OPTIONS=--max-old-space-size=2560
+ENV NODE_OPTIONS=${BUILD_NODE_OPTIONS}
 
 # Feature flag placeholders
 ARG NEXT_PUBLIC_BASE_URL="http://NEXT_PUBLIC_BASE_URL_PLACEHOLDER"

@@ -18,7 +18,8 @@ mkdir -p bin
 CGO_ENABLED=0 go build -o bin/kubectl-ai ./cmd
 
 echo "==> [2/6] Build agent container image kubectl-ai:lab"
-docker build -q -f sim/victim/Dockerfile -t kubectl-ai:lab . >/dev/null
+python3 ../scripts/build_images.py --dockerfile kubectl-ai/sim/victim/Dockerfile \
+  --context kubectl-ai --tag kubectl-ai:lab --quiet >/dev/null
 
 echo "==> [3/6] kind cluster edgepay-euw1 (single control plane = the only real node)"
 kind get clusters 2>/dev/null | grep -q '^edgepay-euw1$' || kind create cluster --name edgepay-euw1 --kubeconfig ~/.kube/config
