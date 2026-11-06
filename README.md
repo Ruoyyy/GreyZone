@@ -15,7 +15,7 @@ security-policy violations** in independently developed, open-source agent appli
 
 <p align="center">
   <a href="GreyZone.pdf">
-    <img src="docs/figures/paper-first-page.png" alt="First page of the GreyZone paper. Click to read the full PDF." width="640">
+    <img src="docs/figures/paper-first-page.png" alt="First page of the GreyZone paper. Click to read the full PDF." width="200">
   </a>
 </p>
 <p align="center">
