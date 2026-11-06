@@ -4,7 +4,6 @@
 [![Citation](https://img.shields.io/badge/Citation-BibTeX-gray.svg)](#citation)
 ![Applications](https://img.shields.io/badge/applications-10-blue.svg)
 ![Scenarios](https://img.shields.io/badge/attack%20scenarios-46-blue.svg)
-![Red-teaming services](https://img.shields.io/badge/red--teaming%20services-4-blue.svg)
 
 GreyZone is a benchmark for evaluating **automated red-teaming services** against
 **real-world agent applications**. It treats each service as an end-to-end attacker and
