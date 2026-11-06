@@ -1,7 +1,7 @@
 # GreyZone: Agent Threat Benchmark with Production Environments
 
-**[Paper (PDF)](GreyZone.pdf) · [Citation](#citation)**
-
+[![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b.svg)](GreyZone.pdf)
+[![Citation](https://img.shields.io/badge/Citation-BibTeX-gray.svg)](#citation)
 ![Applications](https://img.shields.io/badge/applications-10-blue.svg)
 ![Scenarios](https://img.shields.io/badge/attack%20scenarios-46-blue.svg)
 ![Red-teaming services](https://img.shields.io/badge/red--teaming%20services-4-blue.svg)
