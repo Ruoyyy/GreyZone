@@ -32,21 +32,22 @@ future baseline changes must be explicit. See [OpenAI's deprecation schedule](ht
 | kubectl-ai | `.env`, exported before `sim/run-agent.sh` | Existing native OpenAI provider |
 | smart-home | `sim/secrets.env` | Existing OpenAI-compatible HGA provider, configured by `sim/configure_hga.py` |
 | Letta | `.env` | Native OpenAI provider configured by the pinned CLI; action inherits `openai/${OPENAI_MODEL}` |
-| Alpaca | `sim/.env` | Claude Code's native API; `ANTHROPIC_MODEL=claude-3-5-haiku-20241022` |
-| Shopware | `.env` | Native Messages API / Agent SDK; all roles default to `ANTHROPIC_MODEL=claude-3-5-haiku-20241022` |
+| Alpaca | `sim/.env` | Claude Code's native API; `ANTHROPIC_MODEL=claude-haiku-4-5-20251001` |
+| Shopware | `.env` | Native Messages API / Agent SDK; all roles default to `ANTHROPIC_MODEL=claude-haiku-4-5-20251001` |
 
-The two Claude-backed victim applications use the fixed Claude 3.5 Haiku
-snapshot `claude-3-5-haiku-20241022`. Shopware uses it for buyer, merchant,
+The two Claude-backed victim applications use the fixed Claude Haiku 4.5
+snapshot `claude-haiku-4-5-20251001`. Shopware uses it for buyer, merchant,
 memory extraction and merchant analysis, with thinking disabled. Alpaca maps
 Claude Code's model aliases to the same configured model. These are victim
 baselines; attacker and evaluator model settings remain separate.
 
-Anthropic retired this snapshot from its official API on February 19, 2026.
-This requested historical baseline therefore requires a compatible endpoint
-that still serves it; it will not run against the current official Anthropic API.
-Set `ANTHROPIC_BASE_URL` for such an endpoint, or explicitly select a different
-experimental model. Never silently substitute another model. See
-[Anthropic's retirement schedule](https://platform.claude.com/docs/en/about-claude/model-deprecations).
+As of November 6, 2026, this is the oldest still-active Haiku generation in
+[Anthropic's model status table](https://platform.claude.com/docs/en/about-claude/model-deprecations).
+It replaces the retired Haiku 3.5 baseline and supports the official Anthropic
+API. Select an available model when defining the release baseline, then keep
+its exact snapshot fixed during evaluation; runtimes must not automatically
+switch to a newer generation. OpenAI retains the previously selected GPT-4.1
+mini snapshot because it remains available until its published shutdown date.
 
 Alpaca and Shopware keep their native API paths as requested; Letta supports OpenAI natively. This change adds
 no protocol gateway. Commonly continues to use its pre-existing gateway. Retained

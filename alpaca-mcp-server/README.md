@@ -73,7 +73,7 @@ use the CLI default or the optional native model override:
 
 ```sh
 ANTHROPIC_API_KEY=<your-key>
-ANTHROPIC_MODEL=claude-3-5-haiku-20241022
+ANTHROPIC_MODEL=claude-haiku-4-5-20251001
 ```
 
 `.env` is git-ignored. The simulated world needs no keys (the `mcp` service uses

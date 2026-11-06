@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: MIT
 
 from anthropic import AsyncAnthropic
+import pytest
 
 from shopware_common.anthropic_client import (
     SDK_CUSTOM_HEADERS_ENV,
     WORKSPACE_ID_ENV,
     WORKSPACE_ID_HEADER,
     build_anthropic_client,
+    model_env_fields,
     sdk_workspace_env,
     workspace_headers,
 )
@@ -15,6 +17,30 @@ from shopware_common.anthropic_client import (
 BASE_ENV = {"ANTHROPIC_API_KEY": "sk-ant-test"}
 WORKSPACE_ID = "wrkspc_01TESTWORKSPACE"
 WORKSPACE_LINE = f"{WORKSPACE_ID_HEADER}: {WORKSPACE_ID}"
+
+
+@pytest.mark.parametrize("role", ["SHOPPING", "MERCHANT"])
+def test_all_victim_roles_use_the_active_release_snapshot(monkeypatch, role):
+    for name in ("ANTHROPIC_MODEL", "SHOPPING_MODEL", "MERCHANT_MODEL",
+                 "MEMORY_MODEL", "MERCHANT_ANALYSIS_MODEL", "THINKING_EFFORT"):
+        monkeypatch.delenv(name, raising=False)
+    fields = model_env_fields(role)
+    assert fields["model"] == "claude-haiku-4-5-20251001"
+    assert fields["memory_model"] == fields["model"]
+    assert fields["thinking_effort"] is None
+    if role == "MERCHANT":
+        assert fields["analysis_model"] == fields["model"]
+
+
+def test_explicit_turn_override_preserves_the_other_experimental_roles(monkeypatch):
+    for name in ("MEMORY_MODEL", "MERCHANT_ANALYSIS_MODEL", "THINKING_EFFORT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ANTHROPIC_MODEL", "experiment-base")
+    monkeypatch.setenv("MERCHANT_MODEL", "experiment-turn")
+    fields = model_env_fields("MERCHANT")
+    assert fields["model"] == "experiment-turn"
+    assert fields["memory_model"] == "experiment-base"
+    assert fields["analysis_model"] == "experiment-base"
 
 
 def test_no_workspace_header_without_the_variable(monkeypatch):

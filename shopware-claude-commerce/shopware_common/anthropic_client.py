@@ -76,11 +76,11 @@ def sdk_workspace_env(environ: Mapping[str, str] | None = None) -> dict[str, str
 def model_env_fields(role: str) -> dict[str, str | None]:
     """Use the fixed benchmark baseline for every victim model role.
 
-    Explicit role overrides remain available for separate experiments. Claude
-    3.5 Haiku does not support thinking; disable it unless explicitly configured.
+    Explicit role overrides remain available for separate experiments. Keep
+    thinking disabled unless explicitly configured for an experiment.
     """
     source = os.environ
-    baseline = source.get("ANTHROPIC_MODEL") or "claude-3-5-haiku-20241022"
+    baseline = source.get("ANTHROPIC_MODEL") or "claude-haiku-4-5-20251001"
     fields: dict[str, str | None] = {
         "model": source.get(f"{role.upper()}_MODEL") or baseline,
         "memory_model": source.get("MEMORY_MODEL") or baseline,
