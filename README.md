@@ -51,10 +51,10 @@ GreyZone addresses two gaps in existing agent-security benchmarks:
   application state independently of the services' own reports.
 
 <p align="center">
-  <a href="benchmark-framework.pdf"><img src="docs/figures/benchmark-framework.png" alt="Overview of GreyZone: scenario structure and execution workflow" width="100%"></a>
+  <a href="GreyZone.pdf"><img src="docs/figures/benchmark-framework.png" alt="Overview of GreyZone: scenario structure and execution workflow" width="100%"></a>
 </p>
 
-*Figure 1. Overview of GreyZone: scenario structure and execution workflow ([PDF](benchmark-framework.pdf)).*
+*Figure 1. Overview of GreyZone: scenario structure and execution workflow.*
 
 ## Benchmark at a Glance
 
@@ -201,8 +201,7 @@ GreyZone/
 ├── ZerePy/                                # Social-media and on-chain agent
 ├── docs/                                  # Model API configuration and maintainer checks
 ├── scripts/check_deployment.py            # Maintainer deployment preflight (not used in evaluation)
-├── GreyZone.pdf                           # Full paper
-└── benchmark-framework.pdf                # Figure 1 (source of docs/figures/benchmark-framework.png)
+└── GreyZone.pdf                           # Full paper
 ```
 
 Each application directory follows the same layout, with small deviations noted in its README
