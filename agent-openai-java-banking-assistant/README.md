@@ -4,8 +4,9 @@ A local, fully-Dockerized multi-agent banking assistant. A **supervisor** agent
 routes each request to one of three domain agents — **Account**, **Transactions**,
 and **Payments** — built on Langchain4j, which call business microservices through
 **MCP** tools. The business APIs (account, payment, transaction history) ship with
-in-memory mock data, so the stack runs end-to-end with no cloud dependency; the LLM
-is **DeepSeek** (an OpenAI-compatible endpoint). There is no password login: you pick
+in-memory mock data, so the stack runs end-to-end with no cloud dependency beyond
+the configured OpenAI-compatible model. The default API endpoint is OpenAI.
+There is no password login: you pick
 one of two users (**admin**, **alice**) from a selector in the chat UI. Each
 user's conversation history is persisted in **Postgres** and isolated per user, and the
 selected identity is injected into the agents' system prompt on every request.
@@ -24,7 +25,7 @@ they live only on the external MCP server, which the copilot does not connect to
 
 ```
   browser ──► frontend (nginx :80) ──/api──► copilot (Spring Boot)
-                                               │  Supervisor agent (Langchain4j + DeepSeek)
+                                               │  Supervisor agent (Langchain4j + OpenAI-compatible model)
                                                ├──► Account agent ─────┐
                                                ├──► Transactions agent ├─MCP(SSE)─► account / transaction / payment
                                                └──► Payments agent ────┘             (business microservices, mock data)
@@ -38,7 +39,7 @@ they live only on the external MCP server, which the copilot does not connect to
   **Account** page (`/#/account`) showing balance, payment methods, beneficiaries,
   transaction history and receipts, plus a panel to submit an invoice and test the agent.
 - **copilot** — the Spring Boot agent backend. Supervisor + Account/Transactions/Payments
-  agents over Langchain4j, using DeepSeek as the chat model and MCP to reach the business APIs.
+  agents over Langchain4j, using the configured OpenAI-compatible chat model and MCP to reach the business APIs.
 - **account / transaction / payment** — Spring Boot business microservices, each exposing a
   REST API and an MCP server. Data is in-memory mock (two accounts: `1000` Alice/USD,
   `1010` Admin/EUR). `payment` is published on `:8083` for its REST API.
@@ -153,7 +154,7 @@ security are out of scope. The lab is intentionally unauthenticated and local-on
 ### Prerequisites
 
 - Docker with the `docker compose` plugin
-- A DeepSeek API key (or any OpenAI-compatible endpoint)
+- An OpenAI API key and a model that supports tool calling, or an equivalent OpenAI-compatible configuration
 - Free ports `80` (web UI), `8083` (payment REST + MCP), `8086` (external MCP)
 
 ### 1. Configure

@@ -6,9 +6,9 @@ onchain — running an agent named **admin** that reads its timeline and mention
 replies, likes, and holds a Monad wallet it can **transfer from**. Its whole world
 is simulated: an X API v2–compatible service with a seeded social graph, a Monad
 testnet chain (anvil) replaying a fixed 24-hour transaction history, and an
-Etherscan v2–compatible explorer. The brain is any OpenAI-compatible endpoint
-with tool calling (DeepSeek here, one line in `.env`). Everything boots on one
-machine; only the LLM calls leave the host.
+Etherscan v2–compatible explorer. The model uses an OpenAI-compatible endpoint
+with tool calling, configured through `OPENAI_*` in `.env`. The default endpoint
+is OpenAI. Everything boots on one machine; only the LLM calls leave the host.
 
 The point of this lab is the **external-input surface**: text that originates
 *outside* the agent and reaches its context through tool results — tweets on its

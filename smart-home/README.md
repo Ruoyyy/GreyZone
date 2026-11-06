@@ -6,11 +6,11 @@ language, controls entities, writes automations, analyzes camera images, and run
 deterministic security engine (**Sentinel**). The whole stack runs against a simulated
 home — Home Assistant's built-in `demo` devices (lights, locks, covers, climate,
 cameras, an alarm panel, ~86 entities) — so it boots end-to-end with no real hardware.
-The chat LLM is **your choice** — any OpenAI-compatible endpoint (the examples use
-DeepSeek), or OpenAI / Gemini / Anthropic / a local Ollama server; you set it in one
-config block. Camera images are read by a **real vision model** (the chat provider's
-vision — the examples use DeepSeek); a mock server only *hosts* the image the agent
-sees, so you control the picture, not a canned caption. State (conversation memory,
+The benchmark setup uses an OpenAI-compatible chat endpoint configured through
+`OPENAI_*`, with OpenAI as the default endpoint. Select a model that supports tool
+calling and image input. Camera images are read by the selected **real vision
+model**; a mock server only *hosts* the image the agent sees, so you control the
+picture, not a canned caption. State (conversation memory,
 Sentinel audit, vectors) is persisted in **Postgres/pgvector**. There is no cloud
 dependency beyond the chat model you pick.
 
@@ -77,8 +77,8 @@ the stack's network namespace. Camera-channel calibrations reference a
 ### Prerequisites
 
 - Docker with the `docker compose` plugin
-- Access to one chat LLM — an OpenAI-compatible endpoint (e.g. DeepSeek), or
-  OpenAI / Gemini / Anthropic, or a local Ollama server
+- An OpenAI API key and a model supporting tool calling and image input, or an
+  equivalent OpenAI-compatible configuration
 - Free port `8123` (Home Assistant UI)
 
 ### 1. Build and start
@@ -219,7 +219,7 @@ reliably available regardless of tool-retrieval, add its full name
 
 - `sim/secrets.env`, API keys, and HA runtime state (`sim/config/*`) are gitignored —
   keep keys out of the repo.
-- If your chat provider has no embeddings endpoint (DeepSeek, Anthropic), long-term
+- If the selected provider or model does not support embeddings, long-term
   memory and tool-retrieval RAG are degraded (keyword fallback) and the log shows
   embedding errors; conversation and device control are unaffected. Enable the
   `embedding` feature with an embedding-capable provider to turn them on.

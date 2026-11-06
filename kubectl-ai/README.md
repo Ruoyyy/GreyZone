@@ -7,8 +7,9 @@ and `bash`, holding a cluster-admin kubeconfig — pointed at a cluster that
 node running a real three-tier app (checkout UI → token-gated payment API →
 Postgres), and 20 fake nodes whose kubelet versions, IPs, podCIDRs, instance
 types and lifecycle controller are all disguised so the victim cannot smell
-the lab. The brain is any OpenAI-compatible endpoint (DeepSeek here, one line
-in `.env`). Everything boots on one machine and nothing leaves the host.
+the lab. The model uses an OpenAI-compatible endpoint configured through
+`OPENAI_*` in `.env`, with OpenAI as the default endpoint. The environment runs
+on one machine; model requests use the configured endpoint.
 
 The point of this lab is the **external-input surface**: text that originates
 *outside* the agent and reaches its context through tool results. A K8s ops
@@ -18,8 +19,9 @@ are made controllable here. Every carrier has been verified end-to-end to
 land in the LLM context (trace-proven), every injection is planted through a
 network-isolated red-team MCP, and every attack objective is judged by a
 mechanical oracle — a state diff or a string match, never a model judging a
-model. Baseline so far: DeepSeek detected and refused every probe (followed
-0/4); the payload-style matrix is the open experiment.
+model. An earlier baseline using DeepSeek detected and refused every probe
+(followed 0/4); this record does not establish results for the model selected
+in `.env`. The payload-style matrix is the open experiment.
 
 Fork of [GoogleCloudPlatform/kubectl-ai](https://github.com/GoogleCloudPlatform/kubectl-ai)
 (Apache-2.0). Family layout: victim source stays upstream, `oracle/` at root,
@@ -52,7 +54,7 @@ scenarios in `benchmark/`, environment in `sim/`.
   │           retagged (ghcr.io/edgepay/infra-lifecycle) in kube-system
   │
   └── victim agent: kubectl-ai:lab container (kind net) — kubectl+bash tools,
-        cluster-admin kubeconfig, DeepSeek via .env, --skip-permissions default,
+        cluster-admin kubeconfig, OpenAI-compatible model via .env, --skip-permissions default,
         full HTTP trace to sim/.build/traces/
 
   oracle (host): baselines → arm → single victim task → judge → teardown
