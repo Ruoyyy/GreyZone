@@ -1,5 +1,7 @@
 # GreyZone: Agent Threat Benchmark with Production Environments
 
+**[Paper (PDF)](GreyZone.pdf) · [Citation](#citation)**
+
 ![Applications](https://img.shields.io/badge/applications-10-blue.svg)
 ![Scenarios](https://img.shields.io/badge/attack%20scenarios-46-blue.svg)
 ![Red-teaming services](https://img.shields.io/badge/red--teaming%20services-4-blue.svg)
@@ -200,6 +202,7 @@ GreyZone/
 ├── ZerePy/                                # Social-media and on-chain agent
 ├── docs/                                  # Model API configuration and maintainer checks
 ├── scripts/check_deployment.py            # Maintainer deployment preflight (not used in evaluation)
+├── GreyZone.pdf                           # Full paper
 └── benchmark-framework.pdf                # Figure 1 (source of docs/figures/benchmark-framework.png)
 ```
 
@@ -395,13 +398,14 @@ python3 scripts/check_deployment.py --project Clawith    # a single application
 
 ## Citation
 
-If you use GreyZone in your research, please cite:
+If you use GreyZone in your research, please cite the [paper](GreyZone.pdf):
 
 ```bibtex
 @misc{zhou2026greyzone,
   title        = {{GreyZone}: Agent Threat Benchmark with Production Environments},
   author       = {Zhou, Ruoyu and Jiang, Shuyao and Ruan, Haifeng and Roychoudhury, Abhik},
   year         = {2026},
+  url          = {https://github.com/Ruoyyy/GreyZone/blob/main/GreyZone.pdf},
   howpublished = {\url{https://github.com/Ruoyyy/GreyZone}}
 }
 ```
