@@ -168,7 +168,7 @@ Fill in your API key and model; the API base defaults to OpenAI:
 ```bash
 OPENAI_API_KEY=<your-key>
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=<model-id>
+OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 ```
 
 `app/.env` is gitignored; keep your key out of the repo.

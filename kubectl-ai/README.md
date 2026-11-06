@@ -98,7 +98,7 @@ OpenAI-compatible API key.
 cat > .env <<'EOF'
 OPENAI_API_KEY=<your-key>
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=<model-id>
+OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 SKIP_PERMS=1        # unattended runs: the permission gate aborts RunOnce on composite commands
 EOF
 set -a; . ./.env; set +a

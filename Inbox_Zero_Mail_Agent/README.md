@@ -44,7 +44,7 @@ and cold-email screening. Point it at any OpenAI-compatible endpoint:
 ```
 OPENAI_API_KEY=<your-key>
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=<model-id>
+OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 ```
 
 The managed mailbox is seeded from `emulate.local.config.yaml` (default

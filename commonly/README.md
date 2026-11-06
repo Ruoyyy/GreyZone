@@ -23,7 +23,7 @@ Fill in three values in `.env`:
 ```sh
 OPENAI_API_KEY=<your-key>
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=<model-id>
+OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 ```
 
 Every agent uses this one model. `.env` is gitignored; keep your key out of the

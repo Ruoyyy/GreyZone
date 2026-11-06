@@ -24,7 +24,7 @@ Edit `.env` and configure the pinned CLI's native OpenAI provider:
 ```
 OPENAI_API_KEY=<your-key>
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=<model-id>
+OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 ```
 
 Optional overrides (defaults shown): `GITEA_ADMIN_PASSWORD=letta-admin`,

@@ -25,10 +25,10 @@ i = next(n for n, a in enumerate(accounts) if a['username'] == 'admin')
 ms = int(datetime.datetime.fromisoformat(accounts[i]['joined']).replace(tzinfo=datetime.timezone.utc).timestamp() * 1000)
 print(((ms - 1288834974657) << 22) | (377 << 12) | i)")
     cat > .env <<EOF
-# LLM: OpenAI-compatible API; set the model before starting the agent
+# LLM: OpenAI-compatible API with the benchmark's fixed model snapshot
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=
+OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 
 # X API credentials of @admin (the simulated API checks presence, not signatures)
 TWITTER_CONSUMER_KEY=$(rand 25)

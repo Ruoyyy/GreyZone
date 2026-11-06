@@ -120,7 +120,7 @@ Then fill in the LLM key in `.env`:
 ```
 OPENAI_API_KEY=<your-key>
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=<model-id>
+OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 ```
 
 `OPENAI_MODEL` selects the agent model; it must support tool calling.

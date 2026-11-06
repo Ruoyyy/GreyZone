@@ -33,7 +33,7 @@ other key in `.env.example` is optional.
 ```
 OPENAI_API_KEY=<your-key>
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=<model-id>
+OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 ```
 
 The MCP section of `.env` (`ALICE_USER_ID`, `ALICE_TENANT_ID`) is managed by

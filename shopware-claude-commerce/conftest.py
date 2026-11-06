@@ -22,7 +22,10 @@ import os
 import pytest
 
 #: The variables a checkout's ``.env`` uses to repoint the agents at another provider.
-_DEPLOYMENT_MODEL_VARS = ("SHOPPING_MODEL", "MERCHANT_MODEL", "MEMORY_MODEL", "THINKING_EFFORT")
+_DEPLOYMENT_MODEL_VARS = (
+    "ANTHROPIC_MODEL", "SHOPPING_MODEL", "MERCHANT_MODEL", "MERCHANT_ANALYSIS_MODEL",
+    "MEMORY_MODEL", "THINKING_EFFORT",
+)
 #: Switches this repository's own range variant reads, which the upstream tests predate.
 _RANGE_SWITCH_VARS = (
     "AGENT_PAYMENT_MODE",

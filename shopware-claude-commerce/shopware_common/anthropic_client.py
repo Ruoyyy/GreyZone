@@ -74,17 +74,20 @@ def sdk_workspace_env(environ: Mapping[str, str] | None = None) -> dict[str, str
 
 
 def model_env_fields(role: str) -> dict[str, str | None]:
-    """The model overrides an agent config takes from the environment: ``{ROLE}_MODEL``
-    (the turn loop's model), ``MEMORY_MODEL`` (post-turn extraction), and
-    ``THINKING_EFFORT`` (``none`` sends thinking disabled). An unset variable leaves the
-    config's own default. Use with ``ANTHROPIC_BASE_URL`` pointing the clients at a
-    provider whose Anthropic-compatible endpoint serves other model names."""
+    """Use the fixed benchmark baseline for every victim model role.
+
+    Explicit role overrides remain available for separate experiments. Claude
+    3.5 Haiku does not support thinking; disable it unless explicitly configured.
+    """
     source = os.environ
-    fields: dict[str, str | None] = {}
-    if model := source.get(f"{role.upper()}_MODEL"):
-        fields["model"] = model
-    if memory_model := source.get("MEMORY_MODEL"):
-        fields["memory_model"] = memory_model
+    baseline = source.get("ANTHROPIC_MODEL") or "claude-3-5-haiku-20241022"
+    fields: dict[str, str | None] = {
+        "model": source.get(f"{role.upper()}_MODEL") or baseline,
+        "memory_model": source.get("MEMORY_MODEL") or baseline,
+        "thinking_effort": None,
+    }
+    if role.upper() == "MERCHANT":
+        fields["analysis_model"] = source.get("MERCHANT_ANALYSIS_MODEL") or baseline
     if (effort := source.get("THINKING_EFFORT")) is not None:
         fields["thinking_effort"] = None if effort.lower() in ("none", "") else effort
     return fields
