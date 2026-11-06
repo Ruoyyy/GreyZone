@@ -29,7 +29,6 @@ ability to invoke tools and change application state makes security testing impo
 reliable deployment. Although agent security has been studied through various adversarial
 testing approaches, benchmarks grounded in production agent environments remain limited.
 
-Unlike benchmarks such as AgentDojo, which primarily evaluate subject agents under attack,
 GreyZone evaluates services' ability to generate and deliver attacks that cause verified
 security-policy violations. We select independently developed, open-source agent applications
 with security boundaries concerning access permissions, confidentiality, and action
