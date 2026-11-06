@@ -40,7 +40,10 @@ RANGES = {
     "ZerePy": {
         "directory": "ZerePy", "compose": ["docker-compose.yml"],
         "scripts": ["scripts/init.sh", "chain/entrypoint.sh"],
-        "sources": ["poetry.lock", "chain/seed.py", "mock/seed_tweets.json"],
+        "sources": ["poetry.lock", "chain/seed.py", "mock/seed_tweets.json",
+                    "chain/requirements.txt", "chain/requirements.lock",
+                    "mock/requirements.txt", "mock/requirements.lock",
+                    "redteam_mcp/requirements.txt", "redteam_mcp/requirements.lock"],
         "tests": ["oracle/test_oracle.py"],
     },
     "agent-openai-java-banking-assistant": {
