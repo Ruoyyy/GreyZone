@@ -1,4 +1,4 @@
-# GreyZone: Agent Threat Benchmark with Production Environments
+# GreyZone: Agent Threat Benchmark with Production-quality Environments
 
 [![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b.svg)](GreyZone.pdf)
 [![Citation](https://img.shields.io/badge/Citation-BibTeX-gray.svg)](#citation)
