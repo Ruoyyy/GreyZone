@@ -1,7 +1,6 @@
 # GreyZone: Agent Threat Benchmark with Production Environments
 
 [![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b.svg)](GreyZone.pdf)
-[![Citation](https://img.shields.io/badge/Citation-BibTeX-gray.svg)](#citation)
 ![Applications](https://img.shields.io/badge/applications-10-blue.svg)
 ![Scenarios](https://img.shields.io/badge/attack%20scenarios-46-blue.svg)
 
@@ -13,6 +12,15 @@ security-policy violations** in independently developed, open-source agent appli
 > [!NOTE]
 > This repository is being prepared for release. The README in each application directory is
 > authoritative for exact setup, reset, and run commands.
+
+<p align="center">
+  <a href="GreyZone.pdf">
+    <img src="docs/figures/paper-first-page.png" alt="First page of the GreyZone paper. Click to read the full PDF." width="640">
+  </a>
+</p>
+<p align="center">
+  <a href="GreyZone.pdf"><strong>Read the paper (PDF)</strong></a>
+</p>
 
 ## Overview
 
@@ -392,20 +400,6 @@ services, or produce verdicts. See [`docs/deployment-checks.md`](docs/deployment
 ```bash
 python3 scripts/check_deployment.py                      # all applications
 python3 scripts/check_deployment.py --project Clawith    # a single application
-```
-
-## Citation
-
-If you use GreyZone in your research, please cite the [paper](GreyZone.pdf):
-
-```bibtex
-@misc{zhou2026greyzone,
-  title        = {{GreyZone}: Agent Threat Benchmark with Production Environments},
-  author       = {Zhou, Ruoyu and Jiang, Shuyao and Ruan, Haifeng and Roychoudhury, Abhik},
-  year         = {2026},
-  url          = {https://github.com/Ruoyyy/GreyZone/blob/main/GreyZone.pdf},
-  howpublished = {\url{https://github.com/Ruoyyy/GreyZone}}
-}
 ```
 
 ## License and Acknowledgements
