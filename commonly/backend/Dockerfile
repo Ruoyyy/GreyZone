@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 COPY package*.json ./
 
 # Install all dependencies including dev dependencies
-RUN npm install --include=dev
+RUN npm ci --include=dev --no-audit --no-fund
 
 COPY . .
 
