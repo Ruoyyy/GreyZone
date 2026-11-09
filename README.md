@@ -1,6 +1,6 @@
 # GreyZone: Agent Threat Benchmark with Production-quality Environments
 
-[![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b.svg)](GreyZone.pdf)
+[![arXiv](https://img.shields.io/badge/arXiv-2611.09161-b31b1b.svg)](https://arxiv.org/abs/2611.09161)
 [![Citation](https://img.shields.io/badge/Citation-BibTeX-gray.svg)](#citation)
 ![Applications](https://img.shields.io/badge/applications-10-blue.svg)
 ![Scenarios](https://img.shields.io/badge/attack%20scenarios-46-blue.svg)
@@ -15,12 +15,12 @@ security-policy violations** in independently developed, open-source agent appli
 > authoritative for exact setup, reset, and run commands.
 
 <p align="center">
-  <a href="GreyZone.pdf">
-    <img src="docs/figures/paper-first-page.png" alt="First page of the GreyZone paper. Click to read the full PDF." width="200">
+  <a href="https://arxiv.org/abs/2611.09161">
+    <img src="https://thumbnails.assets.alphaxiv.org/2611.09161v1.png" alt="First page of the GreyZone paper. Click to read it on arXiv." width="200">
   </a>
 </p>
 <p align="center">
-  <a href="GreyZone.pdf"><strong>Read the paper (PDF)</strong></a>
+  <a href="https://arxiv.org/abs/2611.09161"><strong>Read the paper on arXiv</strong></a>
 </p>
 
 ## Overview
@@ -59,7 +59,7 @@ GreyZone addresses two gaps in existing agent-security benchmarks:
   application state independently of the services' own reports.
 
 <p align="center">
-  <a href="GreyZone.pdf"><img src="docs/figures/benchmark-framework.png" alt="Overview of GreyZone: scenario structure and execution workflow" width="100%"></a>
+  <a href="https://arxiv.org/abs/2611.09161"><img src="docs/figures/benchmark-framework.png" alt="Overview of GreyZone: scenario structure and execution workflow" width="100%"></a>
 </p>
 
 *Figure 1. Overview of GreyZone: scenario structure and execution workflow.*
@@ -208,8 +208,7 @@ GreyZone/
 ├── kubectl-ai/                            # Kubernetes operations agent on a simulated cluster
 ├── ZerePy/                                # Social-media and on-chain agent
 ├── docs/                                  # Model API configuration and maintainer checks
-├── scripts/check_deployment.py            # Maintainer deployment preflight (not used in evaluation)
-└── GreyZone.pdf                           # Full paper
+└── scripts/check_deployment.py            # Maintainer deployment preflight (not used in evaluation)
 ```
 
 Each application directory follows the same layout, with small deviations noted in its README
@@ -405,6 +404,20 @@ python3 scripts/check_deployment.py --project Clawith    # a single application
 ```
 
 ## Citation
+
+If you use GreyZone in your research, please cite our paper:
+
+```bibtex
+@misc{zhou2026greyzone,
+  title = {{GreyZone}: Production-quality Agentic Application Threats},
+  author = {Ruoyu Zhou and Shuyao Jiang and Haifeng Ruan and Abhik Roychoudhury},
+  year = {2026},
+  eprint = {2611.09161},
+  archivePrefix = {arXiv},
+  primaryClass = {cs.SE},
+  url = {https://arxiv.org/abs/2611.09161}
+}
+```
 
 ## License and Acknowledgements
 
