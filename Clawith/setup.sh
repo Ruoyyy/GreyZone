@@ -377,11 +377,20 @@ else
     PIP_TARGET="."
     echo "  Installing dependencies (this may take 1-2 minutes)..."
 fi
-if .venv/bin/pip install -e "$PIP_TARGET" "${PIP_INSTALL_ARGS[@]}" 2>&1; then
+UV_EXTRAS=()
+if [ "$INSTALL_DEV" = true ]; then
+    UV_EXTRAS+=(--extra dev)
+fi
+if .venv/bin/pip install "uv==0.11.15" "${PIP_INSTALL_ARGS[@]}" && \
+   UV_PYTHON_DOWNLOADS=never .venv/bin/uv lock --check --offline && \
+   .venv/bin/uv export --frozen --no-dev --no-emit-project "${UV_EXTRAS[@]}" \
+       --format requirements.txt --output-file .venv/runtime-requirements.txt > /dev/null && \
+   .venv/bin/pip install --require-hashes -r .venv/runtime-requirements.txt "${PIP_INSTALL_ARGS[@]}" && \
+   .venv/bin/pip install --no-deps -e "$PIP_TARGET" "${PIP_INSTALL_ARGS[@]}"; then
     echo -e "  ${GREEN}✓${NC} Backend dependencies installed"
 else
     echo -e "  ${RED}✗${NC} Failed to install backend dependencies."
-    echo "  Try manually: cd backend && .venv/bin/pip install -e '$PIP_TARGET'"
+    echo "  Check backend/uv.lock and the configured Python package index."
     exit 1
 fi
 
@@ -397,7 +406,7 @@ if [ ! -d "node_modules" ]; then
         echo -e "  ${YELLOW}⚠${NC}  You can still use pre-built dist/ or Docker for frontend."
     else
         echo "  Installing npm packages..."
-        npm install --silent $NPM_MIRROR 2>&1 | tail -1
+        npm ci --silent $NPM_MIRROR
         echo -e "  ${GREEN}✓${NC} Frontend dependencies installed"
     fi
 else
