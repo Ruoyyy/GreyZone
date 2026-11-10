@@ -29,7 +29,7 @@ ensure_env() {
     fi
     # Generate secrets if missing
     for var in JWT_SECRET_KEY SECRET_KEY; do
-        current=$(grep -E "^${var}=" "$ENV_FILE" | tail -1 | cut -d= -f2-)
+        current=$(grep -E "^${var}=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true)
         if [ -z "$current" ] || [[ "$current" == change-me-* ]]; then
             generated=$(openssl rand -hex 32)
             if grep -qE "^${var}=" "$ENV_FILE"; then
@@ -51,7 +51,12 @@ ensure_env() {
         grep -qE "^${var}=" "$ENV_FILE" || echo "${var}=" >> "$ENV_FILE"
     done
     if [ -z "$(grep -E '^OPENAI_API_KEY=' "$ENV_FILE" | cut -d= -f2-)" ]; then
-        echo "[start] WARNING: OPENAI_API_KEY empty — environment will have no LLM model"
+        echo "[start] ERROR: Set OPENAI_API_KEY in $ENV_FILE before starting" >&2
+        exit 1
+    fi
+    if [ -z "$(grep -E '^OPENAI_MODEL=' "$ENV_FILE" | cut -d= -f2-)" ]; then
+        echo "[start] ERROR: Set OPENAI_MODEL in $ENV_FILE before starting" >&2
+        exit 1
     fi
 }
 
@@ -84,18 +89,41 @@ try:
         'username': 'admin', 'email': 'admin@clawith.com',
         'password': 'admin-bootstrap-tmp', 'display_name': 'admin'}, timeout=15)
     print('[start] register:', r.status_code, r.text[:120])
-    sys.exit(0)
+    sys.exit(0 if r.status_code in (201, 409) else 1)
 except Exception as exc:
     print('[start] register failed:', exc)
-    sys.exit(0)
-" || true
+    sys.exit(1)
+"
+}
+
+wait_for_bridge() {
+    echo "[start] waiting for authenticated MCP endpoint..."
+    for _ in $(seq 1 60); do
+        if docker compose exec -T mcp-bridge python -c "
+import urllib.error, urllib.request, sys
+try:
+    urllib.request.urlopen(urllib.request.Request('http://localhost:3010/mcp', data=b'{}'), timeout=3)
+except urllib.error.HTTPError as exc:
+    sys.exit(0 if exc.code == 401 else 1)
+except Exception:
+    sys.exit(1)
+else:
+    sys.exit(1)
+" >/dev/null 2>&1; then
+            echo "[start] MCP endpoint ready (unauthenticated requests rejected)"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "[start] ERROR: MCP bridge did not become ready; run docker compose logs mcp-bridge" >&2
+    exit 1
 }
 
 run_bootstrap() {
     echo "[start] running environment bootstrap..."
     BOOTSTRAP_API_KEY=$(grep -E '^OPENAI_API_KEY=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
     BOOTSTRAP_MODEL=$(grep -E '^OPENAI_MODEL=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
-    BOOTSTRAP_BASE_URL=$(grep -E '^OPENAI_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2-)
+    BOOTSTRAP_BASE_URL=$(grep -E '^OPENAI_BASE_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)
     OUT=$(docker compose exec -T -e OPENAI_API_KEY="$BOOTSTRAP_API_KEY" \
         -e OPENAI_MODEL="$BOOTSTRAP_MODEL" -e OPENAI_BASE_URL="${BOOTSTRAP_BASE_URL:-https://api.openai.com/v1}" \
         -e PYTHONPATH=/app backend \
@@ -118,7 +146,11 @@ main() {
         printf '[]\n' > ss-nodes.json
     fi
     echo "[start] building images..."
-    python3 ../scripts/build_images.py --project Clawith
+    BUILD_ARGS=(--project Clawith)
+    if [ -n "${BUILD_MEMORY_MIB:-}" ]; then
+        BUILD_ARGS+=(--memory-mib "$BUILD_MEMORY_MIB")
+    fi
+    python3 ../scripts/build_images.py "${BUILD_ARGS[@]}"
     echo "[start] starting core services..."
     docker compose up -d --no-build postgres redis backend frontend
     wait_for_backend
@@ -126,7 +158,7 @@ main() {
     run_bootstrap
     echo "[start] starting MCP bridge..."
     docker compose up -d --no-build mcp-bridge
-    sleep 5
+    wait_for_bridge
     MCP_KEY=$(docker compose logs mcp-bridge 2>&1 | sed -nE 's/^.*MCP API key: ([^[:space:]]+).*$/\1/p' | tail -1)
     echo
     echo "══════════════════════════════════════════════════════"

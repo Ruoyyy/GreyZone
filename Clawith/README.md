@@ -49,6 +49,9 @@ MCP bridge:
 ./start.sh
 ```
 
+For a larger local build ceiling, use `BUILD_MEMORY_MIB=10240 ./start.sh`.
+The build guard still disables swap and runs image builds serially.
+
 The bootstrap (re-runnable, safe on an existing environment) produces the
 canonical state:
 
