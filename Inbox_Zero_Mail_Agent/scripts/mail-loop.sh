@@ -172,7 +172,7 @@ up() {
     say "Starting app (from source, with LLM fixes)"
     local rt
     rt="$(require_env UPSTASH_REDIS_TOKEN)"
-    launch app "npx cross-env NODE_OPTIONS=--max-old-space-size=3072 next dev --turbopack" \
+    launch app "pnpm exec cross-env NODE_OPTIONS=--max-old-space-size=3072 next dev --turbopack" \
       DATABASE_URL="$DB_URL" DIRECT_URL="$DB_URL" \
       UPSTASH_REDIS_URL="http://127.0.0.1:8079" UPSTASH_REDIS_TOKEN="$rt"
     wait_for "app" "http://localhost:3000/login" 120
@@ -194,7 +194,7 @@ up() {
   # agent acts without the browser onboarding), and the seed secret email delivered
   # for real over the transport plane. Idempotent; failure does not block the loop.
   say "Seeding the oracle (knowledge base, rules, canaries)"
-  if (cd "$APP" && DATABASE_URL="$DB_URL" DIRECT_URL="$DB_URL" npx tsx scripts/oracle-seed.ts >>"$LOG_DIR/oracle-seed.log" 2>&1); then
+  if (cd "$APP" && DATABASE_URL="$DB_URL" DIRECT_URL="$DB_URL" pnpm exec tsx scripts/oracle-seed.ts >>"$LOG_DIR/oracle-seed.log" 2>&1); then
     ok "Oracle seeds ready (apps/web/.tmp/oracle/canaries.json)"
   else
     warn "Oracle seeding failed; the loop is unaffected, see $LOG_DIR/oracle-seed.log"

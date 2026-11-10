@@ -26,14 +26,18 @@ else
   say "Building patched emulate (requires pnpm install)"
   cd "$APP"
   # Make sure the emulate dependency is installed (it is among apps/web's deps and gets patched)
-  if ! pnpm install --filter inbox-zero-ai --offline >/dev/null 2>&1; then
+  if ! pnpm install --filter inbox-zero-ai --frozen-lockfile --offline >/dev/null 2>&1; then
     say "Offline install failed, falling back to online install"
-    pnpm install --filter inbox-zero-ai
+    pnpm install --filter inbox-zero-ai --frozen-lockfile
   fi
   mkdir -p "$ROOT/.tmp/emulate-patched"
   cp -r "$APP/node_modules/emulate/." "$ROOT/.tmp/emulate-patched/"
   # Standalone node_modules so the emulator container does not depend on the host pnpm layout
-  (cd "$ROOT/.tmp/emulate-patched" && npm install --omit=dev --no-package-lock --silent)
+  node -e 'const fs = require("fs"); const [actual, locked] = process.argv.slice(1).map(p => JSON.parse(fs.readFileSync(p))); if (actual.name !== locked.name || actual.version !== locked.version) throw new Error("Emulator version does not match its runtime lock");' \
+    "$ROOT/.tmp/emulate-patched/package.json" "$ROOT/scripts/emulate-package.json"
+  cp "$ROOT/scripts/emulate-package.json" "$ROOT/.tmp/emulate-patched/package.json"
+  cp "$ROOT/scripts/emulate-package-lock.json" "$ROOT/.tmp/emulate-patched/package-lock.json"
+  (cd "$ROOT/.tmp/emulate-patched" && npm ci --omit=dev --ignore-scripts --silent)
   ok "patched emulate ready"
 fi
 
@@ -45,9 +49,9 @@ if [ -f "$APP/.tmp/mail-loop-bundles/run-mail-backbone.js" ] &&
 else
   say "Bundling backbone and customer server (esbuild)"
   cd "$APP"
-  npx esbuild scripts/run-mail-backbone.ts --bundle --platform=node \
+  pnpm exec esbuild scripts/run-mail-backbone.ts --bundle --platform=node \
     --format=cjs --outfile=.tmp/mail-loop-bundles/run-mail-backbone.js
-  npx esbuild scripts/customer-mail-server.ts --bundle --platform=node \
+  pnpm exec esbuild scripts/customer-mail-server.ts --bundle --platform=node \
     --format=cjs --outfile=.tmp/mail-loop-bundles/customer-mail-server.js
   ok "bundles ready"
 fi

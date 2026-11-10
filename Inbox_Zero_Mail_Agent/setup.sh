@@ -1,3 +1,3 @@
 #!/bin/bash
 
-pnpm install && pnpm dev-setup init
+pnpm install --frozen-lockfile && pnpm dev-setup init

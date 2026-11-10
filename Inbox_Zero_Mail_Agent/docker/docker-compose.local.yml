@@ -16,6 +16,7 @@
 services:
   app:
     image: ${FULL_IMAGE:-ghcr.io/your-username/inbox-zero}:latest
+    pull_policy: never
     ports:
       - "3000:3000"
     env_file:
@@ -35,7 +36,7 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16
+    image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
@@ -51,7 +52,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     volumes:
       - redis-data:/data
     ports:
@@ -64,7 +65,7 @@ services:
 
   # Upstash-compatible Redis HTTP interface
   redis-http:
-    image: hiett/serverless-redis-http:latest
+    image: hiett/serverless-redis-http:latest@sha256:5b0bb9239fce53abf87b2018a7a0deb9ec7bd900c5360738fe5fbeeb426f9150
     environment:
       SRH_MODE: env
       SRH_TOKEN: dev_token
