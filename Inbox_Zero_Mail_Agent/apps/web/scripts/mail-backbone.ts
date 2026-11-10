@@ -185,7 +185,7 @@ export async function startMailBackbone(
       req.method === "POST" &&
       /^\/gmail\/v1\/users\/[^/]+\/watch$/.test(urlPath)
     ) {
-      await handleCapturedProxy(req, res, (body, responseJson) => {
+      await handleCapturedProxy(req, res, async (body, responseJson) => {
         if (responseJson?.historyId === undefined) return;
         subscription = {
           topicName: getString(body, "topicName") ?? DEFAULT_TOPIC,
@@ -197,7 +197,8 @@ export async function startMailBackbone(
         // Persist the subscription so it survives a backbone restart (watch is in-memory);
         // otherwise the cursor keeps advancing but notifications silently stop — the classic
         // graceful stop/start pitfall.
-        persistState();
+        state.subscription = subscription;
+        await persistState();
         // Gmail delivers a sync notification when a watch is established.
         enqueue({
           kind: "notification",
@@ -217,9 +218,10 @@ export async function startMailBackbone(
       req.method === "POST" &&
       /^\/gmail\/v1\/users\/[^/]+\/stop$/.test(urlPath)
     ) {
-      await handleCapturedProxy(req, res, (_body, _responseJson) => {
+      await handleCapturedProxy(req, res, async (_body, _responseJson) => {
         subscription = null;
-        persistState();
+        state.subscription = null;
+        await persistState();
         console.log("[mail-backbone] watch stopped");
       });
       return;
@@ -258,7 +260,7 @@ export async function startMailBackbone(
     capture: (
       body: Record<string, unknown>,
       responseJson: Record<string, unknown> | undefined,
-    ) => void,
+    ) => void | Promise<void>,
   ) {
     const bodyText = await readBody(req);
     const upstreamRes = await fetch(`${options.upstreamBaseUrl}${req.url}`, {
@@ -280,7 +282,7 @@ export async function startMailBackbone(
       } catch {
         body = {};
       }
-      capture(body, responseJson);
+      await capture(body, responseJson);
     }
     res.writeHead(upstreamRes.status, {
       "content-type":

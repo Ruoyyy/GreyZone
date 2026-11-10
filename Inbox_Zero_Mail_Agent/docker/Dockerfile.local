@@ -1,13 +1,12 @@
 # syntax=docker/dockerfile:1.4
-# Dockerfile.prod.local - Optimized for lower memory usage
+# Local production image with sequential build work.
 #
 # Key optimizations:
 # 1. Use --webpack flag to disable Turbopack (Next.js 16 uses Turbopack by default)
 # 2. BuildKit cache mounts for .next/cache - enables incremental builds
 # 3. Separate RUN commands - allows memory to be freed between steps
-# 4. ESLint disabled via next.config.ts (eslint.ignoreDuringBuilds)
 #
-# Memory requirement: ~3GB for webpack build + TypeScript checking
+# Build ceiling: 8 GiB, including compilation and TypeScript checking.
 # See: https://nextjs.org/docs/app/guides/memory-usage
 
 FROM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81 AS builder
@@ -53,8 +52,8 @@ ENV DOCKER_BUILD=true
 # Standalone output for Docker deployment
 ENV NEXT_PRIVATE_STANDALONE=true
 
-# Leave room for native allocations and child processes inside the 4 GiB build ceiling.
-ARG BUILD_NODE_OPTIONS=--max-old-space-size=2560
+# Leave room for native allocations and child processes inside the 8 GiB build ceiling.
+ARG BUILD_NODE_OPTIONS=--max-old-space-size=4096
 ENV NODE_OPTIONS=${BUILD_NODE_OPTIONS}
 
 # Feature flag placeholders
@@ -80,7 +79,7 @@ ENV EMAIL_ENCRYPT_SECRET="dummy_encrypt_secret_for_build_only"
 ENV EMAIL_ENCRYPT_SALT="dummy_encrypt_salt_for_build_only"
 ENV GOOGLE_PUBSUB_TOPIC_NAME="dummy_topic_for_build_only"
 ENV GOOGLE_PUBSUB_VERIFICATION_TOKEN="dummy_pubsub_token_for_build"
-ENV DEFAULT_LLMS="anthropic:claude-sonnet-4-6"
+ENV DEFAULT_LLMS="openai:gpt-4.1-mini-2025-04-14"
 ENV INTERNAL_API_KEY="dummy_apikey_for_build_only"
 ENV API_KEY_SALT="dummy_salt_for_build_only"
 ENV UPSTASH_REDIS_URL="http://dummy-redis-for-build:6379"
@@ -90,18 +89,18 @@ ENV QSTASH_TOKEN="dummy_qstash_token_for_build"
 ENV QSTASH_CURRENT_SIGNING_KEY="dummy_qstash_curr_key_for_build"
 ENV QSTASH_NEXT_SIGNING_KEY="dummy_qstash_next_key_for_build"
 
-# Step 1: Generate Prisma client (separate step = memory freed after)
-RUN pnpm exec prisma generate --schema=apps/web/prisma/schema.prisma
+# Dependencies were installed from the lockfile before copying the full source.
+ENV PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
+RUN pnpm --filter inbox-zero-ai exec prisma generate
 
 # Step 2: Build Next.js with webpack (not Turbopack) for lower memory usage
 # --webpack: Use webpack/SWC instead of Turbopack (Next.js 16 default)
 # Cache mount persists between builds for incremental compilation
 RUN --mount=type=cache,target=/app/apps/web/.next/cache \
-    cd apps/web && \
-    ../../node_modules/.bin/next build --webpack && \
-    ../../node_modules/.bin/serwist build serwist.config.mjs && \
-    cd ../.. && \
-    pnpm --filter @inboxzero/worker deploy --legacy --prod /tmp/apps/worker
+    pnpm --filter inbox-zero-ai build
+
+RUN pnpm --filter @inboxzero/worker deploy --prod \
+    --config.injectWorkspacePackages=true /tmp/apps/worker
 
 # === Production image ===
 FROM node:24-alpine@sha256:50c8e8ca1d27439048670df5883f32d57cf81cff6233222c893fd0d9884cbd81 AS runner
@@ -125,10 +124,11 @@ RUN chmod +x /app/docker/scripts/*.sh
 RUN npm install -g prisma@7.10.0
 # Set NODE_PATH so prisma/config imports resolve correctly
 ENV NODE_PATH=/usr/local/lib/node_modules
+ENV HOSTNAME=0.0.0.0
 
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1
 
 CMD ["/app/docker/scripts/start.sh"]

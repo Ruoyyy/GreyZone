@@ -13,9 +13,7 @@ echo "🚀 Starting Inbox Zero..."
 if [ "${SKIP_DB_MIGRATIONS:-false}" = "true" ]; then
     echo "Skipping database migrations during web startup."
 else
-    if ! /app/docker/scripts/migrate.sh; then
-        echo "⚠️  Continuing startup (database might be unavailable or migrations already applied)"
-    fi
+    /app/docker/scripts/migrate.sh
 fi
 
 # Start the Next.js application

@@ -11,9 +11,11 @@
 #
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+
 # Configuration
-IMAGE_NAME="inbox-zero"
-REGISTRY="ghcr.io"
+FULL_IMAGE="${FULL_IMAGE:-greyzone/inbox-zero}"
 ENV_FILE="apps/web/.env"
 COMPOSE_FILE="docker/docker-compose.local.yml"
 
@@ -39,14 +41,6 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "Copy from .env.example and configure: cp apps/web/.env.example apps/web/.env"
   exit 1
 fi
-
-# Get GitHub username for image name
-if ! gh auth status > /dev/null 2>&1; then
-  echo "GitHub CLI not authenticated. Run: gh auth login"
-  exit 1
-fi
-GITHUB_USERNAME="${GITHUB_USERNAME:-$(gh api user -q .login)}"
-FULL_IMAGE="${REGISTRY}/${GITHUB_USERNAME}/${IMAGE_NAME}"
 
 # Check if image exists locally
 if ! docker image inspect "${FULL_IMAGE}:latest" > /dev/null 2>&1; then
@@ -76,7 +70,6 @@ else
   echo ""
 
   # Export for docker-compose to use
-  export GITHUB_USERNAME
   export FULL_IMAGE
 
   docker compose -f "$COMPOSE_FILE" up

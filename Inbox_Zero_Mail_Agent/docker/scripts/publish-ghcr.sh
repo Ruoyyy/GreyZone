@@ -6,9 +6,9 @@
 # depending on the upstream elie222/inbox-zero image.
 #
 # Prerequisites:
-#   - gh CLI authenticated: gh auth login
+#   - For publishing only: gh CLI authenticated with gh auth login
 #   - Docker with buildx support
-#   - Python 3 and at least 4.5 GiB RAM allocated to Docker
+#   - Python 3 and at least 8.5 GiB RAM available to Docker
 #
 # Usage:
 #   pnpm docker:local:build                       # build locally only (faster)
@@ -29,11 +29,14 @@
 #
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+
 # Configuration
 IMAGE_NAME="inbox-zero"
 REGISTRY="ghcr.io"
 DOCKERFILE="docker/Dockerfile.local"
-MIN_MEMORY_GB=3
+MIN_MEMORY_GB=8
 
 # Parse arguments
 LOCAL_ONLY=false
@@ -69,7 +72,7 @@ if ! docker info > /dev/null 2>&1; then
   exit 1
 fi
 
-# Check Docker memory (warn if < 3GB)
+# The shared build helper also checks the exact ceiling and available-memory reserve.
 DOCKER_MEM_BYTES=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo "0")
 DOCKER_MEM_GB=$((DOCKER_MEM_BYTES / 1024 / 1024 / 1024))
 if [ "$DOCKER_MEM_GB" -lt "$MIN_MEMORY_GB" ]; then
@@ -91,13 +94,6 @@ if [ "$DOCKER_MEM_GB" -lt "$MIN_MEMORY_GB" ]; then
   fi
 fi
 
-# Check gh CLI is authenticated
-if ! gh auth status > /dev/null 2>&1; then
-  echo "❌ GitHub CLI not authenticated."
-  echo "   Run: gh auth login"
-  exit 1
-fi
-
 # Check Dockerfile exists
 if [ ! -f "$DOCKERFILE" ]; then
   echo "❌ Dockerfile not found: $DOCKERFILE"
@@ -107,19 +103,26 @@ fi
 echo "✅ Pre-flight checks passed"
 echo ""
 
-# Auto-detect GitHub username from gh CLI (can override with env var)
-GITHUB_USERNAME="${GITHUB_USERNAME:-$(gh api user -q .login)}"
+if [ "$LOCAL_ONLY" = true ]; then
+  FULL_IMAGE="${FULL_IMAGE:-greyzone/inbox-zero}"
+else
+  if ! gh auth status > /dev/null 2>&1; then
+    echo "GitHub CLI not authenticated. Run: gh auth login"
+    exit 1
+  fi
+  GITHUB_USERNAME="${GITHUB_USERNAME:-$(gh api user -q .login)}"
+  FULL_IMAGE="${FULL_IMAGE:-${REGISTRY}/${GITHUB_USERNAME}/${IMAGE_NAME}}"
+fi
 
 # Tag defaults to git SHA
 TAG="${TAG:-$(git rev-parse --short HEAD)}"
-FULL_IMAGE="${REGISTRY}/${GITHUB_USERNAME}/${IMAGE_NAME}"
 
 echo "Building ${FULL_IMAGE}:${TAG}"
 
 if [ "$LOCAL_ONLY" = true ]; then
   echo "Mode: local build with the benchmark memory ceiling"
 
-  python3 "$(dirname "$0")/../../../scripts/build_images.py" \
+  python3 "$ROOT/../scripts/build_images.py" \
     --dockerfile "Inbox_Zero_Mail_Agent/${DOCKERFILE}" \
     --context Inbox_Zero_Mail_Agent \
     --tag "${FULL_IMAGE}:${TAG}" \
@@ -144,7 +147,7 @@ else
   gh auth token | docker login ghcr.io -u "${GITHUB_USERNAME}" --password-stdin
 
   # Build and push (amd64 only - arm64 has pnpm/next resolution issues)
-  python3 "$(dirname "$0")/../../../scripts/build_images.py" \
+  python3 "$ROOT/../scripts/build_images.py" \
     --platform linux/amd64 \
     --dockerfile "Inbox_Zero_Mail_Agent/${DOCKERFILE}" \
     --context Inbox_Zero_Mail_Agent \

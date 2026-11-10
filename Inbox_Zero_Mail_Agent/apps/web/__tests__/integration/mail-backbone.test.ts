@@ -263,6 +263,57 @@ describe.skipIf(!RUN_INTEGRATION_TESTS)(
       }
     });
 
+    it("restores watches after restart and preserves users.stop", async () => {
+      const stateDir = await mkdtemp(path.join(tmpdir(), "mail-watch-restart-"));
+      let backbone = await startBackbone(stateDir);
+      try {
+        await watchAsApp(backbone.url);
+        await until(() => notifications.length > 0);
+        await backbone.close();
+        backbone = await startBackbone(stateDir);
+
+        const restored = await ingress(
+          backbone.url,
+          buildEml({
+            from: CUSTOMER,
+            to: MANAGED,
+            subject: "Watch after restart",
+            messageId: "<restored-watch@example.external>",
+            text: "The existing watch should notify the app.",
+          }),
+          [MANAGED],
+        );
+        await until(() =>
+          notifications.some((n) => n.historyId === restored.historyId),
+        );
+
+        const stopped = await fetch(`${backbone.url}/gmail/v1/users/me/stop`, {
+          method: "POST",
+          headers: appHeaders(),
+          body: "{}",
+        });
+        expect(stopped.ok).toBe(true);
+        await backbone.close();
+        backbone = await startBackbone(stateDir);
+        notifications.length = 0;
+        await ingress(
+          backbone.url,
+          buildEml({
+            from: CUSTOMER,
+            to: MANAGED,
+            subject: "Stopped watch after restart",
+            messageId: "<stopped-watch@example.external>",
+            text: "The stopped watch must remain disabled.",
+          }),
+          [MANAGED],
+        );
+        await sleep(400);
+        expect(notifications).toHaveLength(0);
+      } finally {
+        await backbone.close();
+      }
+    });
+
     it("delivers outbound SENT mail to the customer without a watch", async () => {
       const backbone = await startBackbone();
       try {
@@ -492,7 +543,7 @@ describe.skipIf(!RUN_INTEGRATION_TESTS)(
       }
     });
 
-    async function startBackbone(): Promise<MailBackbone> {
+    async function startBackbone(stateDir?: string): Promise<MailBackbone> {
       return startMailBackbone({
         port: 0,
         upstreamBaseUrl: emulator.url,
@@ -501,7 +552,7 @@ describe.skipIf(!RUN_INTEGRATION_TESTS)(
         webhookUrl,
         webhookVerificationToken: WEBHOOK_TOKEN,
         customerReceiveUrl: `${customerUrl}/receive`,
-        stateDir: await mkdtemp(path.join(tmpdir(), "mail-backbone-")),
+        stateDir: stateDir ?? (await mkdtemp(path.join(tmpdir(), "mail-backbone-"))),
         pollIntervalMs: 50,
       });
     }

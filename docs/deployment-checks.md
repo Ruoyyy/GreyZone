@@ -31,7 +31,7 @@ By default, the tool checks:
 
 - The presence of listed deployment entry points, dependency locks, key source files, and fixture source files.
 - Deployment shell-script syntax with `bash -n`, without executing the scripts.
-- The availability of the Docker CLI and required host tools. For kubectl-ai, this also includes Go, kind, and kubectl. This checks availability; pinned versions are verified during release builds.
+- The availability of the Docker CLI and required host tools. Inbox also requires Linux `setsid`; kubectl-ai also requires Go, kind, and kubectl. This checks availability; pinned versions are verified during release builds.
 - Parsing of 11 configurations with Docker Compose, plus the presence of declared local build contexts, Dockerfiles, and additional contexts.
 
 Compose checks explicitly use an empty environment file, disable interpolation, and skip service `env_file` resolution. They do not depend on a developer's local `.env` or `secrets.env`. Compose must support `--no-interpolate`, `--no-env-resolution`, and JSON output. This step does not require the Docker daemon or pull images.
@@ -89,6 +89,6 @@ These checks detect whether maintenance changes broke existing logic. Their resu
 
 The recorded reference baseline is 155 pytest checks across 8 ranges, 16 kubectl self-checks, and an initial 53 Inbox offline tests (3 added during API configuration cleanup, bringing the current count to 56), plus commonly's SDK checks and two native Node tests. These counts are historical records, not quotas.
 
-Inbox's 9 additional `mail-backbone.test.ts` cases are local network integration tests excluded from default regressions. Run and record them separately during deployment acceptance. Review existing redteam adapter smoke checks, Shopware live-environment checks, and author-created scripts individually before deciding whether to retain them. Absence from this entry point alone is not a reason to delete them.
+Inbox's 10 additional `mail-backbone.test.ts` cases are local network integration tests excluded from default regressions, including watch restoration and cancellation across restarts. Run and record them separately during deployment acceptance. Its source launcher requires Linux `setsid` to isolate the application process group. Its production image builds have an 8 GiB memory ceiling and require another 512 MiB of available memory for the build guard. Review existing redteam adapter smoke checks, Shopware live-environment checks, and author-created scripts individually before deciding whether to retain them. Absence from this entry point alone is not a reason to delete them.
 
 The offline SDK request check for API configuration cleanup is `python3 -m unittest discover -s scripts -p test_openai_config.py`. It requires ZerePy's OpenAI/httpx dependencies and is not included in default deployment preflight.

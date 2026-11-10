@@ -65,6 +65,8 @@ const nextConfig: NextConfig = {
             : {}),
           ...(isProductionBuild
             ? {
+                webpackBuildWorker: process.env.DOCKER_BUILD === "true",
+                webpackMemoryOptimizations: process.env.DOCKER_BUILD === "true",
                 // Keep Docker builds within the benchmark's shared memory ceiling.
                 cpus: process.env.DOCKER_BUILD === "true" ? 1 : undefined,
                 staticGenerationMaxConcurrency:
@@ -402,8 +404,7 @@ const nextConfig: NextConfig = {
       },
     },
   },
-  // Skip TypeScript checking during Docker/E2E CI builds to save memory.
-  // App typechecking is covered by the Build Check workflow.
+  // Type checking is enabled unless an explicit experimental build opts out.
   typescript: {
     ignoreBuildErrors: process.env.SKIP_TYPE_CHECK === "true",
   },

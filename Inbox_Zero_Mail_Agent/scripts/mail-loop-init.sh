@@ -9,7 +9,7 @@
 #   3. apps/web/.tmp/customer-mail/.transport-token -- shared secret for the transport plane
 #
 # Afterwards start manually:
-#   docker compose --profile mail-loop -f docker-compose.mail-loop.yml up -d
+#   bash scripts/mail-loop.sh up
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -70,4 +70,4 @@ echo
 echo "Artifacts ready. Start the stack:"
 echo "  cd $ROOT"
 echo "  TRANSPORT_TOKEN=\$(cat apps/web/.tmp/customer-mail/.transport-token) \\"
-echo "    docker compose --profile mail-loop -f docker-compose.mail-loop.yml up -d"
+echo "    docker compose --env-file apps/web/.env --profile mail-loop -f docker-compose.mail-loop.yml up -d"

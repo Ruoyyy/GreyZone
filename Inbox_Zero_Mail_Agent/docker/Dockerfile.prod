@@ -39,12 +39,9 @@ COPY . .
 
  # Build app (Next.js standalone)
 ENV NODE_ENV=production
-# Leave room for native allocations and child processes inside the 4 GiB build ceiling.
-ARG BUILD_NODE_OPTIONS=--max-old-space-size=2560
+# Leave room for native allocations and child processes inside the 8 GiB build ceiling.
+ARG BUILD_NODE_OPTIONS=--max-old-space-size=4096
 ENV NODE_OPTIONS=${BUILD_NODE_OPTIONS}
-# Typechecking is covered by the Build Check workflow. Skipping it here
-# keeps peak RAM down so Depot workers do not OOM during next build.
-ENV SKIP_TYPE_CHECK=true
 ARG NEXT_PUBLIC_BASE_URL="http://NEXT_PUBLIC_BASE_URL_PLACEHOLDER"
 ENV NEXT_PUBLIC_BASE_URL=${NEXT_PUBLIC_BASE_URL}
 ARG NEXT_PUBLIC_BYPASS_PREMIUM_CHECKS="NEXT_PUBLIC_BYPASS_PREMIUM_CHECKS_PLACEHOLDER"
@@ -81,7 +78,7 @@ ENV EMAIL_ENCRYPT_SECRET="dummy_encrypt_secret_for_build_only"
 ENV EMAIL_ENCRYPT_SALT="dummy_encrypt_salt_for_build_only"
 ENV GOOGLE_PUBSUB_TOPIC_NAME="dummy_topic_for_build_only"
 ENV GOOGLE_PUBSUB_VERIFICATION_TOKEN="dummy_pubsub_token_for_build"
-ENV DEFAULT_LLMS="anthropic:claude-sonnet-4-6"
+ENV DEFAULT_LLMS="openai:gpt-4.1-mini-2025-04-14"
 ENV INTERNAL_API_KEY="dummy_apikey_for_build_only"
 ENV API_KEY_SALT="dummy_salt_for_build_only"
 ENV UPSTASH_REDIS_URL="http://dummy-redis-for-build:6379"
@@ -94,12 +91,11 @@ ENV DOCKER_BUILD="true"
 
 RUN rm -f /app/apps/web/.env && touch /app/apps/web/.env
 
-RUN pnpm exec prisma generate --schema=apps/web/prisma/schema.prisma
+# Dependencies were installed from the lockfile before copying the full source.
+ENV PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
+RUN pnpm --filter inbox-zero-ai exec prisma generate
 
-RUN cd /app/apps/web \
- && pnpm exec next build \
- && pnpm exec serwist build serwist.config.mjs \
- && cd /app \
+RUN pnpm --filter inbox-zero-ai build \
  && pnpm --filter inbox-zero-ai deploy --legacy --prod /tmp/apps/web \
  && pnpm --filter @inboxzero/worker deploy --legacy --prod /tmp/apps/worker \
  && rm -rf apps/web/.next/cache
@@ -148,6 +144,7 @@ RUN chmod +x /app/docker/scripts/*.sh
 RUN npm install -g prisma@7.10.0
 # Set NODE_PATH so prisma/config imports resolve correctly
 ENV NODE_PATH=/usr/local/lib/node_modules
+ENV HOSTNAME=0.0.0.0
 
 EXPOSE 3000
 

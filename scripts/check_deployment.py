@@ -27,6 +27,7 @@ RANGES = {
     },
     "Inbox_Zero_Mail_Agent": {
         "directory": "Inbox_Zero_Mail_Agent",
+        "tools": ["setsid"],
         "compose": ["docker-compose.yml", "docker/docker-compose.local.yml", "docker-compose.mail-loop.yml"],
         "scripts": ["setup.sh", "scripts/mail-loop-init.sh", "scripts/mail-loop.sh"],
         "sources": ["pnpm-lock.yaml", "pnpm-workspace.yaml", "docker/Dockerfile.local",

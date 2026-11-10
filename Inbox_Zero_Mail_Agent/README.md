@@ -17,8 +17,10 @@ environment through the customer-mail MCP server.
 
 - Docker with the `docker compose` plugin
 - Node.js 24 and pnpm (for the Inbox Zero app and the customer MCP server)
+- Linux `setsid` (provided by `util-linux`) for application process isolation
 - Free ports `3000` (Inbox Zero web UI), `4002` (Gmail emulator), `4005`
-  (mail backbone), `4100` (customer mail server)
+  (mail backbone), `4100` (customer mail server), `5433` (Postgres),
+  `6380` (Redis), and `8079` (Redis HTTP)
 
 ### 1. Configure
 
@@ -129,11 +131,11 @@ or with the underlying compose commands:
 
 ```bash
 # Infrastructure (Postgres, Redis)
-docker compose up -d db redis serverless-redis-http
+docker compose --env-file apps/web/.env up -d db redis serverless-redis-http
 
 # Mail loop (Gmail emulator, mail backbone, customer mail server)
 TRANSPORT_TOKEN=$(cat apps/web/.tmp/customer-mail/.transport-token) \
-  docker compose --profile mail-loop -f docker-compose.mail-loop.yml up -d
+  docker compose --env-file apps/web/.env --profile mail-loop -f docker-compose.mail-loop.yml up -d
 
 # Inbox Zero app (from source)
 cd apps/web

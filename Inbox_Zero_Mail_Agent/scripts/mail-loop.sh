@@ -18,6 +18,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/apps/web"
+cd "$ROOT"
 PIDS="$APP/.tmp/mail-loop.pids"
 LOG_DIR="$APP/.tmp/mail-loop-logs"
 # Managed mailbox seeded in emulate.local.config.yaml (the agent's own account).
@@ -31,13 +32,12 @@ die() {
   exit 1
 }
 
-env_value() { grep -E "^$1=" "$APP/.env" | head -1 | cut -d= -f2- | tr -d '"'; }
+env_value() { grep -E "^$1=" "$APP/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' || true; }
 
-listening() { curl -s -o /dev/null --max-time 3 "$1" 2>/dev/null; }
+listening() { curl --fail -s -o /dev/null --max-time 3 "$1" 2>/dev/null; }
 
 # launch <name> <command> [env assignments...]
-# Records the subshell pid. npx execs into the real process, so this pid is
-# usually the actual service process; down() also has a pattern-match fallback.
+# Record an isolated process group so shutdown only stops this script's app.
 launch() {
   local name="$1" cmd="$2"
   shift 2
@@ -50,7 +50,7 @@ launch() {
     if [ -f "$LOG_DIR/$name.log" ]; then
       mv -f "$LOG_DIR/$name.log" "$LOG_DIR/$name.prev.log"
     fi
-    nohup $cmd >"$LOG_DIR/$name.log" 2>&1 &
+    nohup setsid $cmd >"$LOG_DIR/$name.log" 2>&1 &
     echo $!
   ) >"$LOG_DIR/$name.pid"
   ok "$name (pid $(cat "$LOG_DIR/$name.pid"))"
@@ -72,15 +72,37 @@ require_env() {
   printf '%s' "$v"
 }
 
+infra() {
+  local postgres_password redis_token
+  postgres_password="$(require_env POSTGRES_PASSWORD)"
+  redis_token="$(require_env UPSTASH_REDIS_TOKEN)"
+  POSTGRES_PORT=5433 POSTGRES_PASSWORD="$postgres_password" \
+    UPSTASH_REDIS_TOKEN="$redis_token" \
+    docker compose "$@"
+}
+
+mail_loop() {
+  local transport_token verification_token
+  transport_token="$(cat "$APP/.tmp/customer-mail/.transport-token" 2>/dev/null || true)"
+  verification_token="$(env_value GOOGLE_PUBSUB_VERIFICATION_TOKEN)"
+  TRANSPORT_TOKEN="${transport_token:-unused}" \
+    GOOGLE_PUBSUB_VERIFICATION_TOKEN="${verification_token:-unused}" \
+    docker compose --profile mail-loop -f docker-compose.mail-loop.yml "$@"
+}
+
+watch_active() {
+  mail_loop exec -T mail-backbone \
+    node -e 'const fs = require("node:fs"); const path = require("node:path"); const state = JSON.parse(fs.readFileSync(path.join(process.env.MAIL_BACKBONE_STATE_DIR, "state.json"), "utf8")); const watch = state.subscription; process.exit(watch && Number(watch.expiration) > Date.now() ? 0 : 1);' \
+    2>/dev/null
+}
+
 # wait_for <desc> <url> <tries> [extra curl args...]
 wait_for() {
   local desc="$1" url="$2" tries="${3:-40}" code
   shift 3 2>/dev/null || shift 2
   for _ in $(seq 1 "$tries"); do
     code="$(curl -s "$@" -o /dev/null -w '%{http_code}' "$url" --max-time 5 || true)"
-    # 000 = cannot connect; anything else (incl. 5xx) means something is
-    # listening on the port, the upstream may just not be ready yet.
-    if [ -n "$code" ] && [ "$code" != "000" ]; then
+    if [[ "$code" =~ ^[23][0-9][0-9]$ ]]; then
       ok "$desc ready"
       return 0
     fi
@@ -124,10 +146,7 @@ up() {
   # db container must publish 5433 too. This also sidesteps a host Postgres on 5432.
   # serverless-redis-http authenticates with SRH_TOKEN=${UPSTASH_REDIS_TOKEN}; it must
   # match the app's UPSTASH_REDIS_TOKEN, so pass it explicitly (not via a repo-root .env).
-  POSTGRES_PORT=5433 POSTGRES_PASSWORD="$(require_env POSTGRES_PASSWORD)" \
-    UPSTASH_REDIS_TOKEN="$(require_env UPSTASH_REDIS_TOKEN)" \
-    docker compose up -d db redis serverless-redis-http >/dev/null 2>&1 || true
-  docker compose up -d --no-deps cron >/dev/null 2>&1 || true
+  infra up -d db redis serverless-redis-http
 
   # Single source of truth for the host->Postgres URL (5433); app, migrate and
   # oracle-seed all use it so they never disagree on the port.
@@ -137,19 +156,18 @@ up() {
   say "Waiting for Postgres (5433) and applying migrations"
   local _i
   for _i in $(seq 1 30); do
-    docker exec inbox-zero-services-db-1 pg_isready -U postgres -d inboxzero >/dev/null 2>&1 && break
+    infra exec -T db pg_isready -U postgres -d inboxzero >/dev/null 2>&1 && break
     sleep 2
   done
-  if (cd "$APP" && DATABASE_URL="$DB_URL" DIRECT_URL="$DB_URL" npx prisma migrate deploy >>"$LOG_DIR/migrate.log" 2>&1); then
+  if (cd "$APP" && DATABASE_URL="$DB_URL" DIRECT_URL="$DB_URL" pnpm exec prisma migrate deploy >>"$LOG_DIR/migrate.log" 2>&1); then
     ok "Migrations applied"
   else
-    warn "prisma migrate deploy failed; see $LOG_DIR/migrate.log"
+    die "prisma migrate deploy failed; see $LOG_DIR/migrate.log"
   fi
 
   say "Starting mail loop (emulator/backbone/customer server)"
-  TRANSPORT_TOKEN="$transport" \
-    GOOGLE_PUBSUB_VERIFICATION_TOKEN="$(require_env GOOGLE_PUBSUB_VERIFICATION_TOKEN)" \
-    docker compose --profile mail-loop -f docker-compose.mail-loop.yml up -d >/dev/null 2>&1 || true
+  require_env GOOGLE_PUBSUB_VERIFICATION_TOKEN >/dev/null
+  mail_loop up -d
 
   wait_for "emulator" "http://127.0.0.1:4002/.well-known/openid-configuration" 60
   wait_for "backbone" "http://127.0.0.1:4005/.well-known/openid-configuration" 40
@@ -158,7 +176,7 @@ up() {
   local emu_profile app_history_now
   emu_profile="$(curl -s "http://127.0.0.1:4002/gmail/v1/users/me/profile" -H "Authorization: Bearer $transport" 2>/dev/null |
     python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("messagesTotal",-1), d.get("historyId","0"))' 2>/dev/null || echo '-1 0')"
-  app_history_now="$(docker exec inbox-zero-services-db-1 psql -U postgres -d inboxzero -tAc \
+  app_history_now="$(infra exec -T db psql -U postgres -d inboxzero -tAc \
     "select coalesce(\"lastSyncedHistoryId\",'') from \"EmailAccount\" limit 1;" 2>/dev/null | tr -d '[:space:]' || true)"
   if [ "${emu_profile%% *}" = "0" ] && [ -n "$app_history_now" ]; then
     warn "Emulator is empty but the app has a cursor -- the emulator was restarted"
@@ -186,18 +204,18 @@ up() {
   if (cd "$ROOT" && python3 scripts/dev-login.py --email "$MANAGED_EMAIL" >>"$LOG_DIR/dev-login.log" 2>&1); then
     ok "Logged in"
   else
-    warn "Headless login failed; see $LOG_DIR/dev-login.log"
+    die "Headless login failed; see $LOG_DIR/dev-login.log"
   fi
 
   # Oracle seeds (needs the EmailAccount from the login above): knowledge base +
   # canary registry for oracle-watch, the Max-Autonomy rules (pre-seeded so the
   # agent acts without the browser onboarding), and the seed secret email delivered
-  # for real over the transport plane. Idempotent; failure does not block the loop.
+  # for real over the transport plane. Startup requires successful fixture seeding.
   say "Seeding the oracle (knowledge base, rules, canaries)"
   if (cd "$APP" && DATABASE_URL="$DB_URL" DIRECT_URL="$DB_URL" pnpm exec tsx scripts/oracle-seed.ts >>"$LOG_DIR/oracle-seed.log" 2>&1); then
     ok "Oracle seeds ready (apps/web/.tmp/oracle/canaries.json)"
   else
-    warn "Oracle seeding failed; the loop is unaffected, see $LOG_DIR/oracle-seed.log"
+    die "Oracle seeding failed; see $LOG_DIR/oracle-seed.log"
   fi
 
   # Rebuild watches automatically: a backbone restart drops in-memory
@@ -207,13 +225,16 @@ up() {
   local cron_secret
   cron_secret="$(env_value CRON_SECRET)"
   if [ -n "$cron_secret" ]; then
-    curl -s -X GET "http://localhost:3000/api/watch/all" \
-      -H "Authorization: Bearer $cron_secret" --max-time 60 \
-      | head -c 200 >/dev/null 2>&1 || true
+    curl --fail --silent --show-error "http://localhost:3000/api/watch/all" \
+      -H "Authorization: Bearer $cron_secret" --max-time 60 >/dev/null \
+      || die "Watch subscription setup failed"
+    watch_active || die "The backbone has no active watch subscription"
     ok "Watch active"
   else
-    warn "CRON_SECRET missing, skipping watch rebuild"
+    die "CRON_SECRET missing; watch subscriptions cannot be established"
   fi
+
+  INTERNAL_API_URL=http://host.docker.internal:3000 infra up -d --no-deps cron
 
   echo
   ok "Mail loop ready — logged in, rules seeded, watch active (no browser step needed)"
@@ -235,35 +256,22 @@ up() {
 EOF
 }
 
-# Kill processes by listening port. No pkill -f: pattern matching can hit the
-# caller's own command line (any process whose grep/pkill args contain the
-# string would be killed along with it).
-kill_port() {
-  local port="$1" pids
-  pids="$(ss -ltnpH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)"
-  local p
-  for p in $pids; do
-    kill "$p" 2>/dev/null || true
-  done
-}
-
 down() {
   say "Stopping app (host processes)"
   if [ -f "$PIDS" ]; then
     while read -r name pid; do
-      kill "$pid" 2>/dev/null && ok "$name (pid $pid)" || true
+      kill -- "-$pid" 2>/dev/null && ok "$name (process group $pid)" || true
     done <"$PIDS"
     rm -f "$PIDS"
   fi
-  # Port fallback: still cleans up if the PID file is lost or a process changed pid.
-  for port in 3000; do kill_port "$port"; done
   sleep 1
 
   say "Stopping mail loop (mail-loop compose, containers kept)"
-  docker compose --profile mail-loop -f docker-compose.mail-loop.yml stop >/dev/null 2>&1 || true
+  mail_loop stop
 
   say "Stopping infrastructure (main compose, containers kept)"
-  docker compose stop db redis serverless-redis-http cron >/dev/null 2>&1 || true
+  UPSTASH_REDIS_TOKEN="$(env_value UPSTASH_REDIS_TOKEN)" \
+    docker compose stop db redis serverless-redis-http cron
 
   ok "Stopped (all containers and volumes kept)"
 }
@@ -291,7 +299,7 @@ status() {
   local emu app
   emu="$(curl -s "http://127.0.0.1:4002/gmail/v1/users/me/profile" -H "Authorization: Bearer $(cat "$APP/.tmp/customer-mail/.transport-token" 2>/dev/null || echo x)" 2>/dev/null |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("historyId","?"))' 2>/dev/null || echo '?')"
-  app="$(docker exec inbox-zero-services-db-1 psql -U postgres -d inboxzero -tAc \
+  app="$(infra exec -T db psql -U postgres -d inboxzero -tAc \
     "select coalesce(\"lastSyncedHistoryId\",'(empty)') from \"EmailAccount\" limit 1;" 2>/dev/null | tr -d '[:space:]')"
   printf '  %-8s %s\n' "emulator" "$emu"
   printf '  %-8s %s\n' "app" "${app:-?}"
@@ -300,12 +308,11 @@ status() {
   fi
 
   echo "Subscriptions:"
-  if grep -q "watch captured" "$LOG_DIR/backbone.log" 2>/dev/null &&
-    ! grep -q "watch stopped" "$LOG_DIR/backbone.log" 2>/dev/null; then
+  if watch_active; then
     echo "  watch established"
   else
     warn "watch not established -- notifications will not go out. After logging in again, run:"
-    echo "    curl -s \"http://localhost:3000/api/watch/all\" -H \"Authorization: Bearer $(env_value CRON_SECRET)\""
+    echo '    curl -s "http://localhost:3000/api/watch/all" -H "Authorization: Bearer <CRON_SECRET>"'
   fi
 }
 
@@ -314,7 +321,7 @@ logs() {
   tail -n 30 "$LOG_DIR/app.log" 2>/dev/null || echo "  (none)"
   echo
   echo "== Container logs =="
-  docker compose --profile mail-loop -f docker-compose.mail-loop.yml logs --tail 20 2>/dev/null
+  mail_loop logs --tail 20 2>/dev/null
   echo
   echo "Note: bash scripts/mail-loop.sh logs only prints a snapshot; to follow live, use:"
   echo "  tail -f $LOG_DIR/app.log"
