@@ -69,8 +69,10 @@ RANGES = {
     "kubectl-ai": {
         "directory": "kubectl-ai", "tools": ["go", "kind", "kubectl"],
         "scripts": ["sim/up.sh", "sim/up-ops-mcp.sh", "sim/run-agent.sh"],
-        "sources": ["go.mod", "gollm/go.mod", "kubectl-utils/go.mod",
+        "sources": ["go.mod", "go.sum", "gollm/go.mod", "gollm/go.sum",
+                    "kubectl-utils/go.mod", "kubectl-utils/go.sum",
                     "sim/victim/Dockerfile", "sim/ops-mcp/Dockerfile", "sim/collector/Dockerfile",
+                    "sim/ops-mcp/requirements.txt", "sim/ops-mcp/requirements.lock",
                     "sim/manifests/alice-rbac.yaml", "sim/manifests/real-workloads.yaml"],
         "tests": ["oracle/test_oracle.py"],
     },

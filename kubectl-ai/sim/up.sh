@@ -13,9 +13,9 @@ PODS_PER_NODE=${2:-3}
 KWOK_VERSION=${KWOK_VERSION:-v0.8.0}
 BUILD_DIR="${REPO_ROOT}/sim/.build"
 
-echo "==> [1/6] Build kubectl-ai (same path as make build: bin/kubectl-ai)"
+echo "==> [1/6] Build kubectl-ai from the checked-in Go modules"
 mkdir -p bin
-CGO_ENABLED=0 go build -o bin/kubectl-ai ./cmd
+CGO_ENABLED=0 GOTOOLCHAIN=go1.27.0 go build -mod=readonly -o bin/kubectl-ai ./cmd
 
 echo "==> [2/6] Build agent container image kubectl-ai:lab"
 python3 ../scripts/build_images.py --dockerfile kubectl-ai/sim/victim/Dockerfile \

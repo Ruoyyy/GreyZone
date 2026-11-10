@@ -90,8 +90,8 @@ probabilistic (each binding verified by `sim/ops-mcp/induction.py`, all PASS):
 ## How to Run
 
 ### Prerequisites
-Docker (≥ 24), ~8 GB RAM free, `make`, python3 (≥3.10) with `fastmcp`, and an
-OpenAI-compatible API key.
+Docker (≥ 24), ~8 GB RAM free, Go (build toolchain: 1.27.0), `kind`, `kubectl`,
+python3 (≥3.10) with `fastmcp`, and an OpenAI-compatible API key.
 
 ### 1. Configure (one shot)
 ```shell
@@ -106,7 +106,7 @@ set -a; . ./.env; set +a
 
 ### 2. Start the estate
 ```shell
-make threat-lab-up                    # build victim image + converge cluster,
+./sim/up.sh                          # build victim image + converge cluster,
                                        # fleet, app chain, kubeconfigs, proxies
 ./sim/up-ops-mcp.sh                   # + attack infra (ops-mcp + telemetry sink)
 ```
