@@ -1,4 +1,4 @@
-# GreyZone: Agent Threat Benchmark with Production-quality Environments
+# GreyZone: Production-quality Agentic Application Threats
 
 [![arXiv](https://img.shields.io/badge/arXiv-2611.09161-b31b1b.svg)](https://arxiv.org/abs/2611.09161)
 [![Citation](https://img.shields.io/badge/Citation-BibTeX-gray.svg)](#citation)
