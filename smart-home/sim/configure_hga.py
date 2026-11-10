@@ -34,7 +34,7 @@ PROVIDERS = {
         "settings": {
             "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
             "api_key": os.environ["OPENAI_API_KEY"],
-            "openai_compatible_embedding_dims": 768,
+            "openai_compatible_embedding_dims": 1536,
         },
     },
 }
@@ -64,9 +64,11 @@ FEATURES = {
         "model_name": OPENAI_MODEL,
         "temperature": 0.2,
     },
-    # Enable by pointing at an embedding-capable provider; off here because the
-    # embedding setup is independent of the selected chat model.
-    "embedding": None,
+    # HGA's tool index and memory use a separate native embedding model.
+    "embedding": {
+        "provider": "OpenAI",
+        "model_name": "text-embedding-3-small",
+    },
 }
 
 # Integration options to change (everything else keeps its current value).

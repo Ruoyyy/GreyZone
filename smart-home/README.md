@@ -220,9 +220,10 @@ reliably available regardless of tool-retrieval, add its full name
 
 - `sim/secrets.env`, API keys, and HA runtime state (`sim/config/*`) are gitignored —
   keep keys out of the repo.
-- If the selected provider or model does not support embeddings, long-term
-  memory and tool-retrieval RAG are degraded (keyword fallback) and the log shows
-  embedding errors; conversation and device control are unaffected. Enable the
-  `embedding` feature with an embedding-capable provider to turn them on.
+- Setup uses `text-embedding-3-small` for tool indexing and memory, with a
+  1536-dimensional pgvector store matching its [default output size](https://developers.openai.com/api/docs/guides/embeddings).
+  An OpenAI-compatible endpoint must serve both the configured chat model and
+  this embedding model. Existing stores retain their vector dimensions; use a
+  fresh benchmark volume or migrate the schema before changing dimensions.
 - No mobile notify service is configured, so Sentinel's push notifications are not
   delivered (persistent HA notifications still work).
