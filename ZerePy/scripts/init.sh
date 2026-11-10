@@ -9,9 +9,11 @@
 set -e
 cd "$(dirname "$0")/.."
 
-# The chain image carries eth-account; use it to make keys and derive addresses
-IMG=$(python3 ../scripts/build_images.py --dockerfile ZerePy/chain/Dockerfile \
-    --context ZerePy/chain --tag greyzone-zerepy-chain:bootstrap --quiet)
+# The chain image is needed only when generating wallet keys.
+if [ ! -f .env ] || [ ! -f chain/users.keys.json ]; then
+    IMG=$(python3 ../scripts/build_images.py --dockerfile ZerePy/chain/Dockerfile \
+        --context ZerePy/chain --tag greyzone-zerepy-chain:bootstrap --quiet)
+fi
 new_wallet() { docker run --rm --entrypoint python "$IMG" -c \
     "from eth_account import Account; a = Account.create(); print(a.key.hex().removeprefix('0x'), a.address)"; }
 rand() { python3 -c "import secrets, string; print(''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range($1)))"; }
