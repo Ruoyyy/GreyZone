@@ -4,7 +4,8 @@ FROM gitea/runner@sha256:50c352f0506b1878be93f2e9e97353cd6261cd2e7f7bfe70fcd968d
 
 USER root
 
-RUN apk add --no-cache ca-certificates curl git build-base python3 nodejs npm unzip jq \
+COPY runtime-apk.txt /tmp/runtime-apk.txt
+RUN apk add --no-cache $(cat /tmp/runtime-apk.txt) \
     && rm -rf /var/cache/apk/*
 
 # Alpine needs the musl build.
@@ -25,7 +26,10 @@ RUN case "${TARGETARCH}" in \
 # Pin the CLI version and disable auto-update; rebuild the image if it breaks.
 ARG LETTA_CODE_VERSION=0.31.14
 ENV DISABLE_AUTOUPDATER=1
-RUN npm install -g "@letta-ai/letta-code@${LETTA_CODE_VERSION}" \
+COPY runtime-cli/package.json runtime-cli/package-lock.json /opt/letta-cli/
+RUN test "${LETTA_CODE_VERSION}" = "0.31.14" \
+    && npm ci --prefix /opt/letta-cli --omit=dev --no-audit --no-fund \
+    && ln -s /opt/letta-cli/node_modules/.bin/letta /usr/local/bin/letta \
     && letta --version \
     && rm -rf /root/.cache/node-gyp /root/.npm
 
