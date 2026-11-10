@@ -22,7 +22,7 @@ cd ${REPO_ROOT}
 
 if ! command -v mockgen &> /dev/null; then
   echo "mockgen not found, installing..."
-  go install go.uber.org/mock/mockgen@latest
+  go install go.uber.org/mock/mockgen@v0.6.0
 fi
 
 # We run generate to see if it creates any diffs.

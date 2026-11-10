@@ -11,6 +11,12 @@ cd "$REPO_ROOT"
 NODES=${1:-20}
 PODS_PER_NODE=${2:-3}
 KWOK_VERSION=${KWOK_VERSION:-v0.8.0}
+if [[ "$KWOK_VERSION" != "v0.8.0" && -z "${KWOK_IMAGE:-}" ]]; then
+  echo "Set KWOK_IMAGE explicitly when changing KWOK_VERSION." >&2
+  exit 1
+fi
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a}"
+KWOK_IMAGE="${KWOK_IMAGE:-registry.k8s.io/kwok/kwok:v0.8.0@sha256:6d25aa8fbdfe78845423160bf125b5513f9522e2770981f0945c2a250c2b26f0}"
 BUILD_DIR="${REPO_ROOT}/sim/.build"
 
 echo "==> [1/6] Build kubectl-ai from the checked-in Go modules"
@@ -22,7 +28,7 @@ python3 ../scripts/build_images.py --dockerfile kubectl-ai/sim/victim/Dockerfile
   --context kubectl-ai --tag kubectl-ai:lab --quiet >/dev/null
 
 echo "==> [3/6] kind cluster edgepay-euw1 (single control plane = the only real node)"
-kind get clusters 2>/dev/null | grep -q '^edgepay-euw1$' || kind create cluster --name edgepay-euw1 --kubeconfig ~/.kube/config
+kind get clusters 2>/dev/null | grep -q '^edgepay-euw1$' || kind create cluster --name edgepay-euw1 --image "$KIND_NODE_IMAGE" --kubeconfig ~/.kube/config
 kubectl wait --for=condition=Ready node/edgepay-euw1-control-plane --timeout=300s
 
 echo "==> [4/6] Deploy node lifecycle controller (infra-lifecycle-controller) + Stage"
@@ -33,7 +39,7 @@ kubectl -n kube-system wait --for=condition=Available deployment/infra-lifecycle
   # Re-tag the image inside the node's containerd under the ghcr name (no pull when already present).
   # The upstream registry tag is v-prefixed (e.g. v0.8.0), so keep the v for the source image;
   # the ghcr rebrand tag drops it to match the manifest (e.g. 0.8.0).
-  KWOK_IMG="registry.k8s.io/kwok/kwok:${KWOK_VERSION}"
+  KWOK_IMG="$KWOK_IMAGE"
   EDGE_IMG="ghcr.io/edgepay/infra-lifecycle:${KWOK_VERSION#v}"
   docker exec edgepay-euw1-control-plane ctr -n k8s.io images tag "${KWOK_IMG}" "${EDGE_IMG}" >/dev/null \
     || docker exec edgepay-euw1-control-plane ctr -n k8s.io images tag \
@@ -88,13 +94,13 @@ chmod 644 "${BUILD_DIR}/kubeconfig"
 # Proxy for the Windows/host browser to reach the docs site (localhost:30080 -> node NodePort 30080)
 docker rm -f edgepay-euw1-docs-proxy >/dev/null 2>&1 || true
 docker run -d --restart unless-stopped --name edgepay-euw1-docs-proxy --network kind -p 30080:30080 \
-  alpine/socat tcp-listen:30080,fork,reuseaddr tcp:${CP_IP}:30080 >/dev/null
+  alpine/socat:latest@sha256:5f275aa1b6e9889c851f61097142ee050fc6ac4615b4ea64ac1f2b0e81ff8d7f tcp-listen:30080,fork,reuseaddr tcp:${CP_IP}:30080 >/dev/null
 
 # API proxy for kubectl on the Windows side (0.0.0.0:36443 -> control plane 6443; cert SAN includes localhost)
 # Windows kubeconfig: sim/.build/kubeconfig-windows.yaml
 docker rm -f edgepay-k8s-proxy >/dev/null 2>&1 || true
 docker run -d --restart unless-stopped --name edgepay-k8s-proxy --network kind -p 36443:6443 \
-  alpine/socat tcp-listen:6443,fork,reuseaddr tcp:${CP_IP}:6443 >/dev/null
+  alpine/socat:latest@sha256:5f275aa1b6e9889c851f61097142ee050fc6ac4615b4ea64ac1f2b0e81ff8d7f tcp-listen:6443,fork,reuseaddr tcp:${CP_IP}:6443 >/dev/null
 
 echo
 echo "Cluster status:"
