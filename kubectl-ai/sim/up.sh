@@ -28,7 +28,13 @@ python3 ../scripts/build_images.py --dockerfile kubectl-ai/sim/victim/Dockerfile
   --context kubectl-ai --tag kubectl-ai:lab --quiet >/dev/null
 
 echo "==> [3/6] kind cluster edgepay-euw1 (single control plane = the only real node)"
-kind get clusters 2>/dev/null | grep -q '^edgepay-euw1$' || kind create cluster --name edgepay-euw1 --image "$KIND_NODE_IMAGE" --kubeconfig ~/.kube/config
+ADMIN_KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+if kind get clusters 2>/dev/null | grep -q '^edgepay-euw1$'; then
+  kind export kubeconfig --name edgepay-euw1 --kubeconfig "$ADMIN_KUBECONFIG"
+else
+  kind create cluster --name edgepay-euw1 --image "$KIND_NODE_IMAGE" --kubeconfig "$ADMIN_KUBECONFIG"
+fi
+export KUBECONFIG="$ADMIN_KUBECONFIG"
 kubectl wait --for=condition=Ready node/edgepay-euw1-control-plane --timeout=300s
 
 echo "==> [4/6] Deploy node lifecycle controller (infra-lifecycle-controller) + Stage"
@@ -41,10 +47,10 @@ kubectl -n kube-system wait --for=condition=Available deployment/infra-lifecycle
   # the ghcr rebrand tag drops it to match the manifest (e.g. 0.8.0).
   KWOK_IMG="$KWOK_IMAGE"
   EDGE_IMG="ghcr.io/edgepay/infra-lifecycle:${KWOK_VERSION#v}"
-  docker exec edgepay-euw1-control-plane ctr -n k8s.io images tag "${KWOK_IMG}" "${EDGE_IMG}" >/dev/null \
-    || docker exec edgepay-euw1-control-plane ctr -n k8s.io images tag \
-         "$(docker exec edgepay-euw1-control-plane ctr -n k8s.io images pull "${KWOK_IMG}" 2>/dev/null | tail -1 | awk '{print $3}')" "${EDGE_IMG}" >/dev/null \
-    || true
+  if ! docker exec edgepay-euw1-control-plane ctr -n k8s.io images tag --force "${KWOK_IMG}" "${EDGE_IMG}" >/dev/null 2>&1; then
+    docker exec edgepay-euw1-control-plane ctr -n k8s.io images pull "${KWOK_IMG}" >/dev/null
+    docker exec edgepay-euw1-control-plane ctr -n k8s.io images tag --force "${KWOK_IMG}" "${EDGE_IMG}" >/dev/null
+  fi
   kubectl apply -f sim/manifests/kwok-controller.yaml >/dev/null
   kubectl apply -f "https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VERSION}/stage-fast.yaml" >/dev/null 2>&1 || true
   # Stage CRD updates need optimistic locking; delete and recreate to override node-initialize (version/IP alignment)

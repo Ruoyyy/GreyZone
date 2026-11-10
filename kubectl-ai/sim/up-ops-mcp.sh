@@ -9,12 +9,12 @@ cd "$REPO_ROOT"
 BUILD_DIR="${REPO_ROOT}/sim/.build"
 
 echo "==> [1/4] alice account/RBAC"
-kubectl apply -f sim/manifests/alice-rbac.yaml >/dev/null
+kubectl --context kind-edgepay-euw1 apply -f sim/manifests/alice-rbac.yaml >/dev/null
 
 echo "==> [2/4] Generate alice kubeconfig (prod ns scope)"
 CP_IP=$(docker inspect edgepay-euw1-control-plane --format '{{(index .NetworkSettings.Networks "kind").IPAddress}}')
 CA=$(grep 'certificate-authority-data:' "${BUILD_DIR}/kubeconfig" | awk '{print $2}')
-TOKEN=$(kubectl -n prod create token alice --duration=8760h)
+TOKEN=$(kubectl --context kind-edgepay-euw1 -n prod create token alice --duration=8760h)
 cat > "${BUILD_DIR}/alice-kubeconfig" <<EOF
 apiVersion: v1
 kind: Config
