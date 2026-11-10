@@ -8,7 +8,7 @@ COMMONLY_AGENT_TOKEN=$(cat /run/kai/agent_token)
 ANTHROPIC_AUTH_TOKEN=$(cat /run/kai/litellm_master_key)
 export COMMONLY_AGENT_TOKEN ANTHROPIC_AUTH_TOKEN
 
-MCP_ENTRY=/usr/local/lib/node_modules/@commonlyai/mcp/src/index.js
+MCP_ENTRY=/opt/agent-cli/node_modules/@commonlyai/mcp/src/index.js
 mkdir -p "$HOME/.commonly/tokens"
 umask 077
 
