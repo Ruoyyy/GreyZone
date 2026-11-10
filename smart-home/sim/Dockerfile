@@ -1,8 +1,6 @@
 FROM ghcr.io/home-assistant/home-assistant:2026.10.1@sha256:130241f28d01fa80dfa3b44f7d89781c188d8642ecab9024f079f19f9f82baa0
 
-# Preinstall HGA's runtime deps (from manifest.json) under HA's own pins, so the
-# container doesn't pip-install them on every fresh start.
-COPY --from=hga requirements_runtime_manifest.txt /tmp/hga-requirements.txt
-RUN uv pip install --system --no-cache --index-strategy unsafe-best-match \
-      -c /usr/src/homeassistant/homeassistant/package_constraints.txt \
-      -r /tmp/hga-requirements.txt
+# Preinstall the recorded HGA runtime, including versions selected under HA's pins.
+COPY --from=hga requirements_runtime.lock /tmp/hga-requirements.lock
+RUN uv pip install --system --no-cache --index-strategy unsafe-best-match --require-hashes \
+      -r /tmp/hga-requirements.lock
