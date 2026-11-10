@@ -1,4 +1,5 @@
-FROM node:22
+FROM node:22@sha256:18a6d90fd60542269850c80ca03b29b1d9b14d6b221ac7ee8e35b0d33ef904bd
+ARG DEBIAN_SNAPSHOT=20261104T134500Z
 
 WORKDIR /app
 
@@ -30,7 +31,13 @@ WORKDIR /app
 # than a claim of sameness, and `officecli --version` in each container is the
 # check that keeps it honest.
 ARG OPENCLAW_OFFICECLI_VERSION=1.0.70
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+RUN find /etc/apt -type f \( -name sources.list -o -name '*.sources' \) \
+      -exec sed -i \
+        -e "s|https\?://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|" \
+        -e "s|https\?://security.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|" \
+        -e "s|https\?://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|" \
+        {} + && \
+    apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --no-install-recommends curl ca-certificates && \
     ARCH="$(uname -m)" && \
     case "$ARCH" in \
       x86_64)  ASSET="officecli-linux-x64" ;; \
@@ -57,7 +64,7 @@ RUN npm ci --include=dev --no-audit --no-fund
 COPY . .
 
 # Compile TypeScript to dist/
-RUN npx tsc -p tsconfig.build.json
+RUN npx --no-install tsc -p tsconfig.build.json
 
 # Copy non-JS assets that tsc doesn't copy
 RUN cp config/schema.sql dist/config/schema.sql

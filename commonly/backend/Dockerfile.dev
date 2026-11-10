@@ -1,4 +1,5 @@
-FROM node:18
+FROM node:18@sha256:c6ae79e38498325db67193d391e6ec1d224d96c693a8a4d943498556716d3783
+ARG DEBIAN_SNAPSHOT=20261104T134500Z
 
 WORKDIR /app
 
@@ -6,10 +7,16 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install all dependencies including dev dependencies
-RUN npm install --include=dev
+RUN npm ci --include=dev
 
 # Install docker CLI for local runtime provisioning
-RUN apt-get update \
+RUN find /etc/apt -type f \( -name sources.list -o -name '*.sources' \) \
+      -exec sed -i \
+        -e "s|https\?://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|" \
+        -e "s|https\?://security.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|" \
+        -e "s|https\?://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|" \
+        {} + && \
+    apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y docker.io docker-compose \
   && rm -rf /var/lib/apt/lists/*
 

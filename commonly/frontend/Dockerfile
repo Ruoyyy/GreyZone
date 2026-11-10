@@ -1,4 +1,4 @@
-FROM node:20 AS build-stage
+FROM node:20@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5 AS build-stage
 
 WORKDIR /app
 
@@ -30,7 +30,7 @@ ENV CI=false
 
 RUN npm run build
 
-FROM nginx:alpine
+FROM nginx:alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698d2aed0606
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 

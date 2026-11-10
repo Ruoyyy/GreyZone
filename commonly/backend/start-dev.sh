@@ -8,7 +8,7 @@ if [ ! -d "/app/node_modules" ] \
     || [ ! -d "/app/node_modules/@google/generative-ai" ] \
     || [ ! -f "/app/node_modules/.bin/ts-node" ]; then
     echo "Installing backend dependencies (dev)..."
-    npm install --include=dev
+    npm ci --include=dev
 else
     echo "Dependencies already present, skipping install"
 fi
