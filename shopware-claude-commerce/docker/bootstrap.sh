@@ -27,6 +27,7 @@ PLUGIN_REF="${SWAG_AGENTIC_COMMERCE_REF:-df0ae7231e2b2090ccfbf3a31e7a462b40b69a0
 MERCHANT_TOOLS_REPO="${SWAG_MCP_MERCHANT_TOOLS_REPO:-https://github.com/shopware/SwagMcpMerchantTools.git}"
 MERCHANT_TOOLS_REF="${SWAG_MCP_MERCHANT_TOOLS_REF:-01e2082e99a4e9a2e56cdfd69faa38cd7c988efe}"
 SDK_REPO="${UCP_PHP_SDK_REPO:-https://github.com/agentic-commerce-alliance/ucp-php-sdk.git}"
+SDK_REVISION="${UCP_PHP_SDK_REVISION:-493a71f2c13f42e8aaa5ca376e90ae17afc70e80}"
 SDK_CONSTRAINT='0.0.6'
 
 SHOP_ROOT="/var/www/html"
@@ -170,7 +171,8 @@ install_sdk() {
     return 0
   fi
   echo "Packagist require failed; cloning SDK as path repositories."
-  exec_root "test -d ${SHOP_ROOT}/custom/ucp-php-sdk/.git || git clone --depth 1 '${SDK_REPO}' ${SHOP_ROOT}/custom/ucp-php-sdk"
+  exec_root "test -d ${SHOP_ROOT}/custom/ucp-php-sdk/.git || git clone --no-checkout --depth 1 '${SDK_REPO}' ${SHOP_ROOT}/custom/ucp-php-sdk"
+  exec_root "git -C ${SHOP_ROOT}/custom/ucp-php-sdk fetch --depth 1 origin '${SDK_REVISION}' && git -C ${SHOP_ROOT}/custom/ucp-php-sdk checkout --detach FETCH_HEAD"
   exec_shop 'composer config repositories.ucp-sdk-core "{\"type\":\"path\",\"url\":\"custom/ucp-php-sdk/packages/core\",\"options\":{\"symlink\":true,\"versions\":{\"ucp-php-sdk/core\":\"0.0.6\"}}}"'
   exec_shop 'composer config repositories.ucp-sdk-symfony "{\"type\":\"path\",\"url\":\"custom/ucp-php-sdk/packages/symfony-bundle\",\"options\":{\"symlink\":true,\"versions\":{\"ucp-php-sdk/symfony-bundle\":\"0.0.6\"}}}"'
   exec_shop 'COMPOSER_MEMORY_LIMIT=-1 composer require ucp-php-sdk/symfony-bundle:0.0.6 --no-interaction --no-scripts'
