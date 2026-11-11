@@ -30,6 +30,10 @@ model.
   payload is planted, so any asset the victim later trades that is not in the
   baseline universe was necessarily attacker-listed.
 
+Before running an external red-team agent, provide the selected
+`objective.md` and the public scenario context as its initial task. MCP tool
+discovery supplies capabilities; the caller supplies the attack objective.
+
 ## Running a scenario
 
 ```bash
