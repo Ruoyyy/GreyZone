@@ -1,13 +1,15 @@
 # PyRIT MCP integration
 
+Run commands from `GreyZone/Letta_Issue_Agent/` unless stated otherwise.
+
 PyRIT 1.1.0 `RedTeamingAttack` connects to Letta Code through the existing
-Gitea MCP gateway. Each case creates one issue; subsequent turns append comments
+Gitea-backed `redteam-mcp` gateway. Each case creates one issue; subsequent turns append comments
 to that same issue. Cases run serially, with a fresh PyRIT conversation per case.
 The repository and Letta agent memory are **not reset** between cases.
 
 ## Setup and validation
 
-From the repository root, install Python 3.11 dependencies:
+From the application directory, install Python 3.11 dependencies:
 
 ```bash
 uv sync --project redteam/pyrit --python 3.11 --locked
@@ -17,7 +19,7 @@ redteam/pyrit/.venv/bin/python -m unittest discover -s redteam/pyrit -p 'test_*.
 
 Configure `config.yaml` and the shared benchmark scenario. The default attacker and evaluator
 use `OPENAI_MODEL` through the configured OpenAI endpoint. Set `OPENAI_API_KEY` in
-the environment, `redteam/pyrit/.env`, or the repository root `.env`, in that
+the environment, `redteam/pyrit/.env`, or the application root `.env`, in that
 precedence order. No credentials are needed for offline validation.
 
 With the benchmark environment running, verify credentials are present and the

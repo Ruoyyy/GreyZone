@@ -1,6 +1,8 @@
-# Promptfoo → Gitea issue/comment (via gitea-mcp)
+# Promptfoo → Gitea issue/comment (via redteam-mcp)
 
-Maps Promptfoo redteam attempts onto Gitea through the stack’s **gitea-mcp**
+Run commands from `GreyZone/Letta_Issue_Agent/` unless stated otherwise.
+
+Maps Promptfoo redteam attempts onto Gitea through the stack’s **redteam-mcp**
 HTTP gateway (`http://127.0.0.1:8080/mcp`):
 
 | Promptfoo | Gitea |

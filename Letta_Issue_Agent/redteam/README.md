@@ -1,5 +1,7 @@
 # Red-team integrations
 
+Run commands from `GreyZone/Letta_Issue_Agent/` unless stated otherwise.
+
 Each integration keeps its configuration, dependencies, scripts, and run artifacts
 in its own directory:
 
@@ -19,7 +21,7 @@ shared `redteam/.campaign.lock`; launch other campaigns through
 
 ## Promptfoo
 
-From the repository root:
+From the application directory:
 
 ```bash
 cd redteam/promptfoo
@@ -30,7 +32,7 @@ python3 ../run_locked.py -- npm run redteam
 python3 ../run_locked.py -- npm run redteam -- --scenario memory-poisoning
 ```
 
-Use Node 22.22.0 or newer. The launcher loads `OPENAI_API_KEY` from the repository
+Use Node 22.22.0 or newer. The launcher loads `OPENAI_API_KEY` from the application
 root `.env` when it is not already exported in the shell.
 
 Promptfoo previously ran from `redteam/`; its working directory is now
@@ -40,7 +42,7 @@ results (`promptfoo-results/`) also live there.
 
 ## Dreadnode
 
-From the repository root:
+From the application directory:
 
 ```bash
 python3 redteam/run_locked.py -- bash redteam/dreadnode/run.sh
@@ -52,7 +54,7 @@ See the integration README for installation and configuration.
 
 ## DeepTeam
 
-From the repository root:
+From the application directory:
 
 ```bash
 uv sync --project redteam/deepteam --python 3.11 --locked
@@ -70,7 +72,7 @@ See [DeepTeam's README](deepteam/README.md) for configuration and report details
 
 ## PyRIT
 
-From the repository root:
+From the application directory:
 
 ```bash
 uv sync --project redteam/pyrit --python 3.11 --locked
@@ -85,7 +87,7 @@ See the integration README for configuration, offline tests and result semantics
 
 ## Check Point / Lakera Red
 
-From the repository root:
+From the application directory:
 
 ```bash
 uv sync --project redteam/lakera --python 3.11 --locked

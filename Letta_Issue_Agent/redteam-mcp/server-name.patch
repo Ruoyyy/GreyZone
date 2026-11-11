@@ -1,0 +1,61 @@
+--- a/cmd/cmd.go
++++ b/cmd/cmd.go
+@@ -203,7 +203,7 @@
+ 			return
+ 		}
+ 		_ = log.Default().Sync() // best-effort flush
+-		log.Fatalf("Run Gitea MCP Server Error: %v", err)
++		log.Fatalf("Run redteam-mcp Error: %v", err)
+ 	}
+ 	_ = log.Default().Sync() // best-effort flush
+ }
+--- a/operation/operation.go
++++ b/operation/operation.go
+@@ -191,7 +191,7 @@
+ 	// server-to-client channel, so KeepAlive stays disabled.
+ 	s := mcp.NewServer(
+ 		&mcp.Implementation{
+-			Name:    "Gitea MCP Server",
++			Name:    "redteam-mcp",
+ 			Version: version,
+ 		},
+ 		&mcp.ServerOptions{
+--- a/operation/sdk_integration_test.go
++++ b/operation/sdk_integration_test.go
+@@ -408,8 +408,8 @@
+ 		if err := json.Unmarshal(result.Meta[mcp.MetaKeyServerInfo], &serverInfo); err != nil {
+ 			t.Fatalf("Unmarshal(%s) error = %v", mcp.MetaKeyServerInfo, err)
+ 		}
+-		if serverInfo.Name != "Gitea MCP Server" || serverInfo.Version != testServerVersion {
+-			t.Errorf("serverInfo = %+v, want Gitea MCP Server %s", serverInfo, testServerVersion)
++		if serverInfo.Name != "redteam-mcp" || serverInfo.Version != testServerVersion {
++			t.Errorf("serverInfo = %+v, want redteam-mcp %s", serverInfo, testServerVersion)
+ 		}
+ 	})
+ 
+@@ -922,5 +922,5 @@
+ 		t.Errorf("protocol version = %q, want %q", got, expectedProtocolVersion)
+ 	}
+ 	assertToolsOnlyCapabilities(t, session.InitializeResult().Capabilities)
+-	listAndCallVersion(ctx, t, session, "Gitea MCP Server version:")
+-}
++	listAndCallVersion(ctx, t, session, "redteam-mcp version:")
++}
+--- a/operation/version/version.go
++++ b/operation/version/version.go
+@@ -20,7 +20,7 @@
+ 
+ var GetGiteaMCPServerVersionTool = tool.NewDefinition(
+ 	GetGiteaMCPServerVersion,
+-	"Get the running version of the Gitea MCP Server itself (not the Gitea instance it connects to).",
++	"Get the running version of the redteam-mcp itself (not the Gitea instance it connects to).",
+ 	annotation.ReadOnly("Get server version"),
+ )
+ 
+@@ -36,5 +36,5 @@
+ 	if version == "" {
+ 		version = "dev"
+ 	}
+-	return to.TextResult(fmt.Sprintf("Gitea MCP Server version: %v", version))
++	return to.TextResult(fmt.Sprintf("redteam-mcp version: %v", version))
+ }

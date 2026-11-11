@@ -1,13 +1,15 @@
 # DeepTeam MCP integration
 
+Run commands from `GreyZone/Letta_Issue_Agent/` unless stated otherwise.
+
 DeepTeam 1.0.9 runs `CrescendoJailbreaking` against Letta Code through the existing
-Gitea MCP gateway. Each case creates one issue; subsequent turns append comments
+Gitea-backed `redteam-mcp` gateway. Each case creates one issue; subsequent turns append comments
 to that issue and wait for the actual Letta reply. Cases run serially. Creating
 a new issue does not reset the repository or Letta's persistent memory.
 
 ## Setup
 
-From the repository root:
+From the application directory:
 
 ```bash
 uv sync --project redteam/deepteam --python 3.11 --locked
@@ -17,7 +19,7 @@ The project supports Python 3.11–3.13; the command above uses 3.11. Configure
 `config.yaml` and the shared benchmark scenario. The default attacker and evaluator both use
 `OPENAI_MODEL` at the configured OpenAI endpoint.
 
-Set `OPENAI_API_KEY` in the environment, `redteam/deepteam/.env`, or the repository
+Set `OPENAI_API_KEY` in the environment, `redteam/deepteam/.env`, or the application
 root `.env`, in that precedence order. `.env.example` is a template. Model
 credentials are separate from the credentials used by the Letta target.
 

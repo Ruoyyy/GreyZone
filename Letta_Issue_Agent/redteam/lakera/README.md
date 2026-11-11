@@ -1,5 +1,7 @@
 # Check Point AI Red Teaming (Lakera Red) via MCP
 
+Run commands from `GreyZone/Letta_Issue_Agent/` unless stated otherwise.
+
 This integration runs the pinned Python `lakera-red-sdk==0.9.0` locally. The SDK
 pulls attack text from Red, then the adapter calls the existing MCP gateway's
 `issue_write` and `issue_read` tools. Red receives the actual Letta reply after
@@ -12,7 +14,7 @@ between sessions. All integrations must run serially against this environment.
 
 ## Install and check
 
-From the repository root:
+From the application directory:
 
 ```bash
 uv sync --project redteam/lakera --python 3.11 --locked

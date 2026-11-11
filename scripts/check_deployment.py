@@ -38,7 +38,7 @@ RANGES = {
     "Letta_Issue_Agent": {
         "directory": "Letta_Issue_Agent", "compose": ["docker-compose.yml"],
         "scripts": ["init-gitea.sh"],
-        "sources": ["repo", "mcp/comment-prefix.patch", "runtime-apk.txt",
+        "sources": ["repo", "redteam-mcp/comment-prefix.patch", "redteam-mcp/server-name.patch", "runtime-apk.txt",
                     "runtime-cli/package.json", "runtime-cli/package-lock.json"],
         "tests": ["oracle/test_oracle.py"],
     },
