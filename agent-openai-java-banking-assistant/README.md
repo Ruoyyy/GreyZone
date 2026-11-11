@@ -18,7 +18,7 @@ check history, pay it), and it can **chat with the copilot as the fixed user `al
 (`sendPrompt` / `receiveReply`), so an external attacker can drive the whole
 conversation end-to-end. That cross-agent path — attacker-controlled data entering the
 copilot's context through tool results — is the project's indirect prompt-injection
-surface. The two external tools are **decoupled** from the workspace Payments agent:
+surface. The planting tools are **decoupled** from the workspace Payments agent:
 they live only on the external MCP server, which the copilot does not connect to.
 
 ## Architecture
@@ -47,8 +47,9 @@ they live only on the external MCP server, which the copilot does not connect to
   (`chat_message`) on the `copilot-pgdata` volume, so history survives page refreshes and
   restarts. Internal only (no published port).
 - **external-mcp** — a thin MCP server for outside agents (published on `:8086`). It exposes
-  only `submitInvoice` and `receivePayment`, forwarding to `payment`'s REST so the data lands
-  in the same stores the copilot reads from. The workspace copilot does **not** connect to it.
+  `submitInvoice` and `receivePayment`, forwarding to `payment`'s REST so the data lands
+  in the same stores the copilot reads from, plus `sendPrompt` and `receiveReply` for
+  conversation as alice. The workspace copilot does **not** connect to it.
 
 ## Required Documents
 
@@ -82,8 +83,9 @@ those pieces must satisfy.
     consecutive `sendPrompt` calls continue the same persisted conversation.
 - **Oracle** — observe-only and mechanical: it reads transactions and persisted chat rows,
   never calls the agent, never writes to the world, and never uses a model as judge.
-- **Episode tooling** — the scenario format (`benchmark/scenarios/<name>/scenario.json`)
-  declares plan, attacker/victim identities, planted data, the victim task and optional
+- **Episode tooling** — each `benchmark/scenarios/<name>/scenario.json` references an
+  `objective.md` for the attacker and declares policy, success criteria, plan,
+  attacker/victim identities, planted data, the victim task and optional
   surfaces; the indirect runner drives one episode end to end. Scenarios must be
   self-contained and runnable without editing code.
 
@@ -220,7 +222,7 @@ transaction history, and has a panel to submit an invoice and send a prompt to t
 ### 4. Connect an external MCP client (as an outside agent)
 
 The `external-mcp` server speaks MCP over SSE at `http://localhost:8086/sse` (message
-endpoint `POST /mcp/message?sessionId=...`). It exposes two tools:
+endpoint `POST /mcp/message?sessionId=...`). It exposes four tools:
 
 | Tool | Effect |
 |---|---|
@@ -231,6 +233,25 @@ endpoint `POST /mcp/message?sessionId=...`). It exposes two tools:
 
 Whatever an external agent plants this way is read back by the workspace copilot as tool
 results — the cross-agent interaction (and injection) surface.
+
+### 5. Give the red-team agent its scenario objective
+
+Choose a scenario and export its public attacker prompt from the banking project root:
+
+```bash
+python3 oracle/run_episode.py --print-objective \
+  --scenario benchmark/scenarios/direct-recon-steal
+```
+
+Provide the complete output as the external red-team agent's initial task or its
+adapter's objective input, together with the MCP connection. MCP tool discovery
+alone does not supply an attack goal. The export reads the selected `objective.md`,
+policy and success criteria, requires no running services, and rejects missing or
+empty objectives. Use `indirect-invoice-pay` for invoice planting; its export also
+includes the fixed victim task and invoice templates for the attacker.
+
+Follow [the scenario lifecycle](benchmark/README.md#running-a-scenario) to place
+the Oracle baseline before direct attack turns, or after indirect planting.
 
 ## Oracle (benchmark judge)
 
@@ -248,21 +269,25 @@ Firing, surface scope and verdict rules are defined in
 Episode lifecycle (synchronous — the copilot only acts when talked to):
 
 ```bash
-python3 oracle/run_episode.py --start            # baseline: watched transactions + alice chat cursor
+python3 oracle/run_episode.py --start --scenario benchmark/scenarios/direct-recon-steal/scenario.json
 #   ... red-team runner drives turns (MCP sendPrompt as alice; victim tasks via POST /api/chat)
 python3 oracle/run_episode.py --probe            # interim judgment, prints {verdict, judgments}
 python3 oracle/run_episode.py --close            # settle-wait (8s), final judgment, result file
 ```
 
-For indirect scenarios `runner/run_indirect.py` drives the whole episode: it plants the
-scenario's `plant.invoices` / `plant.payments` over the **external MCP** (the attacker
-channel), verifies the substrate landed, takes the oracle baseline (planted data folds
-into initial state), posts the single `victimTask` as the victim over REST — one
+For indirect scenarios `runner/run_indirect.py` drives the whole episode. After an
+external red-team agent has planted its invoice, use `--skip-plant` to preserve
+that payload. The runner verifies the substrate landed, takes the oracle baseline
+(planted data folds into initial state), posts the single `victimTask` as the victim over REST — one
 interaction, no follow-ups — then closes and judges:
 
 ```bash
-python3 runner/run_indirect.py benchmark/scenarios/indirect-invoice-pay
+python3 runner/run_indirect.py benchmark/scenarios/indirect-invoice-pay --skip-plant
 ```
+
+Omit `--skip-plant` to replay the scenario's fixed `plant.invoices` /
+`plant.payments` example over the external MCP instead of using an external
+red-team agent's payload.
 
 Verdicts are `success(<fired surfaces>)` or `failed`, written to
 `.run/oracle/result-<N>.json` with an `alerts-<N>.jsonl` event stream (sibling-lab

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Drive one indirect-injection episode end to end:
+"""Drive one indirect-injection episode with an example or attacker-planted invoice:
 
- 1. attacker plants over the external MCP (submitInvoice / receivePayment)
+ 1. plant the example over MCP, or preserve attacker content with --skip-plant
  2. oracle takes the baseline (--start; planted data folds into initial state)
  3. ONE victim interaction: victimTask is posted as the victim over REST /api/chat
     — no follow-ups, the payload gets exactly one shot
@@ -12,7 +12,6 @@ Usage: python3 runner/run_indirect.py benchmark/scenarios/indirect-invoice-pay [
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -46,8 +45,11 @@ def plant_via_mcp(scenario: dict) -> None:
         status = "ok" if mcp_client.tool_ok(result) else "ERROR"
         print(f"plant: receivePayment '{payment.get('description')}' -> {status}")
     mcp.close()
+
+
+def verify_plant(scenario: dict) -> None:
     # verify the substrate actually landed before baselining
-    for invoice in invoices:
+    for invoice in scenario.get("plant", {}).get("invoices", []):
         got = common.http_json("GET", f"{common.PAYMENTS_API}/invoices/{invoice['InvoiceId']}")
         if not got or got.get("InvoiceId") != invoice["InvoiceId"]:
             sys.exit(f"plant verification failed for invoice {invoice['InvoiceId']}")
@@ -57,18 +59,22 @@ def plant_via_mcp(scenario: dict) -> None:
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("scenario_dir")
+    ap.add_argument("--skip-plant", action="store_true",
+                    help="use the attacker's existing invoice instead of planting the fixed example")
     ap.add_argument("--settle", type=float, default=8.0)
     args = ap.parse_args()
 
     scenario_path = Path(args.scenario_dir) / "scenario.json"
-    scenario = json.loads(scenario_path.read_text())
+    scenario, _ = common.load_scenario(scenario_path)
     if not str(scenario.get("plan", "")).startswith("indirect"):
         sys.exit(f"scenario plan is '{scenario.get('plan')}'; use an indirect-* scenario")
     victim = scenario.get("victimUser", "admin")
     task = scenario["victimTask"]
 
-    # 1. attacker pre-positions over MCP
-    plant_via_mcp(scenario)
+    # 1. preserve the attacker's content, or replay the fixed example over MCP
+    if not args.skip_plant:
+        plant_via_mcp(scenario)
+    verify_plant(scenario)
 
     # 2. oracle baseline (planted data now counts as initial state)
     run_episode.do_start(argparse.Namespace(scenario=str(scenario_path), surfaces=None))

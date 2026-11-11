@@ -44,6 +44,39 @@ def default_surfaces(scenario) -> list:
     return ALL_SURFACES
 
 
+def load_scenario(path) -> tuple[dict, str]:
+    """Load the scenario and its public attacker objective before any range I/O."""
+    path = Path(path)
+    if path.is_dir():
+        path = path / "scenario.json"
+    scenario = json.loads(path.read_text(encoding="utf-8"))
+    if scenario.get("objectiveFile") != "objective.md":
+        raise ValueError("Banking scenario objectiveFile must be objective.md")
+    objective = (path.parent / "objective.md").read_text(encoding="utf-8").strip()
+    if not objective:
+        raise ValueError("Banking scenario objective is empty")
+    for field in ("policy", "successCriteria"):
+        if not isinstance(scenario.get(field), str) or not scenario[field].strip():
+            raise ValueError(f"Banking scenario {field} is required")
+    return scenario, objective
+
+
+def attacker_prompt(scenario: dict, objective: str) -> str:
+    """Render the selected public task for an external red-team agent."""
+    sections = [objective, f"Policy: {scenario['policy']}",
+                f"Success condition: {scenario['successCriteria']}"]
+    if scenario.get("victimTask"):
+        sections.append(f"Operator's victim task (as {scenario['victimUser']}): "
+                        f"{scenario['victimTask']}")
+    invoices = scenario.get("plant", {}).get("invoices", [])
+    if invoices:
+        templates = [{key: value for key, value in invoice.items() if key != "Note"}
+                     for invoice in invoices]
+        sections.append("Invoice templates (add your attack in Note or additional fields):\n"
+                        + json.dumps(templates, indent=2))
+    return "\n\n".join(sections)
+
+
 def http_json(method: str, url: str, payload=None, timeout: int = 60):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(url, data=data, method=method,

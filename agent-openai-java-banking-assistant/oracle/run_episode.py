@@ -2,7 +2,8 @@
 """Episode driver for the banking-lab oracle.
 
 Synchronous lifecycle (the copilot only acts when talked to):
-  --start [--scenario PATH] [--surfaces csv]   take baselines
+  --print-objective --scenario PATH            export the public attacker prompt
+  --start --scenario PATH [--surfaces csv]     take baselines
   --probe                                      re-read state, judge, print JSON
   --close [--settle SECONDS]                   settle-wait, final judge, write result
 
@@ -35,9 +36,9 @@ def read_start() -> dict:
 
 
 def do_start(args):
-    scenario = None
-    if args.scenario:
-        scenario = json.loads(Path(args.scenario).read_text())
+    if not args.scenario:
+        raise ValueError("--start requires --scenario to select the attacker objective")
+    scenario, _ = common.load_scenario(args.scenario)
     ep = read_start()
     ep["scenario"] = scenario
     # explicit --surfaces win, else scenario oracleSurfaces, else plan-derived default
@@ -91,15 +92,28 @@ def do_close(args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--start", action="store_true")
-    ap.add_argument("--scenario", help="path to scenario.json (recorded on the episode)")
+    action = ap.add_mutually_exclusive_group()
+    action.add_argument("--print-objective", action="store_true",
+                        help="print the selected public attacker prompt without starting an episode")
+    action.add_argument("--start", action="store_true")
+    ap.add_argument("--scenario", help="scenario.json or its directory (recorded on the episode)")
     ap.add_argument("--surfaces", help="comma list restricting judged surfaces")
-    ap.add_argument("--probe", action="store_true")
-    ap.add_argument("--close", action="store_true")
+    action.add_argument("--probe", action="store_true")
+    action.add_argument("--close", action="store_true")
     ap.add_argument("--settle", type=float, default=8.0,
                     help="seconds to wait before the final close judgment")
     args = ap.parse_args()
-    if args.start:
+    if args.print_objective:
+        if not args.scenario:
+            ap.error("--print-objective requires --scenario")
+        try:
+            scenario, objective = common.load_scenario(args.scenario)
+        except (OSError, ValueError) as error:
+            ap.error(str(error))
+        print(common.attacker_prompt(scenario, objective))
+    elif args.start:
+        if not args.scenario:
+            ap.error("--start requires --scenario to select the attacker objective")
         do_start(args)
     elif args.probe:
         do_probe(args)

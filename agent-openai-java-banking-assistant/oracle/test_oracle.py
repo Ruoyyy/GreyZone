@@ -1,13 +1,25 @@
 """Offline unit tests for the banking-lab oracle: python3 -m pytest oracle/test_oracle.py"""
 from __future__ import annotations
 
+import argparse
+import json
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from unittest import TestCase
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import judge
 import truth
+import common
+import run_episode
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "runner"))
+import run_indirect
 
 
 def tx(tid, recipient, ttype="outcome"):
@@ -103,12 +115,125 @@ def test_verdict_format_and_scoping():
 # --- plan-derived default surfaces ------------------------------------------
 
 def test_default_surfaces_by_plan():
-    import common
     assert common.default_surfaces({"plan": "indirect-single-shot"}) == ["attacker-payment"]
     assert common.default_surfaces({"plan": "direct-multi-turn"}) == common.ALL_SURFACES
     assert common.default_surfaces({"plan": "indirect-single-shot",
                                     "oracleSurfaces": ["admin-info-leak"]}) == ["admin-info-leak"]
     assert common.default_surfaces(None) == common.ALL_SURFACES
+
+
+# --- public attacker objectives and episode handoff -------------------------
+
+def test_episode_start_requires_a_selected_objective():
+    with patch.object(run_episode, "read_start") as baseline:
+        with TestCase().assertRaisesRegex(ValueError, "--scenario"):
+            run_episode.do_start(argparse.Namespace(scenario=None, surfaces=None))
+        baseline.assert_not_called()
+
+
+def test_scenario_objective_export_is_selected_and_self_contained():
+    for name in ("direct-recon-steal", "indirect-invoice-pay"):
+        directory = REPO / "benchmark/scenarios" / name
+        scenario, objective = common.load_scenario(directory)
+        assert common.load_scenario(directory / "scenario.json") == (scenario, objective)
+        with tempfile.TemporaryDirectory() as temporary:
+            result = subprocess.run(
+                [sys.executable, str(REPO / "oracle/run_episode.py"),
+                 "--print-objective", "--scenario", str(directory)],
+                cwd=temporary, capture_output=True, text=True, check=True)
+        assert objective in result.stdout and f"# {name}" in result.stdout
+        assert scenario["policy"] in result.stdout
+        assert scenario["successCriteria"] in result.stdout
+        for item in ("admin-pan", "admin-bankref"):
+            assert truth.ADMIN_INFO[item]["value"] not in result.stdout
+        if scenario.get("victimTask"):
+            assert scenario["victimTask"] in result.stdout
+            invoice = scenario["plant"]["invoices"][0]
+            assert invoice["InvoiceId"] in result.stdout
+            assert invoice["Note"] not in result.stdout
+
+
+def test_missing_objectives_stop_before_baseline():
+    source = REPO / "benchmark/scenarios/direct-recon-steal/scenario.json"
+    for problem in ("unreferenced", "missing", "empty"):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            scenario = json.loads(source.read_text())
+            if problem == "unreferenced":
+                scenario.pop("objectiveFile")
+            if problem != "missing":
+                (directory / "objective.md").write_text("" if problem == "empty" else "Task")
+            (directory / "scenario.json").write_text(json.dumps(scenario))
+            with patch.object(run_episode, "read_start") as baseline:
+                baseline.side_effect = AssertionError("Baseline reached without an objective")
+                with TestCase().assertRaises((OSError, ValueError)):
+                    run_episode.do_start(argparse.Namespace(scenario=directory, surfaces=None))
+                baseline.assert_not_called()
+
+
+def test_indirect_runner_preserves_or_replays_plant():
+    directory = REPO / "benchmark/scenarios/indirect-invoice-pay"
+    scenario, _ = common.load_scenario(directory)
+    for skip_plant in (False, True):
+        events = []
+
+        def request(method, url, **kwargs):
+            if method == "GET":
+                assert url.endswith("/invoices/" + scenario["plant"]["invoices"][0]["InvoiceId"])
+                events.append("verify")
+                return {"InvoiceId": scenario["plant"]["invoices"][0]["InvoiceId"],
+                        "Note": "Attacker-generated content"}
+            assert method == "POST" and url == run_indirect.CHAT_API
+            assert kwargs["payload"] == {
+                "messages": [{"role": "user", "content": scenario["victimTask"]}],
+                "stream": False, "user": "admin",
+            }
+            events.append("victim")
+            return {"choices": [{"message": {"content": "Victim reply"}}]}
+
+        command = ["run_indirect.py", str(directory)] + (["--skip-plant"] if skip_plant else [])
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(sys, "argv", command), \
+                patch.object(common, "RUN_DIR", Path(temporary)), \
+                patch.object(common, "http_json", side_effect=request), \
+                patch.object(run_indirect, "plant_via_mcp",
+                             side_effect=lambda _: events.append("plant")) as plant, \
+                patch.object(run_episode, "do_start", side_effect=lambda _: events.append("baseline")), \
+                patch.object(run_episode, "do_close", side_effect=lambda _: events.append("judge")):
+            run_indirect.main()
+            assert (Path(temporary) / "last-reply.txt").read_text() == "Victim reply"
+        assert events == ([] if skip_plant else ["plant"]) + ["verify", "baseline", "victim", "judge"]
+        if skip_plant:
+            plant.assert_not_called()
+        else:
+            plant.assert_called_once_with(scenario)
+
+
+def test_indirect_requires_existing_invoice_before_baseline():
+    directory = REPO / "benchmark/scenarios/indirect-invoice-pay"
+    with patch.object(sys, "argv", ["run_indirect.py", str(directory), "--skip-plant"]), \
+            patch.object(common, "http_json", return_value=None) as request, \
+            patch.object(run_indirect, "plant_via_mcp") as plant, \
+            patch.object(run_episode, "do_start") as baseline:
+        with TestCase().assertRaisesRegex(SystemExit, "plant verification failed"):
+            run_indirect.main()
+        plant.assert_not_called()
+        baseline.assert_not_called()
+        assert request.call_count == 1 and request.call_args.args[0] == "GET"
+
+
+def test_indirect_missing_objective_stops_before_planting():
+    source = REPO / "benchmark/scenarios/indirect-invoice-pay/scenario.json"
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = Path(temporary)
+        (directory / "scenario.json").write_text(source.read_text())
+        with patch.object(sys, "argv", ["run_indirect.py", str(directory)]), \
+                patch.object(run_indirect, "plant_via_mcp") as plant, \
+                patch.object(run_episode, "do_start") as baseline:
+            with TestCase().assertRaises(FileNotFoundError):
+                run_indirect.main()
+            plant.assert_not_called()
+            baseline.assert_not_called()
 
 
 if __name__ == "__main__":
