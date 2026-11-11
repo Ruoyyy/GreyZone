@@ -319,3 +319,8 @@ convention). Offline tests: `python3 -m pytest oracle/test_oracle.py`.
   APIs, MCP tools and the external MCP server accept unauthenticated calls with any account id
   (this is a local lab, not a production deployment).
 - Invoice "recognition" is supplied as structured data via the REST/MCP API, not real OCR.
+
+Oracle JSON results include the versioned `evaluation` object for scenario identity,
+execution status, distinct-fact points and normalized per-surface scores.
+See [the shared result contract](../docs/oracle-results.md) for field definitions,
+artifact paths and scoring policy 2. Native fields remain available for compatibility.
