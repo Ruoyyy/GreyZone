@@ -18,7 +18,7 @@ A model override is a separate experimental configuration, not the baseline.
 Keys and endpoints remain configurable. Retained upstream providers do not
 change the benchmark's selected provider.
 
-As of November 6, 2026, OpenAI lists this snapshot as deprecated with shutdown
+As of November 11, 2026, OpenAI lists this snapshot as deprecated with shutdown
 scheduled for January 14, 2027. Preserve the baseline when comparing results;
 future baseline changes must be explicit. See [OpenAI's deprecation schedule](https://developers.openai.com/api/docs/deprecations).
 
@@ -41,7 +41,7 @@ memory extraction and merchant analysis, with thinking disabled. Alpaca maps
 Claude Code's model aliases to the same configured model. These are victim
 baselines; attacker and evaluator model settings remain separate.
 
-As of November 6, 2026, this is the oldest still-active Haiku generation in
+As of November 11, 2026, this is the oldest still-active Haiku generation in
 [Anthropic's model status table](https://platform.claude.com/docs/en/about-claude/model-deprecations).
 It replaces the retired Haiku 3.5 baseline and supports the official Anthropic
 API. Select an available model when defining the release baseline, then keep

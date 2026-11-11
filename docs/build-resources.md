@@ -58,7 +58,7 @@ Inbox's existing `pnpm docker:local:build` and publish script use this helper.
 | CLI or development dependency installation | 1.5–2 GiB |
 | Clawith backend/frontend; most Java services | 2 GiB |
 | Larger Python, frontend, Home Assistant or copilot build | 3 GiB |
-| Inbox production or local Next.js build | 4 GiB |
+| Inbox production or local Next.js build | 8 GiB |
 
 The JSON policy records the exact value for each Dockerfile, including
 development and alternative images. These are initial resource ceilings,
@@ -71,8 +71,8 @@ remote Docker host. The operating system and running services also need memory. 
 before building. For an intentional override, use `--memory-mib`, for example
 `--memory-mib 3072`; the helper never increases a limit automatically after failure.
 
-Inbox limits V8's default build heap to 2560 MiB and Docker build workers to one,
-leaving room for native allocations inside the 4 GiB builder. A standalone build
+Inbox limits V8's default build heap to 4096 MiB and Docker build workers to one,
+leaving room for native allocations inside the 8 GiB builder. A standalone build
 can override the heap with `--build-arg BUILD_NODE_OPTIONS=--max-old-space-size=2048`.
 The V8 heap is only part of process memory; the BuildKit container is the hard
 ceiling. Full application builds and runtime acceptance remain separate from
