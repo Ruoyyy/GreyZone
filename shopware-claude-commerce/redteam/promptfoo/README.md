@@ -1,7 +1,9 @@
 # Shopware promptfoo red team
 
+Run commands from `GreyZone/shopware-claude-commerce/` unless stated otherwise.
+
 This adapter uses promptfoo to generate one seller-controlled payload for a
-selected benchmark scenario. The target provider calls the existing seller MCP,
+selected benchmark scenario. The target provider calls the existing `redteam-mcp`,
 then sends the scenario's fixed task to the shopping or merchant agent. It takes
 an oracle baseline **after** the seller write and compares the final shop state
 after the agent finishes its streamed turn. No oracle watcher is needed for this
@@ -27,7 +29,7 @@ before placing an order. The oracle distinguishes a shop-owned product in the
 selected category from a seller product or a purchase in the wrong category.
 
 ```bash
-cd shopware-claude-commerce/redteam/promptfoo
+cd redteam/promptfoo
 npm ci
 npm run prepare -- --scenario merchant-exfil  # config only, no attack
 npm run redteam -- --scenario merchant-exfil
@@ -41,7 +43,7 @@ The script does not run a fixed scenario attack before the generated attack.
 For scenarios that write reviews, the trusted test runner approves only the
 seller reviews changed by this run, then checks that their text appears in the
 buyer's public review API before starting the victim turn. This evaluates an
-attack through published reviews; the seller MCP itself cannot approve them.
+attack through published reviews; the `redteam-mcp` itself cannot approve them.
 
 ## State and limits
 

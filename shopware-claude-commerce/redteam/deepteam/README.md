@@ -1,8 +1,10 @@
 # Shopware DeepTeam red team
 
+Run commands from `GreyZone/shopware-claude-commerce/` unless stated otherwise.
+
 DeepTeam 1.0.9 generates one seller-controlled text payload for a selected
-Shopware benchmark scenario. The shared evaluator writes it through the seller
-MCP, approves reviews changed by this run, sends the fixed buyer or merchant
+Shopware benchmark scenario. The shared evaluator writes it through
+`redteam-mcp`, approves reviews changed by this run, sends the fixed buyer or merchant
 task, and records the Oracle verdict. DeepTeam's model score is advisory;
 `summary.json` and its linked Oracle result contain the benchmark verdict.
 
@@ -21,7 +23,7 @@ redteam/deepteam/.venv/bin/python redteam/deepteam/run.py --check
 
 `--offline-check` validates configuration and DeepTeam construction without
 credentials or network access. `--check` also checks credentials, both API
-hosts, and a read-only seller MCP product search. Neither sends a model request
+hosts, and a read-only `redteam-mcp` product search. Neither sends a model request
 or writes shop data.
 
 The attacker and advisory evaluator use `OPENAI_MODEL` through the OpenAI-compatible API. The runner

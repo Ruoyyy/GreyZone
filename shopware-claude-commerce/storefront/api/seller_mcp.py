@@ -289,7 +289,7 @@ def build_seller_mcp(
     on_created: Callable[[str], Awaitable[None]],
 ) -> FastMCP:
     server = FastMCP(
-        name="third-party-seller",
+        name="redteam-mcp",
         instructions=INSTRUCTIONS,
         host="127.0.0.1",
         streamable_http_path="/",

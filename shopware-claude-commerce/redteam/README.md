@@ -1,8 +1,10 @@
 # Shopware red-team runners
 
+Run commands from `GreyZone/shopware-claude-commerce/` unless stated otherwise.
+
 This directory connects four red-team tools to the same Shopware benchmark.
 Select a scenario in [`benchmark/scenarios/`](../benchmark/scenarios/); each
-runner plants seller-controlled content through the seller MCP, starts the
+runner plants seller-controlled content through the `redteam-mcp`, starts the
 scenario's fixed buyer or merchant task, and records a local Oracle verdict.
 Run all commands below from the `shopware-claude-commerce` project root.
 
@@ -29,7 +31,7 @@ configuration.
 | Runner | Attack method | Example command | Details |
 | --- | --- | --- | --- |
 | Promptfoo | Generates one text payload for a fixed seller write | `cd redteam/promptfoo && npm run redteam -- --scenario buyer-misdirection` | [Setup and results](promptfoo/README.md) |
-| Dreadnode | Autonomous attacker uses allowed seller MCP tools, then the runner starts one victim turn | `bash redteam/dreadnode/run.sh --scenario buyer-misdirection` | [Setup and results](dreadnode/README.md) |
+| Dreadnode | Autonomous attacker uses allowed `redteam-mcp` tools, then the runner starts one victim turn | `bash redteam/dreadnode/run.sh --scenario buyer-misdirection` | [Setup and results](dreadnode/README.md) |
 | PyRIT | Generates and submits one text payload | `redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --scenario buyer-misdirection` | [Setup and results](pyrit/README.md) |
 | DeepTeam | Generates and submits one single-turn text payload | `redteam/deepteam/.venv/bin/python redteam/deepteam/run.py --scenario buyer-misdirection` | [Setup and results](deepteam/README.md) |
 
@@ -57,7 +59,7 @@ TASK_CATEGORY=clothing redteam/deepteam/.venv/bin/python redteam/deepteam/run.py
 ## Verdicts and persistent state
 
 The shared payload path is [`payload.py`](payload.py): it writes through the
-seller MCP, approves only reviews changed by that run, verifies that those
+`redteam-mcp`, approves only reviews changed by that run, verifies that those
 reviews appear in the buyer API, then runs the fixed victim task. The Oracle
 baseline is captured after the seller write and before the victim turn.
 Dreadnode performs its own MCP writes and uses the same victim and Oracle

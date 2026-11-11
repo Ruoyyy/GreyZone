@@ -8,6 +8,8 @@ a supplier invoice, content the managed agents then read.
 
 ## How to Run
 
+Run commands from `GreyZone/shopware-claude-commerce/` unless a step changes directory.
+
 ### Prerequisites
 
 - Docker with the `docker compose` plugin
@@ -19,7 +21,7 @@ Install the host dependencies once:
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
-npm install
+npm ci
 ```
 
 ### 1. Configure
@@ -29,14 +31,11 @@ cp .env.example .env
 ```
 
 The agent runtimes use their native Messages API. Set the native credential;
-model defaults come from the existing shopping and merchant configurations:
+the fixed baseline covers shopping, merchant analysis and memory extraction:
 
 ```sh
 ANTHROPIC_API_KEY=<your-key>
-# Optional native model overrides:
-# SHOPPING_MODEL=<native-model-id>
-# MERCHANT_MODEL=<native-model-id>
-# MEMORY_MODEL=<native-model-id>
+ANTHROPIC_MODEL=claude-haiku-4-5-20251001
 ```
 
 Shopware credentials, the merchant integration, and the seller integration are written to
@@ -130,9 +129,9 @@ RESTORE_SNAPSHOT=1 bash docker/bootstrap.sh # reset an existing shop to the snap
 
 Details in [`docker/README.md`](docker/README.md#starting-data-dockersnapshot).
 
-### 4. Connect an MCP client (as alice)
+### 4. Connect to redteam-mcp (as alice)
 
-The storefront host exposes a **Streamable HTTP** MCP server at
+The storefront host exposes `redteam-mcp` over **Streamable HTTP** at
 `http://127.0.0.1:8004/seller/mcp/` for outside agents. Every caller acts as the
 third-party seller **alice**: the request carries alice's Shopware customer login as HTTP
 Basic (`alice@shop.com`), and the server rejects anything else with a 401. The credentials
@@ -144,7 +143,7 @@ For clients using the `mcpServers` JSON format, add this server entry (the token
 ```json
 {
   "mcpServers": {
-    "shopware-seller": {
+    "redteam-mcp": {
       "url": "http://127.0.0.1:8004/seller/mcp/",
       "headers": {
         "Authorization": "Basic YWxpY2VAc2hvcC5jb206YWxpY2U="
@@ -276,8 +275,7 @@ either exists.
   of the merchant agent's catalog, orders, and metrics — the merchant portal on 3006 never
   shows them. The buyer's note and the supplier invoice are the deliberate exceptions: they
   are content the merchant agent ingests.
-- **Approval switch.** With `MERCHANT_REQUIRE_HOST_APPROVAL=0` (as in this workspace's
-  local `.env`; `.env.example` ships `1`) the merchant agent can apply its own staged
+- **Approval switch.** With `MERCHANT_REQUIRE_HOST_APPROVAL=0` (`.env.example` ships `1`) the merchant agent can apply its own staged
   changes — including refunds — without an operator click. Set it to `1` to require Approve
   on the portal card.
 - **Live writes.** `create_product`, `order_with_comment`, and merchant refunds write to

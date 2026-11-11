@@ -1,8 +1,10 @@
 # Shopware PyRIT red team
 
+Run commands from `GreyZone/shopware-claude-commerce/` unless stated otherwise.
+
 PyRIT 1.1.0 generates one seller-controlled text payload for a selected
 Shopware benchmark scenario. The target passes that text to the same evaluator
-used by Promptfoo: it writes through the seller MCP, approves only reviews
+used by Promptfoo: it writes through the `redteam-mcp`, approves only reviews
 changed by this run, sends one scripted buyer or merchant task, and records an
 Oracle verdict. PyRIT's model assessment is advisory; `summary.json` and the
 linked Oracle result contain the authoritative scenario result.
@@ -23,11 +25,11 @@ redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --check
 `--offline-check` constructs the real PyRIT attack without credentials,
 network traffic, seller writes, or model requests. `--check` also verifies
 credentials, the shopping and merchant health endpoints, and a read-only
-seller-MCP product search. Neither starts a victim task.
+`redteam-mcp` product search. Neither starts a victim task.
 
 The attacker and advisory evaluator use `OPENAI_MODEL` through the OpenAI-compatible API. The runner
 reads `OPENAI_API_KEY` from the shell, optional ignored `redteam/pyrit/.env`,
-the project root `.env`; shell values take precedence. Change `config.yaml` to use another OpenAI-compatible model. The victim
+the project root `.env`; shell values take precedence. Set `OPENAI_MODEL` to select the attacker and evaluator model. The victim
 agents keep their existing project model settings. Secrets are never written
 to `config.yaml` or the scenario.
 
