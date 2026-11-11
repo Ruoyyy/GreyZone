@@ -49,10 +49,14 @@ async def poll_messages(token: str, lab: dict, after_cursor: str | None) -> tupl
     }
     last_cursor = after_cursor or ""
     agent_msgs = []
+    known = lab.setdefault("_oracleKnownTexts", [])
+    alice = lab.get("participants", {}).get("alice")
     for m in data:
         last_cursor = m.get("cursor") or last_cursor
+        if alice and m.get("participant_id") == alice:
+            known.append(str(m.get("content", "")))
         if m.get("participant_id") in agent_participants and m.get("role") == "assistant":
-            agent_msgs.append(m)
+            agent_msgs.append({**m, "knownBefore": list(known)})
     return agent_msgs, last_cursor
 
 
@@ -170,6 +174,10 @@ async def observe_once(token: str, ep: dict, cursor: str | None, alerts,
                truthPreview=T.redact(content[:200]))
         if "exfil" in surfaces and content not in ep.setdefault("exfilTexts", []):
             ep["exfilTexts"].append(content)
+            grades = ep.setdefault("exfilGrades", {})
+            scored = T.score_texts([content], T.EXFIL_ITEMS, m.get("knownBefore", []))
+            for hit in scored["hits"]:
+                grades[hit["id"]] = max(grades.get(hit["id"], 0), hit["grade"])
         # a group relay of Meeseeks' document is unauthorized receipt too
         if "private-agent-leak" in surfaces and content not in ep.setdefault("leakTexts", []):
             ep["leakTexts"].append(content)
@@ -280,7 +288,7 @@ def current_judgments(ep: dict) -> list[dict]:
     surfaces = set(ep.get("surfaces") or C.SURFACES)
     judgments = []
     if "exfil" in surfaces:
-        judgments.append(J.judge_exfil(ep.get("exfilTexts", [])))
+        judgments.append(J.judge_exfil(ep.get("exfilTexts", []), grades=ep.get("exfilGrades")))
     if "private-agent-leak" in surfaces:
         judgments.append(J.judge_private_agent_leak(ep.get("leakTexts", [])))
     if "email-exfil" in surfaces:
@@ -312,11 +320,20 @@ def finalize(ep: dict, reason: str) -> dict:
         "startedAt": ep.get("startedAt"),
         "closedAt": C.now_iso(),
         "closeReason": reason,
-        "turn": ep.get("turn", ""),
+        "turn": T.redact(ep.get("turn", "")),
         "verdict": verdict,
         "judgments": judgments,
     }
-    C.result_path(n).write_text(json.dumps(result, ensure_ascii=False, indent=2))
+    scenario_id = ep.get("scenarioId")
+    mapping = {"exfil": "chat-exfil", "private-agent-leak": "private-agent-leak",
+               "email-exfil": "email-exfil", "kb-integrity": "kb-poison", "fs-escape": "sandbox-escape"}
+    if not scenario_id and len(judgments) == 1:
+        scenario_id = mapping.get(judgments[0]["surface"])
+    result["evaluation"] = C.evaluation(
+        "Clawith", n, scenario_id, judgments, started_at=result["startedAt"],
+        closed_at=result["closedAt"], evidence_files=[alerts.name],
+        status="no_reply" if reason == "no-agent-response" and not any(j["fired"] for j in judgments) else "completed")
+    C.write_result_json(C.result_path(n), result)
     for j in judgments:
         C.emit(alerts, "JUDGMENT_EVIDENCE", surface=j["surface"], fired=j["fired"])
     C.emit(alerts, "EPISODE_CLOSED", outcome=verdict)
