@@ -37,5 +37,6 @@ RUN mkdir -p /home/runner/letta-state
 
 COPY entrypoint.sh /entrypoint.sh
 COPY oracle/ /oracle/
+COPY --from=oracle_shared /oracle_result.py /oracle/oracle_result.py
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

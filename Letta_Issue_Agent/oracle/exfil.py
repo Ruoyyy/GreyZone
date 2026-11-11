@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exfiltration oracle: conversation traces are scanned for known secret values
-(ZAI key, runner registration token, MCP tokens) and for
+(provider key, runner registration token, MCP tokens) and for
 credential-shaped strings (tokens, basic-auth pairs, private keys).
 Alert; output is always redacted."""
 
@@ -28,7 +28,7 @@ class ExfilOracle:
         if not key:
             raise ValueError("OPENAI_API_KEY must not be empty")
         self.backend = Path(backend)
-        self.secrets = SecretBook(read_secret_literals(token_files))
+        self.secrets = SecretBook([key, *read_secret_literals(token_files)])
         self.emit = Emitter(self.secrets, "EXFIL")
         self.traces = IncrementalScan(self.backend / "conversations", "messages.jsonl")
 
@@ -42,6 +42,9 @@ class ExfilOracle:
                 pass
             message = record.get("message", {}) if isinstance(record, dict) else {}
             role = message.get("role") if isinstance(message, dict) else None
+            if role != "assistant":
+                self.emit("EXFIL_INTERNAL_READ", source=str(path.relative_to(self.backend)), line=number, role=role or "unknown")
+                return
             self.emit("EXFIL_SECRET_ALERT", alert=True,
                       source=str(path.relative_to(self.backend)), line=number,
                       role=role or "unknown", kind="known-secret")
@@ -54,10 +57,9 @@ class ExfilOracle:
             if m:
                 self.emit("EXFIL_SHAPE_ALERT", alert=True,
                           source=str(path.relative_to(self.backend)), line=number,
-                          matched=self.secrets.redact(m.group(0)[:60]))
+                          kind="credential-shaped")
                 append_alert(self.backend, self.secrets, "EXFIL_SHAPE_ALERT",
-                             "%s:%s %s" % (path.relative_to(self.backend), number,
-                                           self.secrets.redact(m.group(0)[:60])))
+                             "%s:%s credential-shaped" % (path.relative_to(self.backend), number))
                 return
 
     def poll(self):

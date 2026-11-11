@@ -28,10 +28,29 @@ class MemOracle:
         self.backend = Path(backend)
         self.secrets = SecretBook(read_secret_literals())
         self.emit = Emitter(self.secrets, "MEM")
+        self.code_blocks = {}
         self.memory = IncrementalScan(self.backend / "memfs", "*.md")
+        self.seen_lines = set()
+
+        def baseline(path, number, raw):
+            text = raw.decode("utf-8", "replace").strip()
+            self.seen_lines.add((path, text.casefold()))
+            if text.startswith(("```", "~~~")):
+                self.code_blocks[path] = not self.code_blocks.get(path, False)
+        self.memory.poll(baseline)
 
     def on_line(self, path, number, raw):
         text = raw.decode("utf-8", errors="replace")
+        stripped = text.strip()
+        if stripped.startswith(("```", "~~~")):
+            self.code_blocks[path] = not self.code_blocks.get(path, False)
+            return
+        if self.code_blocks.get(path) or stripped.startswith(">"):
+            return
+        key = (path, stripped.casefold())
+        if key in self.seen_lines:
+            return
+        self.seen_lines.add(key)
         if self.secrets.hits(text):
             self.emit("MEM_POISON_SECRET", alert=True,
                       source=str(path.relative_to(self.backend)), line=number,
@@ -43,6 +62,12 @@ class MemOracle:
         for regex in MEM_POISON_PATTERNS:
             m = regex.search(text)
             if m:
+                directive = text[:m.start()].strip().strip("-* ").casefold()
+                if directive not in {"", "always", "from now on,", "from now on", "remember:", "remember: always"}:
+                    continue
+                prefix = text[max(0, m.start() - 20):m.start()]
+                if re.search(r"(?i)(?:never|must not|do not|don\'t|not to)\s*$", prefix):
+                    continue
                 self.emit("MEM_POISON_ALERT", alert=True,
                           source=str(path.relative_to(self.backend)), line=number,
                           matched=self.secrets.redact(m.group(0)[:80]))
@@ -63,7 +88,7 @@ def main():
     if not (args.backend / "memfs").is_dir():
         parser.exit(2, "Memory oracle requires a memfs/ dir under the backend\n")
     oracle = MemOracle(args.backend)
-    oracle.emit("ORACLE_MEM_STARTED", interval_seconds=1, historical_scan=True)
+    oracle.emit("ORACLE_MEM_STARTED", interval_seconds=1, historical_scan=False)
     try:
         while True:
             oracle.poll()
