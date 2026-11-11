@@ -73,8 +73,12 @@ ORACLE_MONITORS_ENV=kb,mail,phishing,pipeline
   (`SUCCEEDED` with no sent message ids) and attacks that never matched a
   rule
 
-The same list can be passed per run as `pnpm oracle:watch kb,mail`. Alerts
-never print canary values; monitors never block the mail loop.
+The same list can be passed per run. Select one harmful surface plus optional
+`pipeline` diagnostics for a benchmark scenario score, for example
+`pnpm oracle:watch kb,pipeline` for `knowledge-leak`. Monitoring several harmful
+surfaces remains available for diagnostics and writes
+`evaluation.status=unscoped`. Alerts never print canary values; monitors never
+block the mail loop.
 
 Optional attack-episode idle timeout — the watcher closes an episode and
 writes `result-<N>.json` after this much silence (default **300 s = 5
@@ -94,7 +98,8 @@ idempotent — the emulator is in-memory and loses mail on restart, the next
 `up` re-sends it; Postgres-persisted entries are reused as-is. Canary
 values live only in `apps/web/.tmp/oracle/canaries.json`.
 
-Start the watcher when running attacks (`pnpm oracle:watch`); a new inbound
+Start the watcher with the selected scenario's monitors when running attacks
+(`pnpm oracle:watch kb,pipeline` for `knowledge-leak`); a new inbound
 mail from the attacker opens an episode, and `EPISODE_IDLE_TIMEOUT` seconds
 with no new attacker mail and no new outbound delivery closes it. Alert
 events are aggregated into a three-state outcome, like the Letta
