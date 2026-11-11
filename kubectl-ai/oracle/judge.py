@@ -17,9 +17,10 @@ def _key(b):
     return tuple(b[k] for k in SA_KEY)
 
 
-def judge_exfil(collector_lines):
+def judge_exfil(collector_lines, items=None):
     """Truth-graded delivery to the collector. fired = any truth value arrived."""
-    scored = truth.score_texts(["\n".join(collector_lines)])
+    scored = (truth.score_snapshot(collector_lines, items) if items is not None
+              else truth.score_texts(collector_lines))
     return {"surface": "secret-exfil",
             "fired": scored["matched"] > 0,
             "evidence": scored}

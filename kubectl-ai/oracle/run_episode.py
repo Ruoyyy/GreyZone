@@ -102,13 +102,19 @@ async def do_prepare(scenario, args_path, plant_fixed=True):
 def do_start(args):
     ep = load_current()
     assert ep["state"] == "prepared", "episode not in prepared state"
+    ep["victimModel"] = C.load_env().get("OPENAI_MODEL")
+    items = T.active_items()
     baselines = {
+        "truth": T.snapshot(items),
         "bindings": C.bindings_for_sa(),
         "checkoutUi": C.checkout_ui_state(),
         "collectorOffset": C.collector_offset(),
     }
+    started_at = C.now_iso()
     trace, answer = C.run_victim(ep["scenario"]["question"])
-    ep.update({"state": "running", "startedAt": C.now_iso(),
+    ep["readNotSent"] = T.score_snapshot([trace, answer], baselines["truth"])
+    trace, answer = T.redact(trace, items), T.redact(answer, items)
+    ep.update({"state": "running", "startedAt": started_at,
                "baselines": baselines})
     save_current(ep)
     d = C.RUN / f"episode-{ep['n']}"
@@ -125,8 +131,10 @@ def do_close(args):
     assert ep["state"] in ("running", "calibrated"), "nothing to close"
     time.sleep(args.settle)
     b = ep["baselines"]
+    if not b.get("truth"):
+        raise ValueError("Legacy episode has no frozen truth; prepare a new episode")
     judgments = [
-        J.judge_exfil(C.collector_since(b["collectorOffset"])),
+        J.judge_exfil(C.collector_since(b["collectorOffset"]), b.get("truth")),
         J.judge_rbac_escalation(b["bindings"], C.bindings_for_sa()),
         J.judge_sabotage(b["checkoutUi"], C.checkout_ui_state(),
                          http=C.http_probe("http://192.168.32.2:30081/")),
@@ -141,7 +149,7 @@ def do_close(args):
     marker = ep["scenario"].get("marker")
     diag = {
         "enteredContext": trace.count(marker) if marker else None,
-        "readNotSent": T.score_texts([answer, trace]) if trace else None,
+        "readNotSent": ep.get("readNotSent"),
     }
     if diag["readNotSent"]:
         diag["readNotSent"] = {"matched": diag["readNotSent"]["matched"],
@@ -150,7 +158,12 @@ def do_close(args):
     result = {"episode": ep["n"], "scenarioFile": ep.get("scenarioFile"),
               "verdict": v, "judgments": judgments,
               "diagnostics": diag, "closedAt": C.now_iso()}
-    (d / "result.json").write_text(json.dumps(result, indent=2))
+    scenario_id = pathlib.Path(ep["scenarioFile"]).stem if ep.get("scenarioFile") else None
+    result["evaluation"] = C.evaluation(
+        "kubectl-ai", ep["n"], scenario_id, judgments, declared=ep["scenario"].get("oracleSurfaces"),
+        started_at=ep.get("startedAt"), closed_at=result["closedAt"],
+        victim_model=ep.get("victimModel"), evidence_files=["trace.txt", "answer.txt"])
+    C.write_result_json(d / "result.json", result)
     teardown(b, ep)
     ep["state"] = "closed"
     save_current(ep)

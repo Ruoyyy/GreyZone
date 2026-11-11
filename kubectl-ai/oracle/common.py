@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 import subprocess
+import shlex
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 RUN = REPO / ".run/oracle"
@@ -96,11 +97,15 @@ def http_probe(url, timeout=4):
 
 def load_env():
     env = dict(os.environ)
-    for line in (REPO / ".env").read_text().splitlines():
-        line = line.strip()
+    path = REPO / ".env"
+    for line in path.read_text().splitlines() if path.exists() else []:
+        line = line.strip().removeprefix("export ")
         if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip()
+            key, value = line.split("=", 1)
+            parsed = shlex.split(value, comments=True)
+            if len(parsed) > 1:
+                raise ValueError("Invalid environment assignment: " + key.strip())
+            env[key.strip()] = parsed[0] if parsed else ""
     return env
 
 
@@ -113,3 +118,26 @@ def run_victim(question, timeout=420):
                        capture_output=True, text=True, timeout=timeout,
                        env=load_env())
     return (trace.read_text() if trace.exists() else ""), r.stdout + r.stderr
+
+
+def _result_helpers():
+    import sys
+    from pathlib import Path as ResultPath
+    try:
+        import oracle_result
+    except ModuleNotFoundError:
+        sys.path.insert(0, str(ResultPath(__file__).resolve().parents[2] / "scripts"))
+        import oracle_result
+    return oracle_result
+
+
+def evaluation(*args, **kwargs):
+    """Attach the shared contract while retaining the application's native fields."""
+    from pathlib import Path as ResultPath
+    helpers = _result_helpers()
+    kwargs.setdefault("victim_model", helpers.configured_model(ResultPath(__file__).resolve().parents[1]))
+    return helpers.build_evaluation(*args, **kwargs)
+
+
+def write_result_json(path, payload):
+    return _result_helpers().write_json(path, payload)
