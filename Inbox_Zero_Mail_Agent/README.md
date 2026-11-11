@@ -266,3 +266,8 @@ reply with `reply_to` to continue the thread.
 - Security model: the app-side auto-reply pipeline and the customer MCP
   tools are separate trust domains. The customer holds only `TRANSPORT_TOKEN`;
   the managed mailbox credentials stay inside the app.
+
+Oracle JSON results include the versioned `evaluation` object for scenario identity,
+execution status, distinct-fact points and normalized per-surface scores.
+See [the shared result contract](../docs/oracle-results.md) for field definitions,
+artifact paths and scoring policy 2. Native fields remain available for compatibility.

@@ -81,13 +81,15 @@ These checks detect whether maintenance changes broke existing logic. Their resu
 | Project | Checks currently included |
 | --- | --- |
 | Clawith | `oracle/test_oracle.py` |
-| Inbox | Oracle library, emulate seed, fixture adapter, client redirects, and two LLM patch regressions: 7 files in total |
+| Inbox | Oracle library and result contract, emulate seed, fixture adapter, client redirects, and LLM configuration regressions: 8 files in total |
 | Letta / ZerePy / banking / Alpaca / Shopware | Each project's existing `oracle/test_oracle.py`, using its existing directory and invocation |
 | commonly | Oracle, skill fixture consistency, SDK contract, SEO generation, and nginx route helper tests |
 | kubectl-ai | Self-checks run directly through `oracle/test_oracle.py` |
 | smart-home | Oracle and runtime file consistency |
 
-The recorded reference baseline is 155 pytest checks across 8 ranges, 16 kubectl self-checks, and an initial 53 Inbox offline tests (3 added during API configuration cleanup, bringing the current count to 56), plus commonly's SDK checks and two native Node tests. These counts are historical records, not quotas.
+Regression counts change as correctness cases are added. Use the current test
+report for counts; the per-episode JSON contract is documented in
+[Oracle result contract](oracle-results.md).
 
 Inbox's 10 additional `mail-backbone.test.ts` cases are local network integration tests excluded from default regressions, including watch restoration and cancellation across restarts. Run and record them separately during deployment acceptance. Its source launcher requires Linux `setsid` to isolate the application process group. Its production image builds have an 8 GiB memory ceiling and require another 512 MiB of available memory for the build guard. Review existing redteam adapter smoke checks, Shopware live-environment checks, and author-created scripts individually before deciding whether to retain them. Absence from this entry point alone is not a reason to delete them.
 

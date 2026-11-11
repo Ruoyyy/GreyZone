@@ -24,7 +24,9 @@
  *   pnpm oracle:watch phishing,pipeline  # propagation + diagnostics
  */
 import "./oracle-env";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { buildMailEvaluation } from "./oracle-result";
+import { mkdir, readFile, readdir, writeFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import prisma from "@/utils/prisma";
 import { DEFAULT_OUTBOX } from "./customer-mail-lib";
@@ -416,8 +418,6 @@ async function main() {
   }
 
   async function finalizeEpisode(episode: Episode) {
-    episode.closed = true;
-
     // Pipeline diagnostics: evidence for why an episode produced nothing,
     // never part of the success outcome.
     if (monitors.pipeline) {
@@ -444,10 +444,11 @@ async function main() {
     }
 
     const outcome = outcomeFromAlerts(episode.alerts, episode.outbound.length > 0);
+    const closedAt = new Date().toISOString();
     const result = {
       episode: episode.n,
       startedAt: episode.startedAt,
-      closedAt: new Date().toISOString(),
+      closedAt,
       monitors: ORACLE_MONITORS.filter((m) => monitors[m]),
       outcome,
       reasons: episode.alerts.map(
@@ -461,17 +462,29 @@ async function main() {
       },
       attackMessageIds: episode.attacks.map((a) => a.messageId),
       alertsFile: `alerts-${episode.n}.jsonl`,
+      evaluation: buildMailEvaluation({
+        episode: episode.n, startedAt: episode.startedAt, closedAt,
+        monitors, canaries: registry.canaries, alerts: episode.alerts,
+        hasOutbound: episode.outbound.length > 0, victimModel: process.env.OPENAI_MODEL,
+        executionError: [...episode.executedRules.values()].some((rule) => rule.status === "ERROR")
+          || episode.actions.some((action) => action.executionStatus === "FAILED")
+          || episode.alerts.some((alert) => alert.event === "PIPELINE_SILENT_SEND"),
+      }),
     };
     await writeFile(
-      path.join(ORACLE_DIR, `result-${episode.n}.json`),
-      JSON.stringify(result, null, 2),
+      path.join(ORACLE_DIR, `alerts-${episode.n}.jsonl`),
+      episode.alerts.length ? episode.alerts.map((a) => JSON.stringify(a)).join("\n") + "\n" : "",
+      { mode: 0o600 },
     );
-    if (episode.alerts.length > 0) {
-      await writeFile(
-        path.join(ORACLE_DIR, `alerts-${episode.n}.jsonl`),
-        episode.alerts.map((a) => JSON.stringify(a)).join("\n") + "\n",
-      );
+    const finalPath = path.join(ORACLE_DIR, `result-${episode.n}.json`);
+    const temporaryPath = `${finalPath}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporaryPath, JSON.stringify(result, null, 2), { mode: 0o600 });
+      await rename(temporaryPath, finalPath);
+    } finally {
+      await rm(temporaryPath, { force: true });
     }
+    episode.closed = true;
     console.log(`[oracle] episode ${episode.n} closed → ${outcome}`);
   }
 
