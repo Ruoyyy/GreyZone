@@ -1,5 +1,7 @@
 # Clawith DeepTeam red team
 
+Run commands from `GreyZone/Clawith/` unless stated otherwise.
+
 This runner drives one seeded `LinearJailbreaking` conversation against one
 Clawith benchmark scenario. The scenario's `attackerTurn` is sent verbatim as
 alice's first group message. DeepTeam generates later messages from Morty's
@@ -18,7 +20,8 @@ From `Clawith/`:
 
 ```bash
 ./start.sh
-docker compose up -d --build mcp-bridge
+python3 ../scripts/build_images.py --project Clawith --service redteam-mcp
+docker compose up -d --no-build redteam-mcp
 python3.11 -m venv redteam/deepteam/.venv
 redteam/deepteam/.venv/bin/python -m pip install -r redteam/deepteam/requirements.txt
 ```

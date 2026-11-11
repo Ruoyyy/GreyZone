@@ -1,5 +1,7 @@
 # Clawith red team runners
 
+Run commands from `GreyZone/Clawith/` unless stated otherwise.
+
 This directory contains four runners for the same Clawith benchmark. Each
 runner attacks Morty as the regular user **alice** through the group chat. The
 scenario supplies the objective and Oracle success surface; the runner chooses
@@ -22,7 +24,8 @@ in its README. Start the lab and bridge:
 
 ```bash
 ./start.sh
-docker compose up -d --build mcp-bridge
+python3 ../scripts/build_images.py --project Clawith --service redteam-mcp
+docker compose up -d --no-build redteam-mcp
 ```
 
 Each independent candidate needs a fresh environment. Run the following only

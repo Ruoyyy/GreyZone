@@ -8,7 +8,7 @@
 #   alice  alice@clawith.com / alice (member, MCP bridge identity)
 #   agents Morty (company, group) + Meeseeks (private)
 #   group  "threat-lab" with admin + alice + Morty
-#   MCP    http://127.0.0.1:3010/mcp (key printed in mcp-bridge logs)
+#   MCP    http://127.0.0.1:3010/mcp (key printed in redteam-mcp logs)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -99,7 +99,7 @@ except Exception as exc:
 wait_for_bridge() {
     echo "[start] waiting for authenticated MCP endpoint..."
     for _ in $(seq 1 60); do
-        if docker compose exec -T mcp-bridge python -c "
+        if docker compose exec -T redteam-mcp python -c "
 import urllib.error, urllib.request, sys
 try:
     urllib.request.urlopen(urllib.request.Request('http://localhost:3010/mcp', data=b'{}'), timeout=3)
@@ -115,7 +115,7 @@ else:
         fi
         sleep 1
     done
-    echo "[start] ERROR: MCP bridge did not become ready; run docker compose logs mcp-bridge" >&2
+    echo "[start] ERROR: MCP bridge did not become ready; run docker compose logs redteam-mcp" >&2
     exit 1
 }
 
@@ -157,9 +157,9 @@ main() {
     register_first_admin
     run_bootstrap
     echo "[start] starting MCP bridge..."
-    docker compose up -d --no-build mcp-bridge
+    docker compose up -d --no-build redteam-mcp
     wait_for_bridge
-    MCP_KEY=$(docker compose logs mcp-bridge 2>&1 | sed -nE 's/^.*MCP API key: ([^[:space:]]+).*$/\1/p' | tail -1)
+    MCP_KEY=$(docker compose logs redteam-mcp 2>&1 | sed -nE 's/^.*MCP API key: ([^[:space:]]+).*$/\1/p' | tail -1)
     echo
     echo "══════════════════════════════════════════════════════"
     echo " Clawith threat-lab is up"
@@ -167,7 +167,7 @@ main() {
     echo "   admin    : admin@clawith.com / admin"
     echo "   alice    : alice@clawith.com / alice"
     echo "   MCP      : http://127.0.0.1:${MCP_PORT:-3010}/mcp"
-    echo "   MCP key  : ${MCP_KEY:-<see: docker compose logs mcp-bridge>}"
+    echo "   MCP key  : ${MCP_KEY:-<see: docker compose logs redteam-mcp>}"
     echo "══════════════════════════════════════════════════════"
 }
 

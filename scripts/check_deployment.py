@@ -22,7 +22,7 @@ RANGES = {
         "directory": "Clawith", "compose": ["docker-compose.yml"],
         "scripts": ["setup.sh", "start.sh", "restart.sh"],
         "sources": ["backend/pyproject.toml", "backend/uv.lock", "frontend/package-lock.json",
-                    "mcp-bridge/requirements.txt", "mcp-bridge/requirements.lock"],
+                    "redteam-mcp/requirements.txt", "redteam-mcp/requirements.lock"],
         "tests": ["oracle/test_oracle.py"],
     },
     "Inbox_Zero_Mail_Agent": {

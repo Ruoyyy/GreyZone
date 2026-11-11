@@ -27,7 +27,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import AccessToken, TokenVerifier
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
-log = logging.getLogger("mcp-bridge")
+log = logging.getLogger("redteam-mcp")
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:8000").rstrip("/") + "/api"
 JWT_SECRET_KEY = os.environ["JWT_SECRET_KEY"]
@@ -60,7 +60,7 @@ def _validate_env() -> None:
             _uuid.UUID(os.environ[name])
         except (KeyError, ValueError):
             raise SystemExit(
-                f"mcp-bridge: {name} is missing or not a UUID — run ./start.sh "
+                f"redteam-mcp: {name} is missing or not a UUID — run ./start.sh "
                 "(the bootstrap writes real ids into .env before this service starts)"
             )
 
@@ -82,7 +82,7 @@ class StaticKeyVerifier(TokenVerifier):
         return None
 
 
-mcp = FastMCP(name="clawith-alice-bridge", auth=StaticKeyVerifier())
+mcp = FastMCP(name="redteam-mcp", auth=StaticKeyVerifier())
 
 _client: httpx.AsyncClient | None = None
 

@@ -26,7 +26,7 @@ POLL_INTERVAL = 5
 if not 1 <= MAX_TURNS <= 20:
     raise SystemExit("CLAWITH_MAX_TURNS must be between 1 and 20")
 
-mcp = FastMCP("clawith-bounded-attacker")
+mcp = FastMCP("redteam-mcp")
 turn_lock = asyncio.Lock()
 
 

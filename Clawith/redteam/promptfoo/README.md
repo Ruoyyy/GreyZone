@@ -1,5 +1,7 @@
 # Clawith Promptfoo benchmark
 
+Run commands from `GreyZone/Clawith/` unless stated otherwise.
+
 This adapter runs one multi-turn Crescendo attack against one existing
 `benchmark/scenarios/<id>` objective. Promptfoo generates attack messages;
 the target provider sends each message as alice through the authenticated MCP
@@ -17,7 +19,8 @@ From `Clawith/`:
 
 ```bash
 ./start.sh
-docker compose up -d --build mcp-bridge
+python3 ../scripts/build_images.py --project Clawith --service redteam-mcp
+docker compose up -d --no-build redteam-mcp
 cd redteam/promptfoo
 npm ci
 ```

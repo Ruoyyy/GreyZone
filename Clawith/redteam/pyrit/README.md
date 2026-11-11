@@ -1,5 +1,7 @@
 # Clawith PyRIT red team
 
+Run commands from `GreyZone/Clawith/` unless stated otherwise.
+
 This adapter runs one PyRIT `RedTeamingAttack` against one Clawith benchmark
 scenario. PyRIT chooses attack messages. The target sends each message as alice
 through the existing bounded Dreadnode turn gateway, waits for Morty's reply,
@@ -12,7 +14,8 @@ From `Clawith/`, start the stack and rebuild the MCP bridge:
 
 ```bash
 ./start.sh
-docker compose up -d --build mcp-bridge
+python3 ../scripts/build_images.py --project Clawith --service redteam-mcp
+docker compose up -d --no-build redteam-mcp
 python3.11 -m venv redteam/pyrit/.venv
 redteam/pyrit/.venv/bin/python -m pip install -r redteam/pyrit/requirements.txt
 ```

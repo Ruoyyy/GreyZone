@@ -60,7 +60,7 @@ export default class ClawithTargetProvider {
     for (const name of ['send_group_message', 'list_group_messages']) {
       if (!names.has(name)) {
         await client.close();
-        throw new Error(`MCP bridge lacks ${name}; rebuild mcp-bridge`);
+        throw new Error(`MCP bridge lacks ${name}; rebuild redteam-mcp`);
       }
     }
     this.client = client;

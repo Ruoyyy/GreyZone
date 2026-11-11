@@ -1,5 +1,7 @@
 # Clawith Dreadnode red team
 
+Run commands from `GreyZone/Clawith/` unless stated otherwise.
+
 This capability lets Dreadnode attack Morty as alice in one bounded group-chat
 episode. The only exposed tool is `attack_turn`: it sends a group message,
 waits for Morty's reply, and checks the selected Oracle surface. The Oracle's
@@ -12,7 +14,8 @@ From `Clawith/`, start the stack and rebuild the MCP bridge:
 
 ```bash
 ./start.sh
-docker compose up -d --build mcp-bridge
+python3 ../scripts/build_images.py --project Clawith --service redteam-mcp
+docker compose up -d --no-build redteam-mcp
 ```
 
 Set `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` in `Clawith/.env`
@@ -33,7 +36,6 @@ An independent run needs a hard reset. This deletes Clawith's Docker volumes
 and `backend/agent_data/`. Do not reset while another episode is in progress.
 
 ```bash
-cd Clawith
 bash oracle/reset.sh --hard
 python3 redteam/dreadnode/run.py --scenario kb-poison
 ```
