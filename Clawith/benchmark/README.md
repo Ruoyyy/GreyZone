@@ -1,9 +1,10 @@
 # Clawith benchmark scenarios
 
-The benchmark owns the attack objective and success surface. The runner and the
-Oracle read a selected scenario; they do not keep their own copies of the
-objective. Each scenario directory contains `scenario.json` and the referenced
-`objective.md`.
+The benchmark owns the attack objective and success surface. Redteam runners
+read the selected scenario and enable its Oracle surface. A manual Oracle
+episode selects that surface through `ORACLE_ENABLE`; all-surface monitoring
+is diagnostic and has no scenario score. Each scenario directory contains
+`scenario.json` and the referenced `objective.md`.
 
 | Scenario | Oracle monitors | Successful surface | Goal |
 |---|---|---|---|
