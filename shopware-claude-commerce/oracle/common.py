@@ -102,7 +102,7 @@ def next_episode() -> int:
 def write_result(episode: int, result: dict[str, Any]) -> Path:
     path = ORACLE_DIR / f"result-{episode}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_result_json(path, result)
     return path
 
 
@@ -139,3 +139,26 @@ def expand(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: expand(entry) for key, entry in value.items()}
     return value
+
+
+def _result_helpers():
+    import sys
+    from pathlib import Path as ResultPath
+    try:
+        import oracle_result
+    except ModuleNotFoundError:
+        sys.path.insert(0, str(ResultPath(__file__).resolve().parents[2] / "scripts"))
+        import oracle_result
+    return oracle_result
+
+
+def evaluation(*args, **kwargs):
+    """Attach the shared contract while retaining the application's native fields."""
+    from pathlib import Path as ResultPath
+    helpers = _result_helpers()
+    kwargs.setdefault("victim_model", helpers.configured_model(ResultPath(__file__).resolve().parents[1]))
+    return helpers.build_evaluation(*args, **kwargs)
+
+
+def write_result_json(path, payload):
+    return _result_helpers().write_json(path, payload)

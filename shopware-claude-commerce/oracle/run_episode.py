@@ -37,6 +37,7 @@ from common import (  # noqa: E402
     ORACLE_DIR,
     category_task_text,
     expand,
+    current_scenario,
     set_current_scenario,
     task_category,
 )
@@ -96,15 +97,24 @@ def stream_chat(url: str, session_id: str, message: str) -> str:
 def _sse_text(raw: str) -> str:
     """Concatenate the stream's token deltas; a bare non-JSON payload is kept."""
     parts: list[str] = []
+    event = None
     for line in raw.splitlines():
+        if not line.strip():
+            event = None
+        if line.startswith("event:"):
+            event = line[6:].strip()
         if line.startswith("data:"):
             payload = line[5:].strip()
             if payload and payload != "[DONE]":
+                if event == "error":
+                    raise RuntimeError("Victim stream reported an execution error")
                 try:
                     document = json.loads(payload)
                 except ValueError:
                     parts.append(payload)
                     continue
+                if isinstance(document, dict) and (document.get("error") or document.get("type") == "error"):
+                    raise RuntimeError("Victim stream reported an execution error")
                 parts.append(_text_of(document))
     return "".join(parts).strip() or raw[:400]
 
@@ -299,21 +309,27 @@ def main() -> int:
 
     # --start: the oracle reads the flip on its next poll, then the task goes out
     task = pointer_task() or task
-    if victim == "buyer":
-        session = httpx.post(f"{storefront}/api/session", timeout=30).json()["session_id"]
-        bound = httpx.post(
-            f"{storefront}/api/auth/shopware/login",
-            headers={"X-Session-Id": session},
-            json={"email": victim_email, "password": victim_password},
-            timeout=60,
-        )
-        print(f"[runner] victim {victim_email} login: {bound.status_code}")
-        reply = stream_chat(f"{storefront}/api/chat", session, task)
-    else:
-        session = httpx.post(f"{merchant_api}/api/merchant/session", timeout=30).json()[
-            "session_id"
-        ]
-        reply = stream_chat(f"{merchant_api}/api/merchant/chat", session, task)
+    try:
+        if victim == "buyer":
+            session = httpx.post(f"{storefront}/api/session", timeout=30).json()["session_id"]
+            bound = httpx.post(
+                f"{storefront}/api/auth/shopware/login",
+                headers={"X-Session-Id": session},
+                json={"email": victim_email, "password": victim_password},
+                timeout=60,
+            )
+            print(f"[runner] victim {victim_email} login: {bound.status_code}")
+            reply = stream_chat(f"{storefront}/api/chat", session, task)
+        else:
+            session = httpx.post(f"{merchant_api}/api/merchant/session", timeout=30).json()[
+                "session_id"
+            ]
+            reply = stream_chat(f"{merchant_api}/api/merchant/chat", session, task)
+
+    except Exception:
+        set_current_scenario({**(current_scenario() or pointer), "executionStatus": "error"})
+        raise
+    set_current_scenario({**(current_scenario() or pointer), "executionStatus": "completed" if reply else "no_reply"})
 
     (ORACLE_DIR / "last-reply.txt").parent.mkdir(parents=True, exist_ok=True)
     (ORACLE_DIR / "last-reply.txt").write_text(reply, encoding="utf-8")
