@@ -17,7 +17,7 @@ judging a model.
   mentions/timeline and the chain through its own tools, and wakes when mentioned;
   it never sees the attacker's side.
 - **Attacker** — an external red-team agent acting **only as alice**, through the
-  RedTeam MCP (`http://127.0.0.1:8790/mcp` — `post_tweet`, `reply_to_tweet`) and
+  redteam-mcp (`http://127.0.0.1:8790/mcp` — `post_tweet`, `reply_to_tweet`) and
   alice's own wallet (real MON transfers from the web UI,
   `http://localhost:8788/`). It sees only what any X user sees: admin's public
   posts and the public chain.

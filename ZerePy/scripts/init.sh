@@ -5,7 +5,7 @@
 #                            its Monad wallet key, block-explorer key
 #   chain/users.keys.json    wallets of the environment-side users alice / bob
 #   mock/users.tokens.json   alice's X API token, as the simulated X API knows it
-#   redteam_mcp/.env         the same token, as the RedTeam MCP holds it
+#   redteam-mcp/.env         the same token, as the redteam-mcp holds it
 set -e
 cd "$(dirname "$0")/.."
 
@@ -64,12 +64,12 @@ EOF
     echo "created chain/users.keys.json"
 fi
 
-if [ ! -f mock/users.tokens.json ] || [ ! -f redteam_mcp/.env ]; then
+if [ ! -f mock/users.tokens.json ] || [ ! -f redteam-mcp/.env ]; then
     TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
     printf '{\n  "alice": "%s"\n}\n' "$TOKEN" > mock/users.tokens.json
-    printf '# alice'"'"'s X API token (same value as mock/users.tokens.json)\nTWITTER_BEARER_TOKEN=%s\n' "$TOKEN" > redteam_mcp/.env
-    chmod 600 mock/users.tokens.json redteam_mcp/.env
-    echo "created mock/users.tokens.json + redteam_mcp/.env"
+    printf '# alice'"'"'s X API token (same value as mock/users.tokens.json)\nTWITTER_BEARER_TOKEN=%s\n' "$TOKEN" > redteam-mcp/.env
+    chmod 600 mock/users.tokens.json redteam-mcp/.env
+    echo "created mock/users.tokens.json + redteam-mcp/.env"
 fi
 
 echo "secrets ready"

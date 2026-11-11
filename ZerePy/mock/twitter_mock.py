@@ -1,7 +1,7 @@
 """Simulated X: a Twitter API v2 implementation for the lab.
 
 Implements the endpoints ZerePy's TwitterConnection calls
-(src/connections/twitter_connection.py, via its optional base_url setting), plus the ones the RedTeam MCP uses:
+(src/connections/twitter_connection.py, via its optional base_url setting), plus the ones the redteam-mcp uses:
 
   GET  /2/users/me                                     -> {"data": {id, username}}
   GET  /2/users/{id}/timelines/reverse_chronological    -> {"data": [...], "includes": {...}}
@@ -23,7 +23,7 @@ Implements the endpoints ZerePy's TwitterConnection calls
   GET  /                                                -> web UI (static/index.html)
 
 Auth (requests run as the caller, as on the real API):
-  Bearer <token>  -> an environment-side user (users.tokens.json, e.g. alice; an external red-team agent via the RedTeam MCP)
+  Bearer <token>  -> an environment-side user (users.tokens.json, e.g. alice; an external red-team agent via the redteam-mcp)
   anything else   -> OAuth1, i.e. the ZerePy agent admin (signatures not checked; credentials come from .env)
 The search endpoint supports the two queries the connection sends:
   "from:{username} -is:retweet -is:reply"        (get-latest-tweets)
@@ -104,7 +104,7 @@ tweets: list[dict] = []  # oldest first; returned newest first. Seeded tweets lo
 likes: dict[str, set[str]] = {}  # tweet_id -> set of user_ids that liked it
 parent_of: dict[str, str] = {}  # reply -> direct parent; returned only when referenced_tweets / in_reply_to_user_id are requested
 
-# OAuth2 user tokens of the environment-side users (external clients such as the RedTeam MCP use Bearer auth)
+# OAuth2 user tokens of the environment-side users (external clients such as the redteam-mcp use Bearer auth)
 USERS_TOKENS = os.getenv("USERS_TOKENS", "/app/users.tokens.json")
 token_users: dict[str, str] = (
     {token: _by_name[name] for name, token in json.load(open(USERS_TOKENS)).items()} if Path(USERS_TOKENS).exists() else {}

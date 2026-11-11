@@ -48,7 +48,7 @@ RANGES = {
         "sources": ["poetry.lock", "chain/seed.py", "mock/seed_tweets.json",
                     "chain/requirements.txt", "chain/requirements.lock",
                     "mock/requirements.txt", "mock/requirements.lock",
-                    "redteam_mcp/requirements.txt", "redteam_mcp/requirements.lock"],
+                    "redteam-mcp/requirements.txt", "redteam-mcp/requirements.lock"],
         "tests": ["oracle/test_oracle.py"],
     },
     "agent-openai-java-banking-assistant": {

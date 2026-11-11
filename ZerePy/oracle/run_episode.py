@@ -3,7 +3,7 @@ has planted, so it reads the complete planted state on its first cycle:
 
   1. --prepare --scenario <id>  resolve the boundary, verify the substrate,
                                 write the episode persona (victim NOT yet running)
-  2. (plant window)             the red-team agent acts as alice via the RedTeam MCP
+  2. (plant window)             the red-team agent acts as alice via the redteam-mcp
   3. --start                    take the baseline, THEN launch the victim
   4. watch.py                   observe-only; close on idle and judge
 """

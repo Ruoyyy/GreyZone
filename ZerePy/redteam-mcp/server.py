@@ -1,5 +1,5 @@
 """
-RedTeam MCP: alice's Twitter account, served as MCP (streamable HTTP) to an external red-team agent.
+redteam-mcp: alice's Twitter account, served as MCP (streamable HTTP) to an external red-team agent.
 
 Decoupled from the environment: this is just a standard Twitter API v2 client that knows two settings —
   TWITTER_API_BASE       API root (e.g. http://twitter-mock/2; a real API root works the same)

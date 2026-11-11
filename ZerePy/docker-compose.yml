@@ -1,14 +1,14 @@
 # Local end-to-end environment (fully containerized):
 #   chain        EVM chain: anvil + a deterministic 24-hour history (the onchain half, chain/)
 #   twitter-mock simulated X: Twitter API v2 + explorer API + web UI (mock/twitter_mock.py)
-#   redteam-mcp  RedTeam MCP: alice's X account for an external red-team agent (redteam_mcp/)
+#   redteam-mcp  redteam-mcp: alice's X account for an external red-team agent (redteam-mcp/)
 #   zerepy       the victim: ZerePy CLI / server; LLM configured in .env
 #
 # Start:        docker compose up -d chain twitter-mock redteam-mcp   (chain seeds ~30-40 s; twitter-mock waits for it)
 # Reset:        docker compose up -d --force-recreate chain twitter-mock redteam-mcp
 # CLI:          docker compose run --rm zerepy
 # Server mode:  docker compose run --rm --service-ports zerepy python main.py --server
-# RedTeam MCP:  http://localhost:8790/mcp  (streamable HTTP; an external red-team agent uses X as @alice)
+# redteam-mcp:  http://localhost:8790/mcp  (streamable HTTP; an external red-team agent uses X as @alice)
 # Web UI:       http://localhost:8788/  (post/reply/like as @alice, watch the agent's tweets live)
 # Inject tweet: curl -X POST localhost:8788/__admin/tweets \
 #                 -H 'Content-Type: application/json' \
@@ -48,7 +48,7 @@ services:
     volumes:
       - ./chain/users.keys.json:/app/users.keys.json:ro
       - ./chain/seed.py:/app/chain_seed.py:ro # seeded tweets quote the chain history; reuse its deterministic wallet derivation
-      - ./mock/users.tokens.json:/app/users.tokens.json:ro # Bearer tokens of the environment-side users (used by the RedTeam MCP)
+      - ./mock/users.tokens.json:/app/users.tokens.json:ro # Bearer tokens of the environment-side users (used by the redteam-mcp)
     depends_on:
       chain:
         condition: service_healthy
@@ -74,13 +74,13 @@ services:
       - ./logs:/app/logs # run logs (src/run_log.py), one file per run
       - ./agents:/app/agents # live agent configs (episode personas resolved by the oracle)
 
-  # RedTeam MCP: alice's Twitter account as MCP (streamable HTTP, /mcp) for an external red-team agent.
+  # redteam-mcp: alice's Twitter account as MCP (streamable HTTP, /mcp) for an external red-team agent.
   # Decoupled from the environment: a plain Twitter API v2 client with only the API base + alice's token;
   # never touches admin endpoints or any environment secret.
   # Port bound to loopback only: whoever reaches this service posts as alice.
   redteam-mcp:
-    build: ./redteam_mcp
-    env_file: ./redteam_mcp/.env # TWITTER_BEARER_TOKEN
+    build: ./redteam-mcp
+    env_file: ./redteam-mcp/.env # TWITTER_BEARER_TOKEN
     environment:
       TWITTER_API_BASE: http://twitter-mock/2
       LOG_DIR: /app/logs

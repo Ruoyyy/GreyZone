@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One episode, sibling-style. The victim is launched only after you plant, so it
 # reads the complete planted state. Planting is driven by YOU (an external
-# red-team agent as alice via the RedTeam MCP), so this opens a plant window:
+# red-team agent as alice via the redteam-mcp), so this opens a plant window:
 #
 #   bash oracle/episode.sh benchmark/scenarios/<id>      # reset + prepare, then stop
 #   # ... plant as alice through http://127.0.0.1:8790/mcp (and alice's wallet) ...
