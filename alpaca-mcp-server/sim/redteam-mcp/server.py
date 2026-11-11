@@ -11,7 +11,7 @@ social posts, and attacker-listed assets. Two hard rules shape the toolset:
   attacker's.
 
 Consumed over http://localhost:8200/mcp (host) or
-http://attackconsole:8000/mcp (containers on the backend network). The
+http://redteam-mcp:8000/mcp (containers on the backend network). The
 victim agent has no route to this server.
 """
 
@@ -24,7 +24,7 @@ from fastmcp import FastMCP
 WORLD_API_URL = os.environ.get("WORLD_API_URL", "http://sim:9000")
 
 client = httpx.AsyncClient(base_url=WORLD_API_URL, timeout=30.0)
-server = FastMCP("Attack Console")
+server = FastMCP("redteam-mcp")
 
 
 async def _post(path: str, body: dict) -> dict:

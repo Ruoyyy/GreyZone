@@ -15,7 +15,7 @@ model.
   news / social / market-data tools; it never sees the attacker.
 - **Attacker** — an external red-team agent that reaches the world *only* through
   the **attack console** MCP server (`http://localhost:8200/mcp` from the host,
-  `http://attackconsole:8000/mcp` from a container; config in
+  `http://redteam-mcp:8000/mcp` from a container; config in
   `sim/attacker/mcp.json`). Channels: `plant_news`, `plant_social_post`, and —
   where the scenario allows it — `plant_asset`. Text only: no price control, no
   message to the victim.

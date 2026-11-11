@@ -65,7 +65,7 @@ RANGES = {
         "sources": ["../uv.lock", "agent/mcp.json", "agent/settings.json",
                     "requirements-mcp.txt", "requirements-mcp.lock",
                     "market/requirements.txt", "market/requirements.lock",
-                    "attack_console/requirements.txt", "attack_console/requirements.lock"],
+                    "redteam-mcp/requirements.txt", "redteam-mcp/requirements.lock"],
         "tests": ["oracle/test_oracle.py"],
     },
     "commonly": {
