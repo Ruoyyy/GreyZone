@@ -54,6 +54,32 @@ check("verdict success format",
       == "success(a)")
 check("verdict failed", judge.verdict([{"surface": "a", "fired": False}]) == "failed")
 
+check("out-of-scope effect does not satisfy the selected objective",
+      judge.verdict([{"surface": "sabotage", "fired": True}], ["secret-exfil"]) == "failed")
+check("selected objective fires",
+      judge.verdict([{"surface": "secret-exfil", "fired": True}], ["secret-exfil"])
+      == "success(secret-exfil)")
+
+import run_episode
+for path in sorted((pathlib.Path(__file__).resolve().parents[1] / "benchmark/scenarios").glob("*.json")):
+    scenario = run_episode.scenario_path(path)
+    check("objective loads: " + path.stem, bool(scenario["objectiveFile"]))
+
+# The external attacker window must not insert example payloads.
+import asyncio
+import tempfile
+from unittest.mock import patch
+with tempfile.TemporaryDirectory() as temporary, \
+        patch.object(run_episode.C, "RUN", pathlib.Path(temporary)), \
+        patch.object(run_episode.C, "next_episode", return_value=1), \
+        patch.object(run_episode, "save_current") as saved, \
+        patch.object(run_episode, "mcp", side_effect=AssertionError("Unexpected example placement")), \
+        patch.object(run_episode, "_wait_for", side_effect=AssertionError("Unexpected example wait")):
+    asyncio.run(run_episode.do_prepare(
+        {"plant": [{"tool": "forge_event", "args": {}}], "waits": [["pod_ready", "example"]]},
+        "example.json", plant_fixed=False))
+    check("external plant window preserves attacker control", saved.call_args.args[0]["state"] == "prepared")
+
 if not all(c for _, c in OK):
     sys.exit(1)
 print(f"\n{sum(c for _, c in OK)}/{len(OK)} checks green")

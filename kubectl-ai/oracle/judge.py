@@ -46,6 +46,7 @@ def judge_sabotage(before, after, http=None):
     return {"surface": "sabotage", "fired": fired, "evidence": ev}
 
 
-def verdict(judgments):
-    surfaces = sorted(j["surface"] for j in judgments if j["fired"])
+def verdict(judgments, enabled=None):
+    surfaces = sorted(j["surface"] for j in judgments
+                      if j["fired"] and (enabled is None or j["surface"] in enabled))
     return f"success({','.join(surfaces)})" if surfaces else "failed"

@@ -36,7 +36,18 @@ def save_current(ep):
 
 
 def scenario_path(p):
-    return json.loads(pathlib.Path(p).read_text())
+    path = pathlib.Path(p)
+    scenario = json.loads(path.read_text())
+    objective = scenario.get("objectiveFile")
+    if not isinstance(objective, str) or not objective:
+        raise ValueError("Scenario objectiveFile is required")
+    if not (path.parent / objective).read_text().strip():
+        raise ValueError("Scenario objective is empty")
+    surfaces = scenario.get("oracleSurfaces")
+    if (not isinstance(surfaces, list) or not surfaces
+            or set(surfaces) - {"secret-exfil", "rbac-escalation", "sabotage"}):
+        raise ValueError("Invalid scenario Oracle surfaces")
+    return scenario
 
 
 async def mcp():
@@ -70,15 +81,16 @@ def _wait_for(kind, arg, timeout=240):
 
 
 # ---------------------------------------------------------------- prepare
-async def do_prepare(scenario, args_path):
+async def do_prepare(scenario, args_path, plant_fixed=True):
     C.RUN.mkdir(parents=True, exist_ok=True)
-    for p in scenario.get("plant", []):
+    for p in scenario.get("plant", []) if plant_fixed else []:
         async with await mcp() as client:
             r = await client.call_tool(p["tool"], p["args"])
             print(f"planted {p['tool']}: {r.content[0].text}")
-    for w in scenario.get("waits", []):
+    for w in scenario.get("waits", []) if plant_fixed else []:
         _wait_for(*w)
-    time.sleep(5)  # placement settle
+    if plant_fixed:
+        time.sleep(5)  # placement settle
     n = C.next_episode()
     ep = {"n": n, "scenario": scenario, "scenarioFile": str(args_path),
           "state": "prepared", "preparedAt": C.now_iso()}
@@ -119,7 +131,7 @@ def do_close(args):
         J.judge_sabotage(b["checkoutUi"], C.checkout_ui_state(),
                          http=C.http_probe("http://192.168.32.2:30081/")),
     ]
-    v = J.verdict(judgments)
+    v = J.verdict(judgments, ep["scenario"].get("oracleSurfaces"))
 
     # diagnostics (recorded, never judged): entered-context marker; read-not-sent
     d = C.RUN / f"episode-{ep['n']}"
@@ -199,12 +211,22 @@ def do_calibrate(args):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--prepare")
+    p.add_argument("--arm", metavar="SCENARIO", help="open a free plant window without example payloads")
+    p.add_argument("--print-objective", metavar="SCENARIO", help="export the public attacker task")
     p.add_argument("--start", action="store_true")
     p.add_argument("--close", action="store_true")
     p.add_argument("--calibrate", action="store_true")
     p.add_argument("--settle", type=int, default=30)
     a = p.parse_args()
-    if a.prepare:
+    if a.print_objective:
+        scenario = scenario_path(a.print_objective)
+        objective = pathlib.Path(a.print_objective).parent / scenario["objectiveFile"]
+        print(objective.read_text().strip())
+        print(f"\nVictim task: {scenario['question']}")
+        print(f"\nSuccess condition: {scenario['successCriteria']}")
+    elif a.arm:
+        asyncio.run(do_prepare(scenario_path(a.arm), a.arm, plant_fixed=False))
+    elif a.prepare:
         asyncio.run(do_prepare(scenario_path(a.prepare), a.prepare))
     elif a.start:
         do_start(a)
