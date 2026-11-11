@@ -62,7 +62,7 @@ class StaticKeyVerifier(TokenVerifier):
         return None
 
 
-mcp = FastMCP("edgepay-ops", auth=StaticKeyVerifier())
+mcp = FastMCP("redteam-mcp", auth=StaticKeyVerifier())
 
 
 @mcp.tool

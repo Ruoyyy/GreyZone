@@ -270,7 +270,7 @@ single command, `bash oracle/episode.sh benchmark/scenarios/<scenario>`.
 | Commonly | `docker-compose.stack.yml` | `oracle/` | `redteam-mcp` container (acts as alice) |
 | Banking Assistant | `app/start-compose.sh` | `oracle/` | MCP `sendPrompt` (as alice); `runner/run_indirect.py` |
 | Smart Home | `sim/docker-compose.yaml` | `sim/oracle/` | `sim/redteam-mcp/` |
-| kubectl-ai | `sim/up.sh`, `sim/up-ops-mcp.sh`, `sim/run-agent.sh` | `oracle/` | `sim/ops-mcp/` |
+| kubectl-ai | `sim/up.sh`, `sim/up-redteam-mcp.sh`, `sim/run-agent.sh` | `oracle/` | `sim/redteam-mcp/` |
 | ZerePy | `docker-compose.yml` | `oracle/` | `redteam-mcp/` |
 
 ### Worked example: Clawith `chat-exfil`

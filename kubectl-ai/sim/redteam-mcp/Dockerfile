@@ -1,4 +1,4 @@
-# Deployment recipe follows Clawith/mcp-bridge: fastmcp + HTTP transport + static key
+# Deployment recipe follows Clawith/redteam-mcp: fastmcp + HTTP transport + static key
 FROM python:3.12.16-slim-trixie@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 
 ARG DEBIAN_SNAPSHOT=20261104T000000Z
