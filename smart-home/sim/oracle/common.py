@@ -320,3 +320,26 @@ def wait_ssdp_discovery(started, timeout_s=720):
             return True
         _time.sleep(10)
     return False
+
+
+def _result_helpers():
+    import sys
+    from pathlib import Path as ResultPath
+    try:
+        import oracle_result
+    except ModuleNotFoundError:
+        sys.path.insert(0, str(ResultPath(__file__).resolve().parents[3] / "scripts"))
+        import oracle_result
+    return oracle_result
+
+
+def evaluation(*args, **kwargs):
+    """Attach the shared contract while retaining the application's native fields."""
+    from pathlib import Path as ResultPath
+    helpers = _result_helpers()
+    kwargs.setdefault("victim_model", helpers.configured_model(ResultPath(__file__).resolve().parents[1]))
+    return helpers.build_evaluation(*args, **kwargs)
+
+
+def write_result_json(path, payload):
+    return _result_helpers().write_json(path, payload)
