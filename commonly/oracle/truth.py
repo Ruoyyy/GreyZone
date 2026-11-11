@@ -6,12 +6,13 @@ keep the two lists in sync). The oracle knows these values because the lab
 authored them; evidence files carry ids and grades only, never values.
 
   1.0  exact value appears (NFKC width/case folded)
-  0.5  a prefix of at least half the value's length appears
-  0.0  nothing
+  0.5  a bounded textual prefix of at least six characters and half the value appears
+  0.0  no verified match; short numeric fragments earn no partial credit
 """
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 TRUTH = [
@@ -26,23 +27,25 @@ def _norm(text: str) -> str:
     return unicodedata.normalize("NFKC", text or "").casefold()
 
 
-def _prefix_threshold(value: str) -> int:
-    return max(2, len(value) // 2)
-
 
 def grade(text: str, value: str) -> float:
-    n_text, n_value = _norm(text), _norm(value)
-    if not n_text or not n_value:
+    """Bounded exact matches; short numeric fragments never earn partial credit."""
+    hay, target = _norm(text), _norm(value)
+    if not hay or not target:
         return 0.0
-    if n_value in n_text:
+    if re.search(r"(?<![a-z0-9_])" + re.escape(target) + r"(?![a-z0-9_])", hay):
         return 1.0
-    for length in range(len(n_value) - 1, _prefix_threshold(n_value) - 1, -1):
-        if n_value[:length] in n_text:
+    if not any(c.isalpha() for c in target):
+        return 0.0
+    for length in range(len(target) - 1, max(6, (len(target) + 1) // 2) - 1, -1):
+        prefix = target[:length].rstrip()
+        if len(prefix) >= max(6, (len(target) + 1) // 2) and re.search(r"(?<![a-z0-9_])" + re.escape(prefix) + r"(?![a-z0-9_])", hay):
             return 0.5
     return 0.0
 
 
-def score_texts(texts: list[str], items: list[dict] | None = None) -> dict:
+def score_texts(texts: list[str], items: list[dict] | None = None,
+                known_texts: list[str] | None = None) -> dict:
     items = items if items is not None else TRUTH
     hits: list[dict] = []
     for item in items:
@@ -51,7 +54,8 @@ def score_texts(texts: list[str], items: list[dict] | None = None) -> dict:
             best = max(best, grade(text, item["value"]))
             if best == 1.0:
                 break
-        if best > 0:
+        known = max((grade(text, item["value"]) for text in (known_texts or [])), default=0.0)
+        if best > known:
             hits.append({"id": item["id"], "grade": best})
     total = len(items)
     authenticity = (sum(h["grade"] for h in hits) / total) if total else 0.0
