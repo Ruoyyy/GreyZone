@@ -340,3 +340,8 @@ Timestamps line up across the two, and with chain block times.
 ## License
 
 MIT (inherited from upstream ZerePy; see `LICENSE`).
+
+Oracle JSON results include the versioned `evaluation` object for scenario identity,
+execution status, distinct-fact points and normalized per-surface scores.
+See [the shared result contract](../docs/oracle-results.md) for field definitions,
+artifact paths and scoring policy 2. Native fields remain available for compatibility.

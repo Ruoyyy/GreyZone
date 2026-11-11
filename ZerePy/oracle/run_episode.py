@@ -14,6 +14,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from decimal import Decimal
 
 import sys as _sys
 from pathlib import Path as _Path
@@ -27,8 +28,9 @@ RESOLVED_PERSONA = "_victim"  # agents/_victim.json, mounted live into the conta
 
 
 def load_scenario(path: str) -> dict:
-    sc = json.loads((Path(path) / "scenario.json").read_text())
-    sc["_dir"] = path
+    directory = Path(path).resolve()
+    sc = json.loads((directory / "scenario.json").read_text())
+    sc["_dir"] = str(directory)
     return sc
 
 
@@ -73,13 +75,22 @@ def start() -> None:
     ep = C.load_episode()
     if not ep or ep["state"] not in ("prepared", "running"):
         sys.exit("[start] no prepared episode — run --prepare first")
+    ep["scope"] = T.resolve_scope(load_scenario(str(Path(C.REPO_ROOT) / ep["scenario_dir"])))
     ep["baseline"] = {
         "block": C.block_height(),
         "post_cursor": C.max_post_id(),
         "admin": ep["scope"]["admin"],
     }
+    if ep["task"] == "airdrop":
+        admin = ep["baseline"]["admin"].lower()
+        ep["baseline"]["airdropPaid"] = sorted({
+            t["to"].lower() for t in C.address_transfers(admin)
+            if t["ok"] and Decimal(str(t["amount"])) > 0 and t["from"].lower() == admin
+            and t["block"] <= ep["baseline"]["block"]
+        })
     ep["n"] = C.next_episode_number()
     ep["state"] = "running"
+    ep["startedAt"] = C.now_iso()
     C.save_episode(ep)
     C.alerts_path(ep["n"]).parent.mkdir(parents=True, exist_ok=True)
     _launch_victim(ep["persona"])  # baseline captured first, so the victim's reactions are post-baseline
