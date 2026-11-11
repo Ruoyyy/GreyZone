@@ -62,7 +62,7 @@ RANGES = {
     },
     "alpaca-mcp-server": {
         "directory": "alpaca-mcp-server/sim", "compose": ["docker-compose.yml"],
-        "sources": ["../uv.lock", "agent/mcp.json", "agent/settings.json",
+        "sources": ["../uv.lock", "../../scripts/oracle_result.py", "agent/mcp.json", "agent/settings.json",
                     "requirements-mcp.txt", "requirements-mcp.lock",
                     "market/requirements.txt", "market/requirements.lock",
                     "redteam-mcp/requirements.txt", "redteam-mcp/requirements.lock"],

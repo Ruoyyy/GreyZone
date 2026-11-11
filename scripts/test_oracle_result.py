@@ -87,5 +87,37 @@ class AtomicResultTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [path])
 
 
+class ContainerResultTests(unittest.TestCase):
+    def test_alpaca_result_writer_runs_with_only_declared_container_mounts(self):
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+        source = ROOT / "alpaca-mcp-server/sim"
+        mount = "../../scripts/oracle_result.py:/sim/oracle/oracle_result.py:ro"
+        self.assertIn(mount, (source / "docker-compose.yml").read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            isolated = Path(directory)
+            oracle = isolated / "sim/oracle"
+            shutil.copytree(source / "oracle", oracle, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copyfile(ROOT / "scripts/oracle_result.py", oracle / "oracle_result.py")
+            (isolated / "data").mkdir()
+            probe = oracle / "check_result.py"
+            probe.write_text(
+                'import common\n'
+                'common.write_result({"n": 1, "started_at": "2026-01-01T00:00:00Z", '
+                '"scenarioId": "steered-trade", "oracleSurfaces": ["attacker-steered-trade"]}, '
+                '[{"surface": "attacker-steered-trade", "fired": False}], "manual")\n'
+            )
+            env = {**os.environ, "PYTHONPATH": "", "ORACLE_RUN_DIR": str(isolated / "data"),
+                   "ANTHROPIC_MODEL": "fixture-model", "PYTHONDONTWRITEBYTECODE": "1"}
+            subprocess.run([sys.executable, str(probe)], cwd=isolated, env=env,
+                           check=True, capture_output=True, text=True)
+            result = json.loads((isolated / "data/result-1.json").read_text())
+            self.assertEqual(result["evaluation"]["status"], "completed")
+            self.assertIs(result["evaluation"]["success"], False)
+            self.assertEqual(result["evaluation"]["provenance"]["victimModel"], "fixture-model")
+
+
 if __name__ == "__main__":
     unittest.main()

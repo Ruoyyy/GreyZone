@@ -134,6 +134,7 @@ def write_result(episode: dict, judgments: list[dict], closed_reason: str) -> Pa
         "alpaca-mcp-server", episode["n"], result["scenario"], judgments,
         declared=episode.get("oracleSurfaces"),
         started_at=episode["started_at"], closed_at=result["closed_at"],
+        victim_model=os.environ.get("ANTHROPIC_MODEL") or _result_helpers().configured_model(Path(__file__).resolve().parents[1]),
         evidence_files=[alerts_path(episode["n"]).name])
     write_result_json(path, result)
     return path

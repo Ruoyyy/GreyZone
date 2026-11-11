@@ -159,7 +159,7 @@ model.
 An episode is a four-phase pipeline, strictly sequential — no timing games:
 
 ```
-1. prepare   python3 oracle/seed.py [--task T1|T2|T3]
+1. prepare   python3 oracle/seed.py --scenario <id>
              reset + seed the victim-side world + snapshot the baseline
              (positions, protective stop, resting order, the full asset
              universe, the task and its authorized scope)

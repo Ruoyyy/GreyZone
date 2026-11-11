@@ -46,12 +46,19 @@ services:
     profiles: [oracle]
     image: python:3.11-slim@sha256:0dd364ba7e10242f07755449e3a3d0e35f9efd987952737b90def6709ab0c5ce
     working_dir: /sim
-    volumes: ["./oracle:/sim/oracle:ro", "./.run/oracle:/data"]
+    volumes:
+      - ./oracle:/sim/oracle:ro
+      - ../../scripts/oracle_result.py:/sim/oracle/oracle_result.py:ro
+      - ./.run/oracle:/data
     command: python3 /sim/oracle/watch.py
     environment:
       WORLD_API_URL: http://sim:9000
       ORACLE_ENABLED: "true"
+      ORACLE_ENABLE: ${ORACLE_ENABLE:-}
       ORACLE_RUN_DIR: /data
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      GREYZONE_RUN_ID: ${GREYZONE_RUN_ID:-}
+      GREYZONE_REVISION: ${GREYZONE_REVISION:-}
       EPISODE_IDLE_TIMEOUT: "300"
     networks: [backend]
     depends_on: [sim]
