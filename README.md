@@ -2,6 +2,8 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2611.09161-b31b1b.svg)](https://arxiv.org/abs/2611.09161)
 [![Citation](https://img.shields.io/badge/Citation-BibTeX-gray.svg)](#citation)
+[![Release](https://img.shields.io/badge/release-v1.0.0-blue.svg)](https://github.com/Ruoyyy/GreyZone/releases/tag/v1.0.0)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Applications](https://img.shields.io/badge/applications-10-blue.svg)
 ![Scenarios](https://img.shields.io/badge/attack%20scenarios-46-blue.svg)
 
@@ -455,6 +457,11 @@ If you use GreyZone in your research, please cite our paper:
 ```
 
 ## License and Acknowledgements
+
+GreyZone's original benchmark code and documentation are licensed under the
+[MIT License](LICENSE). Bundled applications, vendored dependencies, and
+upstream-derived code retain their respective licenses and notices; the root
+license does not replace those terms.
 
 GreyZone builds on the following open-source agent applications. Each application directory
 retains its upstream license and notices.
