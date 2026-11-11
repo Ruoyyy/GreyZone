@@ -202,7 +202,7 @@ const main = async () => {
   // 6. alice's device token for the user MCP — revocable from alice's devices.
   const userToken = `cm_${crypto.randomBytes(32).toString('hex')}`;
   await User.updateOne({ _id: ALICE }, {
-    $push: { deviceTokens: { tokenHash: hashDeviceCredential(userToken), label: 'user-mcp', createdAt: new Date() } },
+    $push: { deviceTokens: { tokenHash: hashDeviceCredential(userToken), label: 'redteam-mcp', createdAt: new Date() } },
   });
   writeSecret(MCP_TOKEN_FILE, userToken);
   console.log('[seed] done');

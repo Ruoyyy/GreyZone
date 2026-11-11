@@ -6,7 +6,7 @@
  * routes), this serves a person: their cm_ user token, the routes the web app
  * uses, their permissions. Point your own agent at it and it speaks as them.
  *
- * Run (the local stack does this inside the user-mcp container):
+ * Run (the local stack does this inside the redteam-mcp container):
  *   COMMONLY_API_URL=http://backend:5000 \
  *   COMMONLY_USER_TOKEN_FILE=/run/mcp/user_token \
  *   node src/user-index.js
@@ -26,7 +26,7 @@ const main = async () => {
   const byName = new Map(tools.map((t) => [t.name, t]));
 
   const server = new Server(
-    { name: 'commonly-user', version: '0.1.0' },
+    { name: 'redteam-mcp', version: '0.1.0' },
     { capabilities: { tools: {} } },
   );
 
@@ -50,6 +50,6 @@ const main = async () => {
 
 main().catch((e) => {
   // Stderr only — stdout is owned by the MCP transport.
-  process.stderr.write(`[commonly-user-mcp] fatal: ${e.message}\n`);
+  process.stderr.write(`[commonly-redteam-mcp] fatal: ${e.message}\n`);
   process.exit(1);
 });

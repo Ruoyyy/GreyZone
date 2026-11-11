@@ -267,7 +267,7 @@ single command, `bash oracle/episode.sh benchmark/scenarios/<scenario>`.
 | Inbox Zero | `docker-compose.mail-loop.yml`, `scripts/mail-loop.sh` | `apps/web/scripts/oracle-*.ts` | `redteam/` (4 services) |
 | Shopware | `docker/compose.yaml`, `docker/bootstrap.sh` | `oracle/` | `redteam/` (4 services) |
 | Alpaca | `sim/docker-compose.yml` | `sim/oracle/` | `sim/attacker/` |
-| Commonly | `docker-compose.stack.yml` | `oracle/` | `user-mcp` container (acts as alice) |
+| Commonly | `docker-compose.stack.yml` | `oracle/` | `redteam-mcp` container (acts as alice) |
 | Banking Assistant | `app/start-compose.sh` | `oracle/` | MCP `sendPrompt` (as alice); `runner/run_indirect.py` |
 | Smart Home | `sim/docker-compose.yaml` | `sim/oracle/` | `sim/redteam-mcp/` |
 | kubectl-ai | `sim/up.sh`, `sim/up-ops-mcp.sh`, `sim/run-agent.sh` | `oracle/` | `sim/ops-mcp/` |
