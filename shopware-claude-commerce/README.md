@@ -65,9 +65,9 @@ docker compose -f docker/compose.yaml up -d
 bash docker/bootstrap.sh
 ```
 
-The snapshot already contains the buyer/seller accounts `admin@shop.com` and
-`alice@shop.com` (the one the seller MCP authenticates as). This checks both logins, and
-creates the accounts on a shop built without the snapshot:
+The benchmark uses the buyer/seller accounts `admin@shop.com` and `alice@shop.com`
+(the one the seller MCP authenticates as). Ensure both local fixtures exist with
+their benchmark passwords and verify both logins:
 
 ```bash
 .venv/bin/python docker/seed_buyers.py

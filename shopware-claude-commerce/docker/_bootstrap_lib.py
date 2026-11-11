@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -88,12 +89,27 @@ class AdminApi:
         req = urllib.request.Request(
             f"{self.shop_url}{path}", data=data, headers=request_headers, method=method
         )
-        try:
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as response:
-                raw = response.read()
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")[:1200]
-            raise AdminApiError(method, path, error.code, detail) from error
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                    raw = response.read()
+                break
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace")
+                if auth and error.code == 401 and attempt < 3:
+                    try:
+                        payload = json.loads(detail)
+                    except json.JSONDecodeError:
+                        payload = {}
+                    errors = payload.get("errors", []) if isinstance(payload, dict) else []
+                    if isinstance(errors, list) and any(
+                        isinstance(item, dict) and item.get("detail") == "Access token could not be verified"
+                        for item in errors
+                    ):
+                        # Newly issued tokens can briefly precede their valid-from time.
+                        time.sleep((0.5, 1.0, 2.0)[attempt])
+                        continue
+                raise AdminApiError(method, path, error.code, detail[:1200]) from error
         if not raw:
             return {}
         return json.loads(raw)

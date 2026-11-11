@@ -162,12 +162,17 @@ ensure_plugin_active() {  # ensure_plugin_active NAME — install+activate, or u
 }
 
 install_sdk() {
-  if exec_shop 'composer show ucp-php-sdk/symfony-bundle >/dev/null 2>&1'; then
-    echo "ucp-php-sdk already installed ($(exec_shop 'composer show ucp-php-sdk/symfony-bundle 2>/dev/null | grep -E "^versions" | tr -s " "' | tr -d '\r'))."
+  if exec_shop 'cat vendor/composer/installed.json' | "$PYTHON" -c '
+import json, sys
+versions = {p["name"]: p["version"] for p in json.load(sys.stdin)["packages"]}
+sys.exit(0 if all(versions.get(name) == sys.argv[1] for name in (
+    "ucp-php-sdk/core", "ucp-php-sdk/symfony-bundle")) else 1)
+' "$SDK_CONSTRAINT"; then
+    echo "UCP SDK core and Symfony bundle already at ${SDK_CONSTRAINT}."
     return 0
   fi
-  echo "Requiring ucp-php-sdk/symfony-bundle from Packagist..."
-  if exec_shop "COMPOSER_MEMORY_LIMIT=-1 composer require 'ucp-php-sdk/symfony-bundle:${SDK_CONSTRAINT}' --no-interaction --no-scripts"; then
+  echo "Requiring matching UCP SDK core and Symfony bundle from Packagist..."
+  if exec_shop "COMPOSER_MEMORY_LIMIT=-1 composer require 'ucp-php-sdk/core:${SDK_CONSTRAINT}' 'ucp-php-sdk/symfony-bundle:${SDK_CONSTRAINT}' --no-interaction --no-scripts"; then
     return 0
   fi
   echo "Packagist require failed; cloning SDK as path repositories."
@@ -175,15 +180,22 @@ install_sdk() {
   exec_root "git -C ${SHOP_ROOT}/custom/ucp-php-sdk fetch --depth 1 origin '${SDK_REVISION}' && git -C ${SHOP_ROOT}/custom/ucp-php-sdk checkout --detach FETCH_HEAD"
   exec_shop 'composer config repositories.ucp-sdk-core "{\"type\":\"path\",\"url\":\"custom/ucp-php-sdk/packages/core\",\"options\":{\"symlink\":true,\"versions\":{\"ucp-php-sdk/core\":\"0.0.6\"}}}"'
   exec_shop 'composer config repositories.ucp-sdk-symfony "{\"type\":\"path\",\"url\":\"custom/ucp-php-sdk/packages/symfony-bundle\",\"options\":{\"symlink\":true,\"versions\":{\"ucp-php-sdk/symfony-bundle\":\"0.0.6\"}}}"'
-  exec_shop 'COMPOSER_MEMORY_LIMIT=-1 composer require ucp-php-sdk/symfony-bundle:0.0.6 --no-interaction --no-scripts'
+  exec_shop "COMPOSER_MEMORY_LIMIT=-1 composer require 'ucp-php-sdk/core:${SDK_CONSTRAINT}' 'ucp-php-sdk/symfony-bundle:${SDK_CONSTRAINT}' --no-interaction --no-scripts"
 }
 
 # ----------------------------------------------------------------------------------------
 
 step "Starting compose stack"
 "${COMPOSE[@]}" up -d
-wait_for_shop
 wait_for_mysql
+
+step "SwagAgenticCommerce sources and matching UCP SDK"
+ensure_repo "$PLUGIN_DIR" "$PLUGIN_REPO" "$PLUGIN_REF"
+exec_root "chown -R www-data:www-data ${SHOP_ROOT}/custom/plugins"
+# Repair incompatible installed SDK versions before using the Admin API.
+install_sdk
+console 'cache:clear --no-warmup' >/dev/null
+wait_for_shop
 
 step "Shopware version"
 exec_shop 'php bin/console --version'
@@ -214,11 +226,6 @@ step "Sales-channel domain -> ${SHOP_URL} (Admin API)"
 console 'cache:clear --no-warmup' >/dev/null
 
 step "SwagAgenticCommerce @ ${PLUGIN_REF}"
-ensure_repo "$PLUGIN_DIR" "$PLUGIN_REPO" "$PLUGIN_REF"
-exec_root "chown -R www-data:www-data ${SHOP_ROOT}/custom/plugins"
-if ! install_sdk; then
-  echo "WARNING: could not install ucp-php-sdk. UCP plugin may fail; Store API fallback remains." >&2
-fi
 console 'plugin:refresh' >/dev/null
 ensure_plugin_active SwagAgenticCommerce
 

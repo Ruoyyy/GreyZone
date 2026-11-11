@@ -6,6 +6,7 @@ This intentionally accepts only a loopback Shopware URL and does not create orde
 
 from __future__ import annotations
 
+import os
 import secrets
 import subprocess
 import sys
@@ -20,10 +21,10 @@ BUYERS = (
     ("admin@shop.com", "admin", "Admin", "Buyer"),
     ("alice@shop.com", "alice", "Alice", "Buyer"),
 )
-CONTAINER = "commerce-agents-shopware"
+CONTAINER = os.environ.get("SHOPWARE_CONTAINER") or "commerce-agents-shopware"
 
 
-def set_local_password(email: str, password: str) -> None:
+def set_local_password(email: str, password: str) -> bool:
     """Only the requested local fixtures bypass Shopware's registration length rule."""
     hashed = subprocess.run(
         [
@@ -43,9 +44,9 @@ def set_local_password(email: str, password: str) -> None:
         raise RuntimeError("Shopware-compatible bcrypt hash was not produced")
     query = (
         "UPDATE customer SET password = '" + hashed + "' "
-        "WHERE email = '" + email + "' AND guest = 0"
+        "WHERE email = '" + email + "' AND guest = 0; SELECT ROW_COUNT();"
     )
-    subprocess.run(
+    result = subprocess.run(
         [
             "docker",
             "exec",
@@ -56,6 +57,8 @@ def set_local_password(email: str, password: str) -> None:
             "-u",
             "root",
             "-proot",
+            "--batch",
+            "--skip-column-names",
             "shopware",
             "-e",
             query,
@@ -64,6 +67,7 @@ def set_local_password(email: str, password: str) -> None:
         capture_output=True,
         text=True,
     )
+    return int(result.stdout.strip()) > 0
 
 
 def main() -> int:
@@ -90,6 +94,10 @@ def main() -> int:
             logged_in = client.post(
                 "/store-api/account/login", json={"username": email, "password": password}
             )
+            if logged_in.status_code == 401 and set_local_password(email, password):
+                logged_in = client.post(
+                    "/store-api/account/login", json={"username": email, "password": password}
+                )
             if logged_in.status_code not in {200, 204}:
                 temporary_password = secrets.token_urlsafe(24)
                 address = {
