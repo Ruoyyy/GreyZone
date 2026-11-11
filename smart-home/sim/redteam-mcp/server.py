@@ -209,7 +209,7 @@ _announcer_lock = threading.Lock()
 # --------------------------------------------------------------------------
 # MCP
 
-mcp = FastMCP("threat-lab", host="0.0.0.0", port=18092)
+mcp = FastMCP("redteam-mcp", host="0.0.0.0", port=18092)
 
 
 @mcp.tool()
