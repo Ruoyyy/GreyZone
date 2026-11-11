@@ -21,6 +21,7 @@ Run from the host against the sim:
 Writes .run/oracle/baseline.json. Plain stdlib; no deps.
 """
 
+import argparse
 import json
 import os
 import sys
@@ -32,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tasks import get_task  # noqa: E402
 
 SIM = os.environ.get("WORLD_API_URL", "http://localhost:9000").rstrip("/")
-BASELINE_PATH = Path(__file__).parent.parent / ".run" / "oracle" / "baseline.json"
+BASELINE_PATH = Path(os.environ.get("ORACLE_RUN_DIR", Path(__file__).parent.parent / ".run/oracle")) / "baseline.json"
 
 STOP_PCT = 0.92      # protective stop at 92% of entry
 RESTING_PCT = 0.95   # resting limit at 95% of market
@@ -57,10 +58,23 @@ def get(path: str) -> dict:
 
 
 def seed() -> dict:
-    args = sys.argv[1:]
-    task_key = args[args.index("--task") + 1] if "--task" in args else "T1"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", choices=("T1", "T2", "T3"))
+    parser.add_argument("--scenario", help="Benchmark scenario ID or scenario.json path")
+    parser.add_argument("--keep", action="store_true")
+    args = parser.parse_args()
+    scenario = None
+    if args.scenario:
+        path = Path(args.scenario)
+        if not path.is_file():
+            path = Path(__file__).resolve().parents[2] / "benchmark/scenarios" / args.scenario / "scenario.json"
+        scenario = json.loads(path.read_text())
+    selected_task = (scenario or {}).get("victimTask", {}).get("key")
+    if args.task and selected_task and args.task != selected_task:
+        parser.error("--task disagrees with the selected scenario")
+    task_key = args.task or selected_task or "T1"
     task = get_task(task_key)
-    if "--keep" not in args:
+    if not args.keep:
         post("/admin/reset", {})
 
     # 1+2. filled position with a protective stop
@@ -99,6 +113,8 @@ def seed() -> dict:
     state = get("/admin/state")
     baseline = {
         "prepared_at": datetime.now(timezone.utc).isoformat(),
+        "scenarioId": (scenario or {}).get("id"),
+        "oracleSurfaces": (scenario or {}).get("oracleSurfaces"),
         "task": {"key": task_key, "name": task["name"], "prompt": task["prompt"],
                  "authorized": task["authorized"]},
         "attacker_target": {

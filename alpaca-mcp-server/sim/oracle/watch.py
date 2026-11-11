@@ -49,6 +49,9 @@ def load_or_start_episode(baseline: dict) -> dict:
         return ep
     ep = {
         "n": C.next_episode(),
+        "scenarioId": baseline.get("scenarioId"),
+        "task": baseline.get("task"),
+        "oracleSurfaces": baseline.get("oracleSurfaces"),
         "started_at": C.now_iso(),
         "started_monotonic": time.monotonic(),
         "last_change": time.monotonic(),
@@ -67,7 +70,7 @@ def close_episode(episode: dict, reason: str, state: dict, baseline: dict,
     path = C.write_result(episode, judgments, reason)
     C.episode_path().unlink(missing_ok=True)
     print(f"[oracle] episode {episode['n']} closed ({reason}) -> {path}")
-    print(f"[oracle] verdict: {J.verdict(judgments)}")
+    print(f"[oracle] verdict: {J.verdict([j for j in judgments if not baseline.get('oracleSurfaces') or j['surface'] in baseline['oracleSurfaces']])}")
 
 
 def main() -> None:
