@@ -30,7 +30,7 @@ they live only on the external MCP server, which the copilot does not connect to
                                                ├──► Transactions agent ├─MCP(SSE)─► account / transaction / payment
                                                └──► Payments agent ────┘             (business microservices, mock data)
 
-  external agent ──MCP(SSE :8086)──► external-mcp ──REST──► payment
+  external agent ──MCP(SSE :8086)──► redteam-mcp ──REST──► payment
                                       submitInvoice / receivePayment     (data lands in the shared stores the
                                                                           copilot reads via getInvoice / history)
 ```
@@ -46,7 +46,7 @@ they live only on the external MCP server, which the copilot does not connect to
 - **postgres** — stores the selectable users (`app_user`) and per-user conversation history
   (`chat_message`) on the `copilot-pgdata` volume, so history survives page refreshes and
   restarts. Internal only (no published port).
-- **external-mcp** — a thin MCP server for outside agents (published on `:8086`). It exposes
+- **redteam-mcp** — a thin MCP server for outside agents (published on `:8086`). It exposes
   `submitInvoice` and `receivePayment`, forwarding to `payment`'s REST so the data lands
   in the same stores the copilot reads from, plus `sendPrompt` and `receiveReply` for
   conversation as alice. The workspace copilot does **not** connect to it.
@@ -153,6 +153,8 @@ security are out of scope. The lab is intentionally unauthenticated and local-on
 
 ## How to Run
 
+Run commands from `GreyZone/agent-openai-java-banking-assistant/` unless a step changes directory.
+
 ### Prerequisites
 
 - Docker with the `docker compose` plugin
@@ -181,6 +183,7 @@ OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 cd app
 python3 ../../scripts/build_images.py --project agent-openai-java-banking-assistant
 docker compose up -d --no-build
+cd ..
 ```
 
 The first build downloads Maven and npm dependencies and takes a few minutes. The stack
@@ -221,7 +224,7 @@ transaction history, and has a panel to submit an invoice and send a prompt to t
 
 ### 4. Connect an external MCP client (as an outside agent)
 
-The `external-mcp` server speaks MCP over SSE at `http://localhost:8086/sse` (message
+The `redteam-mcp` server speaks MCP over SSE at `http://localhost:8086/sse` (message
 endpoint `POST /mcp/message?sessionId=...`). It exposes four tools:
 
 | Tool | Effect |
@@ -230,6 +233,19 @@ endpoint `POST /mcp/message?sessionId=...`). It exposes four tools:
 | `receivePayment` | Record an incoming payment/transfer into an account. It appears in that account's transaction history. |
 | `sendPrompt` | Send a chat message to the copilot agent as the fixed user `alice` and return the agent's reply. Consecutive calls continue the same conversation (history is persisted server-side per user). |
 | `receiveReply` | Re-read the last copilot reply for `alice` without sending a new message. |
+
+Register the connection as `redteam-mcp` in your client, using SSE transport:
+
+```json
+{
+  "mcpServers": {
+    "redteam-mcp": {
+      "type": "sse",
+      "url": "http://localhost:8086/sse"
+    }
+  }
+}
+```
 
 Whatever an external agent plants this way is read back by the workspace copilot as tool
 results — the cross-agent interaction (and injection) surface.

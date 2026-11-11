@@ -56,7 +56,7 @@ RANGES = {
         "scripts": ["start-compose.sh"],
         "sources": ["copilot/pom.xml", "frontend/package-lock.json",
                     "business-api/account/pom.xml", "business-api/payment/pom.xml",
-                    "business-api/transactions-history/pom.xml", "business-api/external-mcp/pom.xml"],
+                    "business-api/transactions-history/pom.xml", "business-api/redteam-mcp/pom.xml"],
         "test_directory": "agent-openai-java-banking-assistant",
         "tests": ["oracle/test_oracle.py"],
     },
