@@ -91,7 +91,29 @@ Regression counts change as correctness cases are added. Use the current test
 report for counts; the per-episode JSON contract is documented in
 [Oracle result contract](oracle-results.md).
 
-Inbox's 10 additional `mail-backbone.test.ts` cases are local network integration tests excluded from default regressions, including watch restoration and cancellation across restarts. Run and record them separately during deployment acceptance. Its source launcher requires Linux `setsid` to isolate the application process group. Its production image builds have an 8 GiB memory ceiling and require another 512 MiB of available memory for the build guard. Review existing redteam adapter smoke checks, Shopware live-environment checks, and author-created scripts individually before deciding whether to retain them. Absence from this entry point alone is not a reason to delete them.
+Inbox's 10 additional `mail-backbone.test.ts` cases are local network integration tests excluded from default regressions, including watch restoration and cancellation across restarts. Run and record them separately during deployment acceptance. Its source launcher requires Linux `setsid` to isolate the application process group. Its production image builds have an 8 GiB memory ceiling and require another 512 MiB of available memory for the build guard.
+
+## Release test retention
+
+Keep executable checks for Oracle truth, score boundaries and evidence, MCP tool
+contracts and adapter conversations, scenario inputs, fixture seeding/reset,
+and reproducible build/startup behavior. Test fixtures and emulators imported
+by runtime code are deployment inputs. Tests selected through package scripts,
+CI or test-runner discovery do not need a direct source import to remain useful.
+The redteam adapter smoke checks and Shopware transport/handoff checks provide
+coverage beyond the default offline regressions and remain in the release.
+
+Store personal acceptance records, screenshots, command transcripts and
+machine-specific repair scripts under the Git-ignored `.deployment-checks/`
+directory. Runtime Oracle evidence belongs in each application's native ignored
+result directory; it is separate from maintainer acceptance reports.
+
+Delete a legacy helper only after reviewing its contents and checking source,
+package, CI, documentation and lifecycle references. Historical production
+backfills that have no callers and cannot contribute to a fresh seeded deployment
+are outside the benchmark maintenance path. Preserve initialization, database
+migrations and reset tools that the current lifecycle still uses. An absent
+entry in the default preflight list alone is not a reason to remove a test.
 
 The offline SDK request check for API configuration cleanup is `python3 -m unittest discover -s scripts -p test_openai_config.py`. It requires ZerePy's OpenAI/httpx dependencies and is not included in default deployment preflight.
 
