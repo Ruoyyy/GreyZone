@@ -10,7 +10,7 @@ function toolData(result, name) {
     throw new Error(`${name} failed: ${detail || 'unknown MCP error'}`);
   }
   if (!result.structuredContent || typeof result.structuredContent !== 'object') {
-    throw new Error(`${name} did not return structuredContent; update customer-mail-mcp.ts`);
+    throw new Error(`${name} did not return structuredContent; update redteam-mcp.ts`);
   }
   return result.structuredContent;
 }
@@ -52,7 +52,7 @@ export default class MailTargetProvider {
       throw new Error('MCP command, args, and cwd are required');
     }
     if (!process.env.TRANSPORT_TOKEN) {
-      throw new Error('TRANSPORT_TOKEN is required for the customer-mail MCP server');
+      throw new Error('TRANSPORT_TOKEN is required for the redteam-mcp server');
     }
     const client = new Client({ name: 'promptfoo-mail-target', version: '0.1.0' });
     const transport = new StdioClientTransport({
@@ -72,7 +72,7 @@ export default class MailTargetProvider {
       await client.connect(transport);
       const available = new Set((await client.listTools()).tools.map((tool) => tool.name));
       for (const name of REQUIRED_TOOLS) {
-        if (!available.has(name)) throw new Error(`customer-mail MCP is missing ${name}`);
+        if (!available.has(name)) throw new Error(`redteam-mcp is missing ${name}`);
       }
       this.client = client;
       return client;

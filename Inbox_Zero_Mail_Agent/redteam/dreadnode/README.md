@@ -1,7 +1,9 @@
-# Dreadnode over customer-mail MCP
+# Dreadnode over redteam-mcp
+
+Run commands from `GreyZone/Inbox_Zero_Mail_Agent/` unless stated otherwise.
 
 This capability runs an autonomous attacker as the external customer. It
-starts the existing stdio customer-mail MCP server, sends one email at a time,
+starts the existing stdio redteam-mcp server, sends one email at a time,
 reads matched replies, and adapts within the selected shared benchmark
 scenario. It does not read the Oracle or produce a verified success verdict.
 
@@ -38,14 +40,13 @@ Start the Oracle watcher before the first attack email. Select monitors from
 the scenario's `oracleMonitors` field:
 
 ```bash
-cd Inbox_Zero_Mail_Agent/apps/web
+cd apps/web
 pnpm oracle:watch kb,pipeline
 ```
 
 In another terminal, run a selected scenario from the mail project root:
 
 ```bash
-cd Inbox_Zero_Mail_Agent
 bash redteam/dreadnode/run.sh --scenario knowledge-leak
 bash redteam/dreadnode/run.sh --scenario mail-history-leak
 bash redteam/dreadnode/run.sh --scenario phishing-outbound

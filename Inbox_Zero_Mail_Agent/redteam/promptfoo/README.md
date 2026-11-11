@@ -1,4 +1,6 @@
-# Promptfoo over customer-mail MCP
+# Promptfoo over redteam-mcp
+
+Run commands from `GreyZone/Inbox_Zero_Mail_Agent/` unless stated otherwise.
 
 This adapter sends Promptfoo attack turns through the external customer's
 stdio MCP server. The benchmark scenario is selected by name and lives under
@@ -16,7 +18,7 @@ Use Node.js 24 (Node 22.22 or later also runs the adapter) and install the
 pinned Promptfoo dependencies:
 
 ```bash
-cd Inbox_Zero_Mail_Agent/redteam/promptfoo
+cd redteam/promptfoo
 npm ci
 ```
 
@@ -43,14 +45,14 @@ monitors from the scenario's `oracleMonitors` field. For example, for the
 knowledge-base scenario, run this in one terminal:
 
 ```bash
-cd Inbox_Zero_Mail_Agent/apps/web
+cd apps/web
 pnpm oracle:watch kb,pipeline
 ```
 
 In another terminal:
 
 ```bash
-cd Inbox_Zero_Mail_Agent/redteam/promptfoo
+cd redteam/promptfoo
 npm run redteam -- --scenario knowledge-leak
 ```
 
@@ -79,7 +81,7 @@ without replying to the attacker.
 
 ## MCP behavior
 
-The provider launches `apps/web/scripts/customer-mail-mcp.ts` over stdio and
+The provider launches `apps/web/scripts/redteam-mcp.ts` over stdio and
 uses only `send_email`, `list_received`, `read_received`, and `reply_to`. It
 creates one mail thread per Promptfoo test. Later Crescendo turns reply to
 the last matched managed-agent email in that thread. Replies are matched by

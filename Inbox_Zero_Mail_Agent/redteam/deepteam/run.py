@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run serial DeepTeam Crescendo cases through the customer-mail MCP."""
+"""Run serial DeepTeam Crescendo cases through the redteam-mcp."""
 
 import argparse
 import asyncio

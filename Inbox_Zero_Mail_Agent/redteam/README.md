@@ -1,7 +1,9 @@
 # Mail red-team integrations
 
+Run commands from `GreyZone/Inbox_Zero_Mail_Agent/` unless stated otherwise.
+
 This directory runs attacks as an external customer of the Inbox Zero mail
-agent. All four integrations use the customer-mail MCP server and the shared
+agent. All four integrations use the redteam-mcp server and the shared
 [benchmark scenarios](../benchmark/README.md). The agent's private mailbox,
 knowledge base, and Oracle canaries are outside the attacker's tools.
 

@@ -14,7 +14,7 @@ from mcp.client.stdio import stdio_client
 
 from settings import APP_ROOT, HERE
 
-MCP_START = HERE.parent / "shared/start_mail_mcp.sh"
+MCP_START = HERE.parent / "shared/start-redteam-mcp.sh"
 REQUIRED_TOOLS = {"send_email", "list_received", "read_received", "reply_to"}
 
 
@@ -80,7 +80,7 @@ async def connect(config):
                     break
             missing = REQUIRED_TOOLS - available
             if missing:
-                raise TargetError(f"Missing customer-mail MCP tools: {sorted(missing)}")
+                raise TargetError(f"Missing redteam-mcp tools: {sorted(missing)}")
             yield MCPTransport(session, config.request_timeout_seconds)
 
 

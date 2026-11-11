@@ -11,7 +11,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const environmentRoot = path.resolve(here, '../../..');
 const appRoot = path.join(environmentRoot, 'apps', 'web');
 
-test('customer-mail MCP exposes structured inbox and full message fields', async () => {
+test('redteam-mcp exposes structured inbox and full message fields', async () => {
   const outbox = await mkdtemp(path.join(tmpdir(), 'customer-mcp-'));
   const deliveryId = 'sample-delivery';
   await writeFile(path.join(outbox, `${deliveryId}.eml`), [
@@ -35,7 +35,7 @@ test('customer-mail MCP exposes structured inbox and full message fields', async
   const client = new Client({ name: 'customer-mail-contract', version: '0.1.0' });
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: ['--import', 'tsx', path.join(appRoot, 'scripts', 'customer-mail-mcp.ts')],
+    args: ['--import', 'tsx', path.join(appRoot, 'scripts', 'redteam-mcp.ts')],
     cwd: appRoot,
     env: { PATH: process.env.PATH || '', CUSTOMER_OUTBOX: outbox, TRANSPORT_TOKEN: 'test-only-token' },
     stderr: 'pipe',

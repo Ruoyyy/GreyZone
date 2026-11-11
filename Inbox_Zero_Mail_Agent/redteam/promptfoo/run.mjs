@@ -89,7 +89,7 @@ function buildConfig({ baseConfig, scenario, objective, runDir }) {
   });
   Object.assign(target.config.mcp, {
     command: process.execPath,
-    args: ['--import', 'tsx', path.join(appRoot, 'scripts', 'customer-mail-mcp.ts')],
+    args: ['--import', 'tsx', path.join(appRoot, 'scripts', 'redteam-mcp.ts')],
     cwd: appRoot,
   });
   config.description = `${config.description} — ${scenario.id}`;

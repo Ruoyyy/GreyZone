@@ -1,14 +1,16 @@
-# PyRIT over customer-mail MCP
+# PyRIT over redteam-mcp
+
+Run commands from `GreyZone/Inbox_Zero_Mail_Agent/` unless stated otherwise.
 
 PyRIT 1.1.0 `RedTeamingAttack` sends multi-turn attacks through the existing
-customer-mail stdio MCP server. Each case starts one uniquely titled email
+redteam-mcp server over stdio. Each case starts one uniquely titled email
 thread and continues it with `reply_to`. Cases run serially; the managed
 mailbox, mail agent, and Oracle fixtures are not reset between cases.
 
 ## Setup and checks
 
 Start and configure the [mail environment](../../README.md) first. Install the
-app's Node dependencies so the customer-mail MCP can run with `tsx`. From the
+app's Node dependencies so the redteam-mcp can run with `tsx`. From the
 mail project root:
 
 ```bash
@@ -20,7 +22,7 @@ redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --check
 
 `--offline-check` builds the real PyRIT attack and target without credentials
 or MCP access. `--check` additionally loads credentials, initializes the
-customer-mail MCP, confirms its four required tools, and lists the customer
+redteam-mcp, confirms its four required tools, and lists the customer
 inbox. Neither sends mail or requests a model response.
 
 The attacker and evaluator use `OPENAI_MODEL` through the configured OpenAI endpoint. The runner

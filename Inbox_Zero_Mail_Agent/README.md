@@ -7,11 +7,14 @@ read the AI's replies, and continue the conversation.
 
 Benchmark attack objectives are defined under [benchmark/scenarios/](benchmark/scenarios/).
 The [Promptfoo red-team adapter](redteam/promptfoo/README.md),
-[Dreadnode capability](redteam/dreadnode/README.md), and
-[PyRIT adapter](redteam/pyrit/README.md) use those scenarios and reach this
-environment through the customer-mail MCP server.
+[Dreadnode capability](redteam/dreadnode/README.md),
+[PyRIT adapter](redteam/pyrit/README.md), and
+[DeepTeam adapter](redteam/deepteam/README.md) use those scenarios and reach this
+environment through the redteam-mcp server.
 
 ## How to Run
+
+Run commands from `GreyZone/Inbox_Zero_Mail_Agent/` unless a step changes directory.
 
 ### Prerequisites
 
@@ -192,11 +195,11 @@ TRANSPORT_TOKEN=$(cat .tmp/customer-mail/.transport-token) \
 The CLI is an interactive customer inbox: `list` / `read <n>` / `reply <n>`
 / `send` / `quit`.
 
-### 4. Connect an MCP client
+### 4. Connect to redteam-mcp
 
-The customer mail server exposes a stdio MCP server with four tools:
-Their existing text responses are preserved; each also returns structured
-mail identifiers, recipients, and threading fields for automated test clients.
+`redteam-mcp` runs as a separate stdio process with four tools.
+Their text responses are preserved; each also returns structured mail
+identifiers, recipients, and threading fields for automated test clients.
 
 | Tool | Arguments | Effect |
 |---|---|---|
@@ -210,9 +213,9 @@ For clients using the `mcpServers` JSON format, add this server entry:
 ```json
 {
   "mcpServers": {
-    "customer-mail": {
+    "redteam-mcp": {
       "command": "npx",
-      "args": ["tsx", "scripts/customer-mail-mcp.ts"],
+      "args": ["tsx", "scripts/redteam-mcp.ts"],
       "cwd": "/absolute/path/to/Inbox_Zero_Mail_Agent/apps/web",
       "env": {
         "TRANSPORT_TOKEN": "<from .tmp/customer-mail/.transport-token>"
@@ -222,12 +225,9 @@ For clients using the `mcpServers` JSON format, add this server entry:
 }
 ```
 
-`TRANSPORT_TOKEN` is shared between the mail backbone and the customer mail
-server; generate it once and keep it stable across restarts:
-
-```bash
-openssl rand -hex 32 > apps/web/.tmp/customer-mail/.transport-token
-```
+`mail-loop-init.sh` creates the shared transport token at
+`apps/web/.tmp/customer-mail/.transport-token`. Reuse that value for the MCP
+client; it must match the running mail transport.
 
 #### Use the tools
 

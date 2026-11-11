@@ -9,7 +9,7 @@
  *
  * Run with:
  *   TRANSPORT_TOKEN=$(cat .tmp/customer-mail/.transport-token) \
- *     npx tsx scripts/customer-mail-mcp.ts
+ *     npx tsx scripts/redteam-mcp.ts
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -28,7 +28,7 @@ import {
 const TRANSPORT_TOKEN = process.env.TRANSPORT_TOKEN || "";
 
 const server = new McpServer({
-  name: "customer-mail",
+  name: "redteam-mcp",
   version: "0.1.0",
 });
 
@@ -281,7 +281,7 @@ async function main() {
   await server.connect(transport);
   // stderr keeps MCP protocol on stdout clean.
   console.error(
-    `customer-mail MCP server ready (you are ${DEFAULT_CUSTOMER_EMAIL})`,
+    `redteam-mcp server ready (you are ${DEFAULT_CUSTOMER_EMAIL})`,
   );
 }
 

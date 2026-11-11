@@ -1,4 +1,6 @@
-# DeepTeam over customer-mail MCP
+# DeepTeam over redteam-mcp
+
+Run commands from `GreyZone/Inbox_Zero_Mail_Agent/` unless stated otherwise.
 
 DeepTeam 1.0.9 runs `CrescendoJailbreaking` through the external customer's
 stdio MCP server. Each case starts a uniquely titled email thread; later turns
@@ -20,7 +22,7 @@ redteam/deepteam/.venv/bin/python redteam/deepteam/run.py --check
 ```
 
 `--offline-check` validates the DeepTeam strategy without credentials or MCP
-access. `--check` also loads credentials, initializes the customer-mail MCP,
+access. `--check` also loads credentials, initializes the redteam-mcp,
 confirms its tools, and lists the customer inbox. Neither sends mail or calls a
 model; they do not prove that the mail watch or model quota is healthy.
 
