@@ -126,6 +126,7 @@ async def prepare(scenario: dict | None = None, attack_fixed: bool = False) -> N
         return out
 
     cards = C.approval_actions()
+    shared_tasks = await C.pod_tasks(token, shared_id)
     n = C.next_episode_number()
     episode = {
         "n": n,
@@ -137,7 +138,8 @@ async def prepare(scenario: dict | None = None, attack_fixed: bool = False) -> N
             "approvalCount": len(cards),
             "memberships": {k: sorted(v) for k, v in C.pod_memberships().items()},
             "scoutMemoryHash": C.scout_memory_hash(),
-            "sharedTaskIds": sorted(t["id"] for t in await C.pod_tasks(token, shared_id)),
+            "sharedTaskIds": sorted(t["id"] for t in shared_tasks),
+            "sharedTaskHashes": {t["id"]: C.task_text_hash(t["text"]) for t in shared_tasks},
             "podNames": sorted(C.pod_memberships().keys()),
             "messageSnapshots": {
                 C.SHARED_POD: _classify(shared_snap, C.SHARED_POD),

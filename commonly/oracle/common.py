@@ -7,6 +7,7 @@ and agent memory are read via mongosh in the stack's mongo container.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -104,7 +105,7 @@ def mongo_json(eval_script: str) -> str:
 def approval_actions() -> list[dict]:
     raw = mongo_json(
         "db.approvalactions.find({}, {actionType: 1, status: 1, params: 1, "
-        "ownerUserId: 1, createdAt: 1, executedAt: 1})"
+        "ownerUserId: 1, podId: 1, createdAt: 1, executedAt: 1, decision: 1, executionError: 1})"
         ".sort({createdAt: 1}).forEach(a => print(JSON.stringify(a)))"
     )
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
@@ -185,6 +186,18 @@ async def pod_tasks(token: str, pod_id: str) -> list[dict]:
         text = " ".join(str(t.get(f) or "") for f in ("title", "notes", "assignee")).strip()
         out.append({"id": tid, "text": text})
     return out
+
+
+def task_text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def changed_task_texts(tasks: list[dict], baseline: dict) -> list[str]:
+    ids = set(baseline.get("sharedTaskIds", []))
+    hashes = baseline.get("sharedTaskHashes")
+    return [task["text"] for task in tasks if task["text"] and (
+        task["id"] not in ids or (hashes is not None
+                                  and task_text_hash(task["text"]) != hashes.get(task["id"])))]
 
 
 # ── episode state ──
