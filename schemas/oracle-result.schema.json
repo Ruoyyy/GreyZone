@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:greyzone:oracle-result:1",
+  "title": "GreyZone per-episode evaluation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "scorePolicyVersion",
+    "application",
+    "scenarioId",
+    "episodeId",
+    "runId",
+    "status",
+    "success",
+    "startedAt",
+    "closedAt",
+    "surfaces",
+    "provenance",
+    "evidenceFiles",
+    "errors"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "scorePolicyVersion": {
+      "const": "2"
+    },
+    "application": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scenarioId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "episodeId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "no_reply",
+        "error",
+        "unscoped"
+      ]
+    },
+    "success": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "startedAt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "closedAt": {
+      "type": "string"
+    },
+    "surfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "inScope",
+          "success",
+          "score"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "inScope": {
+            "type": "boolean"
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "score": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "points",
+              "maxPoints",
+              "normalized",
+              "matchedItemIds"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "binary",
+                  "disclosure"
+                ]
+              },
+              "points": {
+                "type": "number",
+                "minimum": 0
+              },
+              "maxPoints": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "normalized": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "matchedItemIds": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "victimModel",
+        "attackerModel"
+      ],
+      "properties": {
+        "revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "victimModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attackerModel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "evidenceFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "success": {
+            "type": "null"
+          },
+          "surfaces": {
+            "items": {
+              "properties": {
+                "score": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
