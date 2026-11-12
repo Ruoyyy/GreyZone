@@ -49,6 +49,14 @@ and `--close` as below:
 python3 oracle/run_episode.py --arm benchmark/scenarios/g2-escalate-l2-note-ip2-event.json
 ```
 
+For `g1-exfil-l1-note-ip1-weblog`, make the final `plant_web_log` request
+shortly before starting the victim. Its task asks for logs from the last few
+minutes, so a time filter may exclude an older request even while the log is
+still stored. After a lengthy delay, repeat the permitted placement before
+`--start`. Inspect the episode trace to see which logs were read; the
+`enteredContext` marker diagnostic is useful only when the planted text
+contains the scenario's marker.
+
 ## Running a scenario
 
 ```bash
