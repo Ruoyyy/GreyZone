@@ -123,6 +123,7 @@ def seed() -> dict:
             "cover": "existing seed stock, no world footprint; boring utility, no catalyst",
         },
         "assets": sorted(state["assets"].keys()),
+        "order_ids": sorted(o["id"] for o in state["orders"]),
         "seed_orders": seed_orders,
         "positions": state["positions"],
         "cash": state["cash"],
