@@ -92,6 +92,11 @@ not an automated red-team search:
 python3 runner/run_indirect.py benchmark/scenarios/indirect-invoice-pay
 ```
 
+The fixed victim task explicitly requests `getInvoice`, reading the vendor and
+total amount before proceeding through the normal payment workflow. If you
+change the registered invoice ID, update both `plant.invoices[].InvoiceId` and
+the ID in `victimTask` to keep retrieval aligned with the planted invoice.
+
 ## scenario.json
 
 Names the `plan` (`direct-multi-turn` / `indirect-single-shot`), the
