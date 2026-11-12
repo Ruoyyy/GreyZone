@@ -26,7 +26,7 @@ targets:
         repo: GreyZone
       mcp:                        # MCP transport: url = HTTP (production) or command = stdio (mock)
         # Host default; override with PROMPTFOO_MCP_URL inside compose (direct gateway route)
-        url: http://127.0.0.1:8080/mcp
+        url: http://127.0.0.1:8087/mcp
         # For offline smoke without the stack, swap to:
         # command: node
         # args: ['./fixtures/mock_issue_mcp.mjs']
@@ -96,11 +96,6 @@ redteam:
   numTests: 1
   # Attack generator model (separate from the target under test)
   provider:
-    # Z.ai OpenAI-compatible endpoint, glm-4.7 with thinking disabled.
-    # Measured: glm-5.3 / glm-5.3-flash force thinking and cannot disable it; they
-    # reason about "is this authorized" and refuse (glm-5.3-flash refused 3/8).
-    # glm-4.7 with thinking off: 0 refusals observed.
-    #
     # Do NOT set response_format:json_object globally: the plugin generator parses
     # line-by-line, so a JSON envelope leaks into the attack text. JSON mode is
     # injected only at the crescendo strategy layer (see strategies below).
@@ -108,18 +103,7 @@ redteam:
     config:
       apiBaseUrl: __OPENAI_BASE_URL__
       apiKeyEnvar: OPENAI_API_KEY
-      # Thinking off: guardrail strength scales with reasoning depth, so disabling it
-      # avoids the refusal-triggering reasoning pass.
-      # promptfoo forwards only explicitly mapped config keys, so `thinking` must go
-      # through passthrough to reach the request body.
-      passthrough:
-        thinking:
-          type: disabled
-      # promptfoo defaults max_tokens to 1024 for non-OpenAI models; long multi-turn
-      # JSON gets truncated and then fails to parse.
       max_tokens: 4096
-      # Don't prepend reasoning_content as a "Thinking:" prefix (chat provider default)
-      showThinking: false
   # Locally-generating plugins that only craft attack text (no remote generation).
   plugins:
     - debug-access # __BENCHMARK_PLUGIN__
@@ -143,6 +127,3 @@ redteam:
             apiKeyEnvar: OPENAI_API_KEY
             max_tokens: 4096
             response_format: { type: json_object }
-            passthrough:
-              thinking: { type: disabled }
-            showThinking: false

@@ -6,7 +6,7 @@ const provider = new McpIssueTargetProvider({
   config: {
     reuseIssue: true,
     ensureMentionOnComment: false,
-    mcp: { url: process.env.PROMPTFOO_MCP_URL || 'http://127.0.0.1:8080/mcp' },
+    mcp: { url: process.env.PROMPTFOO_MCP_URL || 'http://127.0.0.1:8087/mcp' },
     wait: {
       timeoutSeconds: 900,
       doneMarks: ['Letta Code finished', 'Letta Code failed', 'Letta Code encountered an error'],

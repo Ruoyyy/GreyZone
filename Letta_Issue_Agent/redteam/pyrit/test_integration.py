@@ -93,6 +93,9 @@ class PyRITTests(unittest.IsolatedAsyncioTestCase):
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
 
         for config in (settings.models.attacker, settings.models.evaluator):
+            # Exercise vendor passthrough explicitly; production defaults use
+            # OpenAI and intentionally have no vendor-specific request fields.
+            config.extra_body = {"thinking": {"type": "disabled"}}
             model = build_model(config)
             await close_models(model)
             model._async_client = AsyncOpenAI(api_key="fixture-key", base_url="https://fixture.invalid/v1",

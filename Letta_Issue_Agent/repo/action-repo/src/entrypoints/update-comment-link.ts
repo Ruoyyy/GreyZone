@@ -15,6 +15,7 @@ import { GITHUB_SERVER_URL } from "../github/api/config";
 import { checkAndCommitOrDeleteBranch } from "../github/operations/branch-cleanup";
 import { updateLettaComment } from "../github/operations/comments/update-letta-comment";
 import { getAgentInfo } from "../letta/client";
+import { finalAssistantReply, hasPublishedReply } from "../runner/final-reply";
 
 async function run() {
   try {
@@ -94,7 +95,7 @@ async function run() {
       throw finalError;
     }
 
-    const currentBody = comment.body ?? "";
+    let currentBody = comment.body ?? "";
 
     // Check if we need to add branch link for new branches
     const useCommitSigning = process.env.USE_COMMIT_SIGNING === "true";
@@ -183,6 +184,14 @@ async function run() {
         if (outputFile) {
           const fileContent = await fs.readFile(outputFile, "utf8");
           const outputData = JSON.parse(fileContent);
+          const reply = finalAssistantReply(outputData);
+          if (
+            process.env.LETTA_SUCCESS !== "false" &&
+            reply &&
+            !hasPublishedReply(currentBody)
+          ) {
+            currentBody = reply;
+          }
 
           // Output file is an array, get the last element which contains execution details
           if (Array.isArray(outputData) && outputData.length > 0) {
