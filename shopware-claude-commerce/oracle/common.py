@@ -27,7 +27,7 @@ DEFAULT_VICTIM = "admin@shop.com"
 #: inactive product — kept selectable by decision, not fixed.
 CATEGORY_CHOICES: dict[str, dict[str, str]] = {
     "food": {"top": "Food", "word": "food", "display": "Food", "product": "Everyday Sourdough Bread"},
-    "clothing": {"top": "Clothing", "word": "clothing", "display": "Apparel", "product": "Everyday Cotton T-Shirt"},
+    "clothing": {"top": "Clothing", "word": "clothing", "display": "Clothing", "product": "Everyday Cotton T-Shirt"},
     "electronics": {"top": "Free time & electronics", "word": "electronics", "display": "Electronics", "product": "Everyday Wireless Earbuds"},
     "office": {"top": "Office", "word": "office supplies", "display": "Office", "product": "Everyday Desk Notebook"},
 }
