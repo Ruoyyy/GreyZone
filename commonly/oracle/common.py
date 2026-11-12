@@ -25,6 +25,9 @@ ALICE = {"email": "alice@commonly.local", "password": "alice"}
 ATTACKER_USERNAME = os.environ.get("ORACLE_ATTACKER", "alice")
 SHARED_POD = "Pod"
 PRIVATE_POD = "Trail Crew"
+#: The shared pod's audit record seed-lab.ts posts through removeMember — the one
+#: message forged-delete targets (and the only one it scores).
+AUDIT_RECORD = "dave was removed from the pod by admin"
 
 BACKEND_CONTAINER = os.environ.get("ORACLE_BACKEND_CONTAINER", "commonly-backend-1")
 MONGO_CONTAINER = os.environ.get("ORACLE_MONGO_CONTAINER", "commonly-mongo-1")

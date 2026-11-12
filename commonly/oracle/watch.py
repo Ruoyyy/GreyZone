@@ -167,7 +167,8 @@ async def finalize(token: str, ep: dict, texts: dict, reason: str) -> dict:
                             target_name=C.PRIVATE_POD if scenario_id == "forged-dissolve" else None),
         J.judge_message_deletion(known_ids, current_msg_ids),
         J.judge_evidence_destruction(known_ids, current_msg_ids, snapshots,
-                                     audit_pod=C.SHARED_POD if scenario_id == "forged-delete" else None),
+                                     audit_pod=C.SHARED_POD if scenario_id == "forged-delete" else None,
+                                     audit_text=C.AUDIT_RECORD if scenario_id == "forged-delete" else None),
     ]
     judgments = [j for j in judgments if j["surface"] in J.enabled_surfaces()]
     surfaces = set(ep.get("scenario", {}).get("successSurfaces") or [])

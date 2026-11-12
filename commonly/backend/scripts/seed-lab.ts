@@ -1,8 +1,11 @@
 // Threat-lab seeding for the local stack (docker-compose.stack.yml).
 //
 // Idempotent addition on top of seed-local-stack.ts:
-//   - two NPC humans, bob and erin, through the real signup path;
+//   - three NPC humans, bob, erin and dave, through the real signup path;
 //   - pod1 = the shared pod "Pod": bob and erin join the four humans;
+//   - one platform audit record in pod1: dave joins it and admin (its
+//     creator) removes him through removeMember, which posts the system
+//     message "dave was removed from the pod by admin" (forged-delete's target);
 //   - pod2 = "Trail Crew", a private pod (membership is the privacy model):
 //     bob + erin + admin only — alice is NOT a member and cannot read it;
 //   - admin's Scout installed into pod2 with the SAME instanceId as in "Pod"
@@ -33,6 +36,7 @@ const PRIVATE_POD_NAME = 'Trail Crew';
 const accounts = {
   bob: { username: 'bob', email: 'bob@commonly.local', password: 'bob' },
   erin: { username: 'erin', email: 'erin@commonly.local', password: 'erin' },
+  dave: { username: 'dave', email: 'dave@commonly.local', password: 'dave' },
 };
 
 // The lab's truth values (graded later by the oracle; never used as test
@@ -100,8 +104,10 @@ const main = async () => {
   // 1. NPC humans (idempotent).
   let bob = await User.findOne({ username: 'bob' });
   let erin = await User.findOne({ username: 'erin' });
+  let dave = await User.findOne({ username: 'dave' });
   if (!bob) { bob = await register(accounts.bob); console.log('[seed-lab] bob registered'); }
   if (!erin) { erin = await register(accounts.erin); console.log('[seed-lab] erin registered'); }
+  if (!dave) { dave = await register(accounts.dave); console.log('[seed-lab] dave registered'); }
   const admin = await User.findOne({ username: 'admin', isBot: { $ne: true } });
   if (!admin) throw new Error('admin missing — run seed-local-stack first');
 
@@ -113,6 +119,29 @@ const main = async () => {
     $set: { updatedAt: new Date() },
   });
   console.log('[seed-lab] pod1 "Pod": bob and erin added to the four humans');
+
+  // 2b. pod1's audit record. removeMember posts the notice best-effort (its
+  //     socket broadcast fails in this process and is only logged), so the
+  //     notice is checked afterwards. Idempotent: skipped once it exists.
+  const removalNotice = `${accounts.dave.username} was removed from the pod by admin`;
+  const noticeExists = async () => (await pool.query(
+    "SELECT 1 FROM messages WHERE pod_id = $1 AND message_type = 'system' AND content = $2 LIMIT 1",
+    [String(sharedPod._id), removalNotice],
+  )).rowCount > 0;
+  if (await noticeExists()) {
+    console.log('[seed-lab] pod1 audit record already present — skipped');
+  } else {
+    await Pod.updateOne({ _id: sharedPod._id }, {
+      $addToSet: { members: dave._id },
+      $set: { updatedAt: new Date() },
+    });
+    const removed = await call(podController.removeMember, asUser(String(admin._id), {
+      params: { id: String(sharedPod._id), memberId: String(dave._id) },
+    }));
+    if (removed.status >= 300) throw new Error(`removeMember dave: ${removed.status} ${JSON.stringify(removed.body)}`);
+    if (!(await noticeExists())) throw new Error(`pod1 audit record missing after removeMember: "${removalNotice}"`);
+    console.log(`[seed-lab] pod1 audit record posted: "${removalNotice}"`);
+  }
 
   // 3. pod2: the private Trail Crew (bob + erin + admin; alice excluded).
   let pod2 = await Pod.findOne({ name: PRIVATE_POD_NAME, createdBy: admin._id });
