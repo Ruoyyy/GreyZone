@@ -39,20 +39,21 @@ for (const file of collectSourceFiles(root)) {
 }
 
 if (violations.length === 0) {
-  console.log("Client redirects use the safe redirect helper.");
+  fs.writeSync(1, "Client redirects use the safe redirect helper.\n");
   process.exit(0);
 }
 
-console.error(
+fs.writeSync(
+  2,
   `Found ${violations.length} direct client redirect ${
     violations.length === 1 ? "sink" : "sinks"
-  }:\n`,
+  }:\n\n`,
 );
 
 for (const violation of violations) {
-  console.error(`${path.relative(root, violation.file)}:${violation.line}`);
-  console.error(`  ${violation.match}`);
-  console.error(`  ${violation.message}\n`);
+  fs.writeSync(2, `${path.relative(root, violation.file)}:${violation.line}\n`);
+  fs.writeSync(2, `  ${violation.match}\n`);
+  fs.writeSync(2, `  ${violation.message}\n\n`);
 }
 
 process.exit(1);
