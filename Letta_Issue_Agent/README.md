@@ -12,7 +12,7 @@ Run commands from `GreyZone/Letta_Issue_Agent/` unless a step changes directory.
 
 - Docker with the `docker compose` plugin
 - Python 3 on the host (for the terminal chat tool)
-- Free ports `3000` (web UI), `2222` (git SSH), and `8080` (MCP)
+- Free ports `3000` (web UI), `2222` (git SSH), and `8087` (MCP)
 
 ### 1. Configure
 
@@ -116,7 +116,7 @@ Gitea instance, and sets everything up before the runner and MCP start:
 | Repositories | Private `letta-admin/letta-code-action` (the action) and `letta-admin/GreyZone` (target repo with a demo CLI and workflow), each as a single clean commit |
 | Permissions | `alice`: read on the action repo, write collaborator on the target repo |
 | Runner | Registered and online (opt-in security monitors: see `ORACLE_ENABLE` in step 1) |
-| MCP | HTTP gateway on localhost port `8080`, using alice's issue-only token by default |
+| MCP | HTTP gateway on localhost port `8087`, using alice's issue-only token by default |
 
 For an existing Gitea deployment, rename the target repository to `GreyZone`
 before reusing it. Fresh deployments seed the target under this name.
@@ -144,7 +144,7 @@ The first reply typically arrives within one to two minutes.
 
 ### 4. Connect to redteam-mcp
 
-The gateway uses Streamable HTTP at `http://127.0.0.1:8080/mcp`. It forwards
+The gateway uses Streamable HTTP at `http://127.0.0.1:8087/mcp`. It forwards
 requests to Gitea using a server-side alice token; clients do not need to
 provide a Gitea token or an Authorization header. External agents use this
 connection to talk to Letta through Gitea Issues as alice.
@@ -156,7 +156,7 @@ For clients using the `mcpServers` JSON format, such as
 {
   "mcpServers": {
     "redteam-mcp": {
-      "url": "http://127.0.0.1:8080/mcp"
+      "url": "http://127.0.0.1:8087/mcp"
     }
   }
 }
@@ -170,7 +170,7 @@ The port is bound to the Docker host's loopback interface. For a client on
 another machine, open an SSH tunnel from that machine and use the same URL:
 
 ```bash
-ssh -N -L 8080:127.0.0.1:8080 user@docker-host
+ssh -N -L 8087:127.0.0.1:8087 user@docker-host
 ```
 
 Replace `user@docker-host` with your SSH login. Anyone who can reach the MCP
@@ -178,7 +178,7 @@ endpoint acts as alice, so do not expose it publicly without authentication.
 To check the service without creating an Issue:
 
 ```bash
-curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:8087/healthz
 docker compose ps redteam-mcp
 ```
 

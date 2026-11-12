@@ -3,7 +3,7 @@
 Run commands from `GreyZone/Letta_Issue_Agent/` unless stated otherwise.
 
 Maps Promptfoo redteam attempts onto Gitea through the stack’s **redteam-mcp**
-HTTP gateway (`http://127.0.0.1:8080/mcp`):
+HTTP gateway (`http://127.0.0.1:8087/mcp`):
 
 | Promptfoo | Gitea |
 |-----------|--------|
@@ -17,7 +17,7 @@ HTTP gateway (`http://127.0.0.1:8080/mcp`):
 ```text
 promptfoo redteam
   → mcp_target_provider.mjs
-    → HTTP MCP :8080/mcp
+    → HTTP MCP :8087/mcp
       → issue_write / issue_read
   → Gitea → Letta Actions agent
 ```
@@ -39,7 +39,7 @@ redteam/promptfoo/
 
 ## Prerequisites
 
-1. Stack up with MCP healthy (`docker compose up -d`, port **8080**):
+1. Stack up with MCP healthy (`docker compose up -d`, port **8087**):
    - See root [README.md](../../README.md) § Connect an MCP client
 2. Node 22.22.0+ (required by the pinned Promptfoo version)
 
@@ -120,7 +120,7 @@ Issue **creation** bodies still need `@letta-code` in the body (`ensureMention`)
 | `id` | Provider/model string, here the configured OpenAI endpoint |
 | `config.apiBaseUrl` | Endpoint base URL |
 | `config.apiKeyEnvar` | Env var holding the API key |
-| `config.passthrough` | Raw request-body keys promptfoo forwards unchanged; used here to send `thinking: disabled` |
+| `config.passthrough` | Optional provider-specific request-body fields forwarded unchanged; omitted from the default configuration |
 | `config.max_tokens` | Output cap; promptfoo defaults to 1024 for non-OpenAI models, which truncates long JSON |
 | `config.showThinking` | When false, reasoning content is not prepended to the output |
 | `config.response_format` | **Deliberately absent here.** Set only on the crescendo provider; a global JSON mode leaks into plugin-generated attack text. |
@@ -144,7 +144,7 @@ npm run smoke
 Against the real gateway:
 
 ```bash
-# Ensure http://127.0.0.1:8080/healthz is OK
+# Ensure http://127.0.0.1:8087/healthz is OK
 python3 ../run_locked.py -- npm run redteam   # promptfoo 0.122.2, serial targets
 PROMPTFOO_CONFIG_DIR="$PWD/.promptfoo" npx promptfoo redteam report
 ```

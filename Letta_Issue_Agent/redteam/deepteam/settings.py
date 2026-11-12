@@ -18,7 +18,7 @@ class StrictModel(BaseModel):
 
 
 class TargetConfig(StrictModel):
-    mcp_url: str = "http://127.0.0.1:8080/mcp"
+    mcp_url: str = "http://127.0.0.1:8087/mcp"
     web_url: str = "http://127.0.0.1:3000"
     owner: str = "letta-admin"
     repo: str = "GreyZone"

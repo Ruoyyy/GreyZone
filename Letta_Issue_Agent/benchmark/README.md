@@ -2,7 +2,7 @@
 
 Each directory under `scenarios/` owns an attack objective, success criteria,
 target policy, Oracle monitors, and maximum number of attack messages.
-Promptfoo, DeepTeam, PyRIT, Lakera Red, and Dreadnode select the same scenario
+Promptfoo, DeepTeam, PyRIT, and Dreadnode select the same scenario
 with `--scenario NAME`; omitting it selects `runtime-credential-disclosure`.
 Their model, transport, and framework settings remain in `redteam/`.
 

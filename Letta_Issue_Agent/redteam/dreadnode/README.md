@@ -20,11 +20,12 @@ Dreadnode letta-attacker
 - Install and authenticate the Dreadnode CLI (`dn login`), with Python 3.11+.
   See the [official Quickstart](https://docs.dreadnode.io/capabilities/quickstart/).
 - Configure a model that supports tool calling in Dreadnode. This capability
-  uses `model: inherit`. It does not change Letta's model or automatically load
-  the target model configuration from the project's root `.env` file.
+  uses `model: inherit`. The supplied `.env` template sources the application
+  root `.env` and selects `openai/${OPENAI_MODEL}`; local overrides can select
+  a different attacker without changing Letta's model.
 - Start the existing Docker environment. The default MCP endpoint is
-  `http://127.0.0.1:8080/mcp`. Check its health with
-  `curl --fail http://127.0.0.1:8080/healthz`.
+  `http://127.0.0.1:8087/mcp`. Check its health with
+  `curl --fail http://127.0.0.1:8087/healthz`.
 - Run campaigns serially. Do not run promptfoo or another attack campaign
   concurrently.
 
@@ -37,7 +38,7 @@ Local credentials and runtime settings share one file; task content is separate:
 | File | Purpose | Git policy |
 | --- | --- | --- |
 | `.env` | Provider credentials, attacker model, step budget, and MCP URL | Ignored; owner-only permissions |
-| `.env.example` | Configuration template with an empty API key | Safe to commit |
+| `.env.example` | Configuration template inheriting the application credentials | Safe to commit |
 | `instructions.md` | Dreadnode-specific issue workflow | Review before committing; no credentials |
 | `capability.yaml` | Native Dreadnode capability and MCP declaration | Safe to commit |
 | `agents/letta-attacker.md` | Stable attacker instructions and tool access | Safe to commit |
@@ -54,14 +55,16 @@ environment variables and maps session settings to official CLI flags:
 | `.env`: `GITEA_MCP_URL` | Environment interpolation in `capability.yaml` |
 | Shared benchmark objective plus `instructions.md` | `--prompt` as one argument |
 
-1. Copy `redteam/dreadnode/.env.example` to `redteam/dreadnode/.env`, fill in
-   `OPENAI_API_KEY`, and run `chmod 600 redteam/dreadnode/.env`.
+1. Configure `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` in the
+   application root `.env`. Copy `redteam/dreadnode/.env.example` to
+   `redteam/dreadnode/.env` and run `chmod 600 redteam/dreadnode/.env`.
+   The template sources the application configuration without copying its key.
 2. Edit the runtime settings in the same `.env` as needed:
 
    ```bash
-   DREADNODE_ATTACKER_MODEL='openai/gpt-4o'
+   DREADNODE_ATTACKER_MODEL="openai/${OPENAI_MODEL}"
    DREADNODE_MAX_STEPS=100
-   GITEA_MCP_URL='http://127.0.0.1:8080/mcp'
+   GITEA_MCP_URL='http://127.0.0.1:8087/mcp'
    ```
 
 3. Edit the shared benchmark scenario to change the attack goal or turn budget.
@@ -86,8 +89,8 @@ python3 redteam/run_locked.py -- bash redteam/dreadnode/run.sh --print
 
 The launcher sources `.env` using Bash assignment syntax, but
 reads the shared benchmark objective and `instructions.md` as text. The API key is passed through the process
-environment, never as a CLI argument. Existing shell credentials can also be
-used by leaving that assignment out of `.env`. The selected model must be
+environment, never as a CLI argument. The template loads application settings first; assignments after the `source`
+line override them for Dreadnode only. The selected model must be
 available to your OpenAI account. Dreadnode platform login (`dn login`) is
 separate from the provider API key.
 
@@ -110,6 +113,20 @@ uv tool install --python python3.11 'dreadnode==2.0.46'
 
 Open a new terminal after installation, or add `~/.local/bin` to `PATH`.
 Run `dn login` before first use.
+
+The pinned Gitea MCP SDK returns a plain-text HTTP 400 for Dreadnode 2.0.46's
+empty JSON probe. The client can mistake that response for an SSE-only endpoint
+and fail with GET HTTP 405, leaving the agent without MCP tools. Apply the local
+compatibility fix after installing or reinstalling this CLI version:
+
+```bash
+# Use the Python interpreter from the uv-installed Dreadnode environment.
+~/.local/share/uv/tools/dreadnode/bin/python redteam/dreadnode/fix_mcp_probe.py
+```
+
+The script checks the installed version and source before changing its probe
+recognition. Only the Go SDK's exact invalid-version response is added; other
+errors and authentication behavior remain unchanged. It is safe to rerun.
 
 From the project root, run:
 
@@ -165,7 +182,7 @@ The capability connects directly to the existing Streamable HTTP MCP gateway.
 To override its address:
 
 ```bash
-export GITEA_MCP_URL=http://127.0.0.1:8080/mcp
+export GITEA_MCP_URL=http://127.0.0.1:8087/mcp
 dn --capability letta-redteam --agent letta-attacker
 ```
 
