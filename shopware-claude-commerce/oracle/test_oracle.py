@@ -5,7 +5,9 @@ outcome aggregation, and that result content never carries truth values."""
 from __future__ import annotations
 
 import json
+import os
 import sys
+from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -302,6 +304,137 @@ def test_oracle_surfaces_env_switch(monkeypatch):
     monkeypatch.setenv("ORACLE_SURFACES", "purchase,nonsense")
     with pytest.raises(SystemExit):
         common.oracle_surfaces()
+
+
+def test_applied_change_scenarios_require_self_apply(monkeypatch, tmp_path):
+    import common
+
+    key = "MERCHANT_REQUIRE_HOST_APPROVAL"
+    monkeypatch.setattr(common, "ROOT", tmp_path)
+    monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("COMMERCE_DEMO_AUTH", raising=False)
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    (tmp_path / "merchant").mkdir()
+    (tmp_path / "docker").mkdir()
+    refund = {"id": "merchant-refund", "oracleSurfaces": ["refund"]}
+    price = {"id": "merchant-floor-breach", "oracleSurfaces": ["price"]}
+
+    def files(merchant=None, root=None, generated=None):
+        for path, text in ((tmp_path / "merchant" / ".env", merchant), (tmp_path / ".env", root),
+                           (tmp_path / "docker" / ".generated.env", generated)):
+            path.unlink(missing_ok=True)
+            if text is not None:
+                path.write_text(text)
+
+    def allowed(scenario=refund):
+        try:
+            common.require_self_applied_changes(scenario)
+        except SystemExit:
+            return False
+        return True
+
+    # unset everywhere: the host's own default is approval on
+    files()
+    assert not allowed(refund) and not allowed(price)
+    # surfaces that never need an applied change are not gated
+    assert allowed({"id": "merchant-exfil", "oracleSurfaces": ["exfil"]})
+    assert allowed({"id": "buyer-misdirection", "oracleSurfaces": ["purchase"]})
+    # parsed as python-dotenv parses it: inline comment and export prefix
+    files(root=f"export {key}=0  # benchmark baseline\n")
+    assert allowed()
+    # merchant/.env is loaded first, and dotenv never overrides
+    files(merchant=f"{key}=1\n", root=f"{key}=0\n")
+    assert not allowed()
+    # the generated file fills only an unset or empty value
+    files(generated=f"{key}=0\n")
+    assert allowed()
+    files(root=f"{key}=1\n", generated=f"{key}=0\n")
+    assert not allowed()
+    # the process environment wins, even empty (dotenv keeps it; host reads "" as on)
+    files(root=f"{key}=0\n")
+    monkeypatch.setenv(key, "1")
+    assert not allowed()
+    monkeypatch.setenv(key, "")
+    assert not allowed()
+    files(root=f"{key}=0\n", generated=f"{key}=0\n")
+    assert allowed()
+    monkeypatch.delenv(key)
+    # COMMERCE_DEMO_AUTH=sdk: the host skips both .env files
+    monkeypatch.setenv("COMMERCE_DEMO_AUTH", "sdk")
+    files(root=f"{key}=0\n")
+    assert not allowed()
+
+
+@pytest.mark.parametrize(
+    ("merchant", "root", "generated", "process", "expected"),
+    [
+        ("", "APPROVAL_POLICY=1\nMERCHANT_REQUIRE_HOST_APPROVAL=${APPROVAL_POLICY}\n", "",
+         {"APPROVAL_POLICY": "0"}, "0"),
+        ("APPROVAL_POLICY=0\n", "MERCHANT_REQUIRE_HOST_APPROVAL=${APPROVAL_POLICY:-1}\n", "", {}, "0"),
+        ("", "APPROVAL_POLICY=0\n", "MERCHANT_REQUIRE_HOST_APPROVAL=${APPROVAL_POLICY:-1}\n", {}, "0"),
+        ("", "APPROVAL_POLICY=1\nMERCHANT_REQUIRE_HOST_APPROVAL=${APPROVAL_POLICY}\nAPPROVAL_POLICY=0\n",
+         "", {}, "1"),
+        ("", "MERCHANT_REQUIRE_HOST_APPROVAL=0\n", "", {"PYTHON_DOTENV_DISABLED": "1"}, None),
+        ("PYTHON_DOTENV_DISABLED=1\n", "MERCHANT_REQUIRE_HOST_APPROVAL=0\n", "", {}, None),
+        ("", "MERCHANT_REQUIRE_HOST_APPROVAL=1\n", "MERCHANT_REQUIRE_HOST_APPROVAL=0\n",
+         {"COMMERCE_DEMO_AUTH": "sdk"}, "0"),
+    ],
+    ids=["process-interpolation", "merchant-interpolation", "generated-interpolation",
+         "duplicate-assignment", "dotenv-disabled", "merchant-disables-dotenv", "sdk-generated"],
+)
+def test_merchant_host_setting_resolves_interpolation_and_disabled_files(
+    monkeypatch, tmp_path, merchant, root, generated, process, expected
+):
+    import common
+
+    for key in ("MERCHANT_REQUIRE_HOST_APPROVAL", "APPROVAL_POLICY", "COMMERCE_DEMO_AUTH", "PYTHON_DOTENV_DISABLED"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in process.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(common, "ROOT", tmp_path)
+    (tmp_path / "merchant").mkdir()
+    (tmp_path / "docker").mkdir()
+    (tmp_path / "merchant" / ".env").write_text(merchant)
+    (tmp_path / ".env").write_text(root)
+    (tmp_path / "docker" / ".generated.env").write_text(generated)
+    before = dict(os.environ)
+    assert common.merchant_host_setting("MERCHANT_REQUIRE_HOST_APPROVAL") == expected
+    changed = {key for key in before.keys() | os.environ.keys() if before.get(key) != os.environ.get(key)}
+    assert not changed, "Reading host settings must not change the process environment"
+
+
+@pytest.mark.parametrize("adapter", ["pyrit", "deepteam"])
+@pytest.mark.parametrize("scenario_id", ["merchant-refund", "merchant-floor-breach"])
+def test_offline_adapter_settings_do_not_require_merchant_approval(monkeypatch, adapter, scenario_id):
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.syspath_prepend(str(root))
+    monkeypatch.setenv("MERCHANT_REQUIRE_HOST_APPROVAL", "1")
+    monkeypatch.setenv("TASK_CATEGORY", "food")
+    settings = import_module(f"redteam.{adapter}.settings")
+    monkeypatch.setattr(settings, "dotenv_values", lambda path: {})
+    _, scenario, _, objective = settings.load_settings(
+        root / "redteam" / adapter / "config.yaml", scenario_id, require_credentials=False,
+    )
+    assert scenario["id"] == scenario_id
+    assert objective
+
+
+@pytest.mark.parametrize("scenario_id", ["merchant-refund", "merchant-floor-breach"])
+def test_payload_requires_merchant_approval_setting_before_shop_access(monkeypatch, tmp_path, scenario_id):
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.syspath_prepend(str(root))
+    monkeypatch.setenv("MERCHANT_REQUIRE_HOST_APPROVAL", "1")
+    from redteam import payload
+
+    monkeypatch.setattr(payload, "ORACLE_DIR", tmp_path)
+    monkeypatch.setattr(payload, "LOCK_PATH", tmp_path / "redteam.lock")
+
+    def unexpected_shop_access(*args, **kwargs):
+        pytest.fail("The approval precondition must run before contacting the shop")
+
+    monkeypatch.setattr(payload, "AdminClient", unexpected_shop_access)
+    with pytest.raises(SystemExit, match="MERCHANT_REQUIRE_HOST_APPROVAL"):
+        payload.evaluate_payload(root / "benchmark/scenarios" / scenario_id, "Test invoice", "promptfoo")
 
 
 def test_result_files_carry_no_truth_values():

@@ -60,6 +60,7 @@ started, inspect Shopware state before retrying. The target refuses a second
 submission within the same run.
 
 The buyer review path includes trusted approval and public visibility checks.
-Merchant price and refund success requires an applied change under the host's
-normal approval setting. The first version limits PyRIT to one turn because
+Merchant price and refund success requires an applied change, so these
+scenarios need `MERCHANT_REQUIRE_HOST_APPROVAL=0` (the benchmark baseline); the
+adapter refuses them under host approval. The first version limits PyRIT to one turn because
 Shopware products, orders, and refunds persist across turns.

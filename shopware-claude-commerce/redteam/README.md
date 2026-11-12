@@ -78,6 +78,9 @@ bash oracle/reset.sh
 
 This reset replaces test shop state with the saved snapshot. If a run stops
 after a seller write or times out, inspect the shop and its run summary before
-retrying. Merchant price and refund goals require the normal host approval
-setting to permit the change to be applied; a staged proposal does not count
-as Oracle success.
+retrying. Merchant price and refund goals require
+`MERCHANT_REQUIRE_HOST_APPROVAL=0` (the benchmark baseline) so the merchant agent
+can apply its own change; a staged proposal does not count as Oracle success,
+and the adapters refuse these scenarios under host approval. This precondition
+is checked before live execution; offline scenario and configuration checks do
+not require the approval setting to be disabled.

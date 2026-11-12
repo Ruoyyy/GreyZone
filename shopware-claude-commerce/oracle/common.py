@@ -76,6 +76,70 @@ def oracle_surfaces() -> tuple[str, ...]:
     return chosen
 
 
+#: Surfaces judged on an applied merchant change; a staged proposal never counts.
+APPLIED_CHANGE_SURFACES = ("price", "refund")
+
+
+def merchant_host_setting(name: str) -> str | None:
+    """``name`` as the merchant host resolves it at startup: ``demo_common.host.load_demo_env``
+    (the process environment, then ``merchant/.env``, then ``.env``, python-dotenv never
+    overriding a variable already present, even an empty one; both files skipped under
+    ``COMMERCE_DEMO_AUTH=sdk``), then ``merchant/api/main.py``'s pass over
+    ``docker/.generated.env``, which fills only a variable that is unset or empty.
+    ``dev.sh`` starts the hosts from its caller's environment, so this matches the
+    running host when it was started from the same shell and the files have not
+    changed since."""
+    from dotenv.main import DotEnv
+    from dotenv.variables import parse_variables
+
+    values = dict(os.environ)
+    paths = []
+    if values.get("COMMERCE_DEMO_AUTH", "").lower() == "sdk":
+        values.pop("ANTHROPIC_API_KEY", None)
+        values.pop("ANTHROPIC_AUTH_TOKEN", None)
+    else:
+        paths.extend([(ROOT / "merchant" / ".env", False), (ROOT / ".env", False)])
+    paths.append((ROOT / "docker" / ".generated.env", True))
+    for path, generated in paths:
+        if (not generated and values.get("PYTHON_DOTENV_DISABLED", "").lower()
+                in {"1", "true", "t", "yes", "y"}):
+            continue
+        # Resolve interpolation against earlier files as load_dotenv would,
+        # while keeping the caller's environment and credentials unchanged.
+        parsed: dict[str, str | None] = {}
+        for key, raw in DotEnv(path, interpolate=False).parse():
+            context = {**values, **parsed} if generated else {**parsed, **values}
+            parsed[key] = (
+                None if raw is None else
+                "".join(atom.resolve(context) for atom in parse_variables(raw))
+            )
+        for key, value in parsed.items():
+            if generated:
+                if value and not values.get(key):
+                    values[key] = value
+            elif value is not None:
+                values.setdefault(key, value)
+    return values.get(name)
+
+
+def require_self_applied_changes(scenario: dict[str, Any]) -> None:
+    """Refuse a price/refund scenario under host approval. The benchmark baseline runs
+    with ``MERCHANT_REQUIRE_HOST_APPROVAL=0``; any other value, unset included, makes the
+    host hold every staged change for an operator click no runner makes
+    (``demo_common.host.host_approval_default``), so the surface could never fire."""
+    if not set(APPLIED_CHANGE_SURFACES) & set(scenario.get("oracleSurfaces", [])):
+        return
+    value = merchant_host_setting("MERCHANT_REQUIRE_HOST_APPROVAL")
+    if (value if value is not None else "1") != "0":
+        shown = "unset" if value is None else repr(value)
+        raise SystemExit(
+            f"scenario {scenario.get('id')!r} judges an applied price/refund change, but the "
+            f"merchant host resolves MERCHANT_REQUIRE_HOST_APPROVAL as {shown}, so it would "
+            "only stage it. Set it to 0 (the benchmark baseline) — the process environment "
+            "wins over merchant/.env, which wins over .env — and restart the hosts."
+        )
+
+
 def emit(path: Path, event: str, **fields: Any) -> None:
     """Append one JSONL evidence record — timestamps UTC, no truth values."""
     record = {

@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from oracle.common import ORACLE_DIR, task_category  # noqa: E402
+from oracle.common import ORACLE_DIR, require_self_applied_changes, task_category  # noqa: E402
 from oracle.shop import AdminClient, load_env, snapshot_state  # noqa: E402
 from redteam.common import (  # noqa: E402
     LOCK_PATH,
@@ -69,6 +69,7 @@ def main() -> int:
 
     scenario_dir = ROOT / "benchmark" / "scenarios" / args.scenario
     scenario = load_scenario(scenario_dir)
+    require_self_applied_changes(scenario)
     choice = task_category()
     objective = (scenario_dir / scenario["objectiveFile"]).read_text(encoding="utf-8")
     objective = objective.replace("{category}", choice["display"]).replace(

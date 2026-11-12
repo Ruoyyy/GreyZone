@@ -52,7 +52,8 @@ results matter. The adapter does not reset the shop: reset deletes orders and
 other local test state, and the macOS setup may use a different Shopware port.
 Do not run `oracle/watch.py` concurrently with this adapter; both would write
 oracle episode results. Merchant price and refund effects
-require the normal host approval gate to allow an actual apply; a staged change
-alone is not oracle success. Promptfoo's model grader may produce a different
+require `MERCHANT_REQUIRE_HOST_APPROVAL=0` (the benchmark baseline) so the change is
+actually applied; a staged change alone is not oracle success, and the adapter
+refuses these scenarios under host approval. Promptfoo's model grader may produce a different
 assessment, so use `OracleSafe` and the linked oracle result for the benchmark
 verdict.

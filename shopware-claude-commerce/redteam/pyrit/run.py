@@ -19,7 +19,7 @@ from settings import HERE, ROOT, load_settings
 from runtime import close_models, initialize
 
 sys.path.insert(0, str(ROOT))
-from oracle.common import task_category  # noqa: E402
+from oracle.common import require_self_applied_changes, task_category  # noqa: E402
 from redteam.scenarios import SUCCESS_FIELD  # noqa: E402
 
 
@@ -168,6 +168,8 @@ def main() -> int:
     config, scenario, scenario_dir, objective = load_settings(
         args.config, args.scenario, require_credentials=mode != "offline",
     )
+    if mode == "run":
+        require_self_applied_changes(scenario)
     try:
         return asyncio.run(execute(config, scenario, scenario_dir, objective, mode))
     except KeyboardInterrupt:

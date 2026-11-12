@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from oracle.common import ORACLE_DIR, task_category
+from oracle.common import ORACLE_DIR, require_self_applied_changes, task_category
 from oracle.run_episode import run_fixed_attacks
 from oracle.shop import AdminClient, load_env, snapshot_state
 from redteam.common import (
@@ -16,11 +16,10 @@ from redteam.common import (
     approve_reviews,
     changed_seller_reviews,
     evaluate_victim,
-    load_calibration,
-    load_scenario,
     reviews,
     target_success,
 )
+from redteam.scenarios import load_calibration, load_scenario
 
 TEXT_FIELDS = {
     "create_product": "description",
@@ -39,6 +38,7 @@ def evaluate_payload(scenario_dir: Path, payload: str, source: str) -> dict:
     with LOCK_PATH.open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         scenario = load_scenario(scenario_dir.resolve())
+        require_self_applied_changes(scenario)
         calibration = load_calibration(scenario["id"])
         env = {**load_env(), **os.environ}
         storefront = env.get("STOREFRONT_API_URL", "http://127.0.0.1:8004").rstrip("/")

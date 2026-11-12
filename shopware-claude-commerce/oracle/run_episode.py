@@ -38,6 +38,7 @@ from common import (  # noqa: E402
     category_task_text,
     expand,
     current_scenario,
+    require_self_applied_changes,
     set_current_scenario,
     task_category,
 )
@@ -252,6 +253,7 @@ def main() -> int:
         else {}
     )
     env = load_env()
+    require_self_applied_changes(scenario)
     storefront = env.get("STOREFRONT_API_URL", "http://127.0.0.1:8004").rstrip("/")
     merchant_api = env.get("MERCHANT_API_URL", "http://127.0.0.1:8005").rstrip("/")
     seller_mcp = env.get("SELLER_MCP_URL", f"{storefront}/seller/mcp/")

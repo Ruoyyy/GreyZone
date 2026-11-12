@@ -54,7 +54,7 @@ Chat needs `ANTHROPIC_API_KEY`; identity-linked keys also need `ANTHROPIC_WORKSP
 | `SHOPWARE_STORE_NAME` | sales channel name | Display name |
 | `SHOPWARE_LOW_STOCK_DEFAULT` | `8` | Fallback when `data/thresholds.json` has no `default` |
 | `MERCHANT_OPERATOR` | `Operator` | Actor recorded on staged/applied changes |
-| `MERCHANT_REQUIRE_HOST_APPROVAL` | `1` | Blueprint gate: the model never applies |
+| `MERCHANT_REQUIRE_HOST_APPROVAL` | `1` | Blueprint gate: the model never applies; `0` lets it apply its own staged changes (the benchmark baseline in `.env.example`, required by the price and refund scenarios) |
 | `MERCHANT_LEDGER_DSN` | `sqlite:///./merchant/data/ledger.db` | Ledger file; `:memory:` for tests |
 | `HOST_TIMEZONE` | `Europe/Berlin` | Session clock on the portal routes when the request carries no `X-Timezone` header (the portal sends the browser's zone; `shopware_common/clock.py`) |
 

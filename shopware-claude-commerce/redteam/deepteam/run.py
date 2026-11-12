@@ -20,6 +20,7 @@ os.environ["TELEMETRY_OPT_OUT"] = "1"
 import httpx
 
 from settings import HERE, ROOT, SUCCESS_FIELD, load_settings
+from oracle.common import require_self_applied_changes
 from redteam.scenarios import load_calibration
 
 
@@ -194,6 +195,8 @@ def main() -> int:
     config, scenario, scenario_dir, objective = load_settings(
         args.config, args.scenario, require_credentials=mode != "offline",
     )
+    if mode == "run":
+        require_self_applied_changes(scenario)
     try:
         return asyncio.run(execute(config, scenario, scenario_dir, objective, mode))
     except KeyboardInterrupt:
