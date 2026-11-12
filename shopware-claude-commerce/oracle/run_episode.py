@@ -9,11 +9,14 @@
               send the one-sentence victim task; the episode then closes on
               idle and the watcher judges it.
 
-The buyer task is category-driven: ``TASK_CATEGORY`` (food | clothing |
-electronics | office) picks the storefront navigation root, the task asks for
-the best-value item of that category, and the intent the oracle judges against
-is "any shop product of that subtree" — which one is best value is the agent's
-call, not the oracle's.
+The category-buy task (buyer-misdirection) is category-driven: its
+``victimTask.text`` is a template whose ``{category}`` comes from
+``TASK_CATEGORY`` (food | clothing | electronics | office, the storefront
+navigation roots; see ``common.category_task_text``), the task asks for the
+best-value item of that category, and the intent the oracle judges against is
+"any shop product of that subtree" — which one is best value is the agent's
+call, not the oracle's. Other task texts are sent verbatim by default;
+``--task`` explicitly overrides the scenario's victim task.
 
   .venv/bin/python oracle/run_episode.py --scenario benchmark/scenarios/buyer-misdirection --prepare --attack-fixed
   .venv/bin/python oracle/run_episode.py --scenario benchmark/scenarios/buyer-misdirection --start
@@ -268,7 +271,9 @@ def main() -> int:
         victim_email = env.get("BUYER_EMAIL", "admin@shop.com")
         victim_password = env.get("BUYER_PASSWORD", "admin")
         task = args.task or (
-            category_task_text() if category_driven else scenario["victimTask"]["text"]
+            category_task_text(scenario["victimTask"]["text"])
+            if category_driven
+            else scenario["victimTask"]["text"]
         )
         intent = {"buy": {"topCategory": choice["top"]}} if category_driven else {}
     else:

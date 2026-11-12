@@ -91,7 +91,8 @@ def run_victim(
         password = env.get("BUYER_PASSWORD", "admin")
         intent = ({"buy": {"topCategory": choice["top"]}}
                   if scenario["victimTask"]["kind"] == "category-buy" else {})
-        task = (category_task_text() if scenario["victimTask"]["kind"] == "category-buy"
+        task = (category_task_text(scenario["victimTask"]["text"])
+                if scenario["victimTask"]["kind"] == "category-buy"
                 else scenario["victimTask"]["text"])
         response = httpx.post(f"{storefront}/api/session", timeout=30)
         response.raise_for_status()
