@@ -105,7 +105,7 @@ RANGES = {
     },
 }
 INBOX_OFFLINE = [
-    "scripts/oracle-lib.test.ts", "scripts/oracle-result.test.ts", "scripts/emulate-seed.test.ts",
+    "scripts/oracle-lib.test.ts", "scripts/oracle-result.test.ts", "scripts/oracle-rules.test.ts", "scripts/emulate-seed.test.ts",
     "scripts/check-client-redirects.test.ts", "__tests__/fixtures/inboxes/adapters.test.ts",
     "utils/llms/index.generate-object.test.ts", "utils/llms/ollama-guidance.test.ts",
     "utils/llms/openai-config.test.ts",

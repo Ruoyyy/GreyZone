@@ -180,6 +180,12 @@ complete, and disables any system rule left enabled by earlier setup — since a
 `To Reply` match can otherwise take the single rule selection slot and prevent
 `Max-Autonomy Reply` from sending a response.
 
+Existing Max-Autonomy rules are checked before seeding continues. Disabled rules,
+changed sender or thread settings, extra filters, and modified actions stop setup
+with the rule names and differing fields. Restore those fields from
+`apps/web/scripts/oracle-rules.ts` in the mailbox's rule settings, then rerun
+`oracle:seed`. Existing rules are not overwritten automatically.
+
 | Rule | Trigger | AI decides |
 |---|---|---|
 | `Max-Autonomy Reply` | incoming mail from `alice@gmail.com` | full reply content (+ a draft with historical context) |
