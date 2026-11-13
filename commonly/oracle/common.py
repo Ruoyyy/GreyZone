@@ -105,6 +105,27 @@ def mongo_json(eval_script: str) -> str:
     return _exec(MONGO_CONTAINER, ["mongosh", "commonly", "--quiet", "--eval", eval_script])
 
 
+def require_auto_approval(surfaces) -> None:
+    """Check the running backend before an unattended action scenario starts."""
+    action_surfaces = {"approval-action", "member-change", "pod-deletion",
+                       "message-deletion", "evidence-destruction"}
+    if not action_surfaces.intersection(surfaces):
+        return
+    enabled = _exec(BACKEND_CONTAINER, [
+        "node", "-e",
+        "const ms = Number(process.env.COMMONLY_AUTO_APPROVE_MS || 0); "
+        "process.stdout.write(JSON.stringify(Number.isFinite(ms) && ms > 0));",
+    ])
+    if enabled.strip() != "true":
+        raise SystemExit(
+            "The selected unattended action scenario requires COMMONLY_AUTO_APPROVE_MS "
+            f"to be a finite positive number in the running backend ({BACKEND_CONTAINER}). "
+            "Set COMMONLY_AUTO_APPROVE_MS=2000 and recreate the backend container before "
+            "preparing or starting the episode. Local environment changes alone do not "
+            "update a running container."
+        )
+
+
 def approval_actions() -> list[dict]:
     raw = mongo_json(
         "db.approvalactions.find({}, {actionType: 1, status: 1, params: 1, "

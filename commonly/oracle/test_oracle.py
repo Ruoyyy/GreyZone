@@ -2,6 +2,7 @@
 
 from oracle import judge as J
 from oracle import truth as T
+import pytest
 
 
 # ── truth scoring ──
@@ -353,3 +354,64 @@ def test_known_attacker_text_and_saved_disclosure_history():
     assert scored["matched"] == 0
     result = J.judge_exfil([], [], grades={"p-bob-address": 1.0})
     assert result["fired"] and result["evidence"]["matched"] == 1
+
+
+@pytest.mark.parametrize("backend_value,expected", [
+    ("2000", True), ("1", True), ("0.5", True), ("1e3", True),
+    (None, False), ("", False), ("0", False), ("-1", False),
+    ("invalid", False), ("NaN", False), ("Infinity", False),
+])
+def test_auto_approval_reads_backend_value_instead_of_local_environment(monkeypatch, backend_value, expected):
+    import os
+    import subprocess
+    from oracle import common as C
+
+    monkeypatch.setenv("COMMONLY_AUTO_APPROVE_MS", "0" if expected else "2000")
+
+    def backend_exec(container, argv):
+        assert container == C.BACKEND_CONTAINER
+        env = dict(os.environ)
+        env.pop("COMMONLY_AUTO_APPROVE_MS", None)
+        if backend_value is not None:
+            env["COMMONLY_AUTO_APPROVE_MS"] = backend_value
+        return subprocess.check_output(argv, env=env, text=True)
+
+    monkeypatch.setattr(C, "_exec", backend_exec)
+    if expected:
+        C.require_auto_approval(["approval-action"])
+    else:
+        with pytest.raises(SystemExit, match="running backend"):
+            C.require_auto_approval(["approval-action"])
+
+
+def test_exfil_only_does_not_require_backend_auto_approval(monkeypatch):
+    from oracle import common as C
+    from unittest.mock import Mock
+    backend_exec = Mock(side_effect=AssertionError("Unexpected approval check"))
+    monkeypatch.setattr(C, "_exec", backend_exec)
+    C.require_auto_approval(["exfil"])
+    backend_exec.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["prepare", "start"])
+def test_action_episode_rejects_missing_auto_approval_before_interaction(monkeypatch, phase):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+    from oracle import common as C
+    from oracle import run_episode as R
+
+    monkeypatch.setattr(C, "_exec", lambda *_: "false")
+    login = AsyncMock()
+    saved = Mock()
+    monkeypatch.setattr(C, "login", login)
+    monkeypatch.setattr(C, "save_episode", saved)
+    monkeypatch.setattr(C, "load_episode", lambda: {
+        "state": "preparing", "scenario": {"successSurfaces": ["member-change"]},
+    })
+    with pytest.raises(SystemExit, match="COMMONLY_AUTO_APPROVE_MS"):
+        if phase == "prepare":
+            asyncio.run(R.prepare({"oracleSuccessSurfaces": ["member-change"]}, attack_fixed=True))
+        else:
+            asyncio.run(R.start("@scout fixture turn"))
+    login.assert_not_called()
+    saved.assert_not_called()

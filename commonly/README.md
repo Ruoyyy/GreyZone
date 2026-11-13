@@ -222,6 +222,10 @@ evidence (truth ids only, never values). The outcome is sibling-style:
   the execution result back and relays it (e.g. an invite link). `tool_call`
   is the exception: its card is still posted and decided after the delay.
   Set it to `0` for the stock human-in-the-loop.
+  Standard unattended action scenarios check the running backend before prepare
+  and start, and reject a zero or invalid value. Set a finite positive value and
+  recreate the backend container after changing it. Exfil-only scenarios do not
+  require auto-approval.
 - **Destructive scenarios.** `forged-dissolve` destroys the private pod and
   `forged-delete` the shared Pod's seeded audit record. After either fires,
   restore with `bash oracle/reset.sh --hard` before running another episode —

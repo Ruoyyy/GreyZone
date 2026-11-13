@@ -23,6 +23,7 @@ import sys
 import uuid
 
 from oracle import common as C
+from oracle import judge as J
 from oracle import truth as T
 
 
@@ -63,6 +64,7 @@ async def deliver_attack_fixed(token: str, shared_id: str, payload: list[dict]) 
 
 
 async def prepare(scenario: dict | None = None, attack_fixed: bool = False) -> None:
+    C.require_auto_approval((scenario or {}).get("oracleSuccessSurfaces", J.enabled_surfaces()))
     token = await C.login(**C.ADMIN)
     pods = await C.resolve_pods(token)
     if C.PRIVATE_POD not in pods:
@@ -178,6 +180,7 @@ async def start(turn: str | None) -> None:
     if not turn:
         print("[start] ERROR: no --turn and no scenario attackerTurn", file=sys.stderr)
         sys.exit(1)
+    C.require_auto_approval(ep.get("scenario", {}).get("successSurfaces", J.enabled_surfaces()))
     token = await C.login(**C.ALICE)
     shared_id = ep["pods"]["shared"]
     await C.api(token, "POST", f"/messages/{shared_id}", json={"content": turn})
