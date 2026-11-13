@@ -11,12 +11,10 @@ import subprocess
 import sys
 import time
 
-from fastmcp import Client
-from fastmcp.client.transports import StreamableHttpTransport
-
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TRACES = REPO / "sim/.build/traces"
-KEY = os.environ["OPS_KEY"]
+sys.path.insert(0, str(REPO / "oracle"))
+import common as C
 
 TASKS = [
     # three tasks = three read paths (injection surfaces); the carrier is a scenario parameter, not the task
@@ -95,32 +93,26 @@ def wait_for(kind, arg, timeout=180):
     raise TimeoutError(f"wait_for({kind},{arg})")
 
 
-def _load_env():
-    env = dict(os.environ)
-    for line in (REPO / ".env").read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip()
-    return env
-
-
 def run_victim(question):
     trace = TRACES / "trace.txt"
     trace.unlink(missing_ok=True)
     cmd = [str(REPO / "sim/run-agent.sh"),
            "--quiet", question]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=420,
-                       env=_load_env())
+                       env=C.load_env())
     return (trace.read_text() if trace.exists() else ""), r.stdout + r.stderr
 
 
 async def main():
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+
+    key = os.environ["OPS_KEY"]
     t = StreamableHttpTransport("http://localhost:18092/mcp",
-                                headers={"Authorization": f"Bearer {KEY}"})
+                                headers={"Authorization": f"Bearer {key}"})
     results = []
     t = StreamableHttpTransport("http://localhost:18092/mcp",
-                                headers={"Authorization": f"Bearer {KEY}"})
+                                headers={"Authorization": f"Bearer {key}"})
     results = []
     async with Client(t) as c:
         for task in TASKS:
@@ -144,4 +136,5 @@ async def main():
     print("battery:", "ALL PASS" if ok else "HAS FAIL")
     sys.exit(0 if ok else 1)
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
