@@ -14,6 +14,9 @@ while [[ $# -gt 0 ]]; do
     fi
     scenario_id="$2"
     shift 2
+  elif [[ "$1" == "--resume" || "$1" == "-r" || "$1" == --resume=* || "$1" == "--runtime-server" || "$1" == --runtime-server=* ]]; then
+    printf 'Guarded campaigns require a fresh local runtime; resume and shared servers are unsupported.\n' >&2
+    exit 2
   else
     dn_args+=("$1")
     shift
@@ -60,6 +63,9 @@ if [[ ! "$max_steps" =~ ^[1-9][0-9]*$ ]]; then
   printf 'DREADNODE_MAX_STEPS must be a positive integer.\n' >&2
   exit 1
 fi
+
+export LETTA_DREADNODE_SCENARIO="$scenario_id"
+export LETTA_DREADNODE_RUN_ID="$(python3 -c 'from uuid import uuid4; print(uuid4().hex)')"
 
 exec "$dn_bin" \
   --capability letta-redteam \

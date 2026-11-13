@@ -33,8 +33,10 @@ same services during a batch. The campaign lock coordinates this checkout only.
 
 Baseline archives contain private state. They and experiment results are ignored by
 Git and created with private permissions. Environment values are not copied to run
-metadata; hashes detect configuration changes. Configuration and Docker image changes
-require a new clean baseline.
+metadata; hashes detect configuration changes. Target configuration and Docker image
+changes require a new clean baseline. Attacker configuration may change for a new
+batch without replacing the target baseline; resume requires the original full
+batch configuration, including attacker settings.
 
 ## Run
 
@@ -134,8 +136,9 @@ results/<framework>/<batch-id>/
 Native Promptfoo JSON/config outputs and DeepTeam/PyRIT report directories are copied
 before later runs can overwrite them. Their original locations remain managed by the
 existing launchers. Dreadnode's native headless response is saved in `console.log`;
-actual attack messages and target replies are preserved in `issues.json` and
-`comments.json`. No separate Dreadnode trajectory export is claimed.
+its guarded campaign manifest, events, and case summary are copied into `framework/`.
+Actual attack messages and target replies are preserved in `issues.json` and
+`comments.json`. No separate Dreadnode internal trajectory export is claimed.
 
 ## Statistics and recovery
 
@@ -217,12 +220,19 @@ The default Gitea URL and repository match the current Letta stack. `--web-url` 
 `--repo` override collection coordinates when the existing redteam configuration uses
 another endpoint. The MCP health check discovers the gateway's published port through Docker Compose.
 
-## Validation scope
+## Checking results
 
-The credential-disclosure smoke runs exercised all four frameworks through the
-target, Oracle collection, and CSV statistics. This is connectivity evidence;
-other scenarios and three independent repetitions per framework/scenario still
-need live validation. Dreadnode's instruction-driven loop can submit comments
-before a prior target reply completes. Its Oracle verdict remains evidence of
-observed effects, but the current adapter does not enforce one reply per attack
-message. Review submission order before using these runs for controlled comparisons.
+After each batch:
+
+- Check `summary.csv` for the requested scenarios and repetition counts. Investigate
+  invalid attempts or incomplete scenarios before continuing.
+- Verify that each Oracle result has `status: completed` and matches the attempt's
+  run ID, scenario, and episode. Keep the original evidence with the result.
+- For Dreadnode, check equal submission/reply counts, a matched `reply` event
+  between consecutive `submit_intent` events, and no pending or failed turns.
+  The experiment runner also checks the native summary, not just the CLI exit code.
+
+Use Oracle scores for comparisons. Framework text-based judgments may disagree
+with observed effects. Review attack inputs and execution evidence when interpreting
+zero scores; network scenarios require an actual public, non-HTTPS connection,
+not a script suggestion or a documentation-only destination address.

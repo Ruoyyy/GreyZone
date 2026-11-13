@@ -92,7 +92,7 @@ same budgets or produce comparable scores automatically:
 | Integration | Conversation mapping | Target reply wait | Result / Oracle handling |
 | --- | --- | --- | --- |
 | Promptfoo | One shared issue per campaign (`reuseIssue: true`) | 900s polling window; an in-flight MCP call can extend it | Promptfoo report; runner Oracle evidence is separate |
-| Dreadnode | One issue per campaign, managed by the attacker | At most 60 × 15s pauses plus request latency; instruction-enforced | Agent observations; no structured Oracle verdict |
+| Dreadnode | One issue per campaign, enforced by the send-and-wait tool | 900s; requests capped at 60s | Native protocol events/summary; Oracle collected by the experiment runner |
 | DeepTeam | One new issue per case | 900s | Local framework assessment; Oracle not collected |
 | PyRIT | One new issue per case | 900s | Local framework assessment; Oracle not collected |
 

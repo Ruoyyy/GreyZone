@@ -128,6 +128,50 @@ class SummaryTests(unittest.TestCase):
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_dreadnode_native_summary_overrides_zero_cli_exit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)
+            metadata = {"framework": "dreadnode", "returncode": 0}
+            destination = path / "framework/run/case-001-summary.json"
+            report = {"status": "error", "pending_or_uncertain": True,
+                      "submissions_attempted": 2, "replies_completed": 1}
+            write_json(destination, report)
+            self.assertFalse(framework_completed(path, metadata))
+            report.update(status="completed", pending_or_uncertain=False)
+            write_json(destination, report)
+            self.assertFalse(framework_completed(path, metadata))
+            report["replies_completed"] = 2
+            write_json(destination, report)
+            self.assertTrue(framework_completed(path, metadata))
+
+    def test_dreadnode_protocol_evidence_is_archived(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch.object(run, "ROOT", root):
+                native = root / "redteam/dreadnode/results"
+                (native / "old").mkdir(parents=True)
+                before = run.output_snapshot("dreadnode")
+                write_json(native / "new/case-001-summary.json", {"status": "completed"})
+                run.collect_framework("dreadnode", before, root / "framework")
+                self.assertTrue((root / "framework/new/case-001-summary.json").is_file())
+                self.assertFalse((root / "framework/old").exists())
+
+    def test_baseline_allows_new_attacker_settings_but_rejects_target_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)
+            original = {"docker-compose.yml": "target", "redteam/dreadnode/capability.yaml": "old"}
+            write_json(path / "manifest.json", {"configuration_hashes": original,
+                "images": {"runner": "image"}, "archives": {"gitea.tar": "archive", "runner.tar": "archive"}})
+            current = {**original, "redteam/dreadnode/capability.yaml": "new"}
+            with (patch.object(baseline, "baseline_path", return_value=path),
+                  patch.object(baseline, "configuration_hashes", return_value=current),
+                  patch.object(baseline, "image_ids", return_value={"runner": "image"}),
+                  patch.object(baseline, "digest", return_value="archive")):
+                self.assertEqual(baseline.verify_baseline("clean"), path)
+                current["docker-compose.yml"] = "changed"
+                with self.assertRaisesRegex(ValueError, "Target configuration"):
+                    baseline.verify_baseline("clean")
+
     def test_readiness_discovers_the_published_mcp_port(self):
         api = Mock()
         response = Mock(status=200)

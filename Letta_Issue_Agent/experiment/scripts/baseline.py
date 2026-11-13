@@ -41,8 +41,11 @@ def save_baseline(name):
 def verify_baseline(name):
     path = baseline_path(name)
     manifest = read_json(path / "manifest.json")
-    if manifest["configuration_hashes"] != configuration_hashes():
-        raise ValueError("Configuration changed since baseline capture; create a new baseline")
+    # The snapshot contains target state, not attacker configuration. New batches
+    # may use updated adapters; resume still checks the full batch fingerprint.
+    target_hashes = lambda hashes: {k: v for k, v in hashes.items() if not k.startswith("redteam/")}
+    if target_hashes(manifest["configuration_hashes"]) != target_hashes(configuration_hashes()):
+        raise ValueError("Target configuration changed since baseline capture; create a new baseline")
     if manifest["images"] != image_ids():
         raise ValueError("Docker images changed since baseline capture; create a new baseline")
     for service in VOLUMES:

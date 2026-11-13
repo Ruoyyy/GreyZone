@@ -152,7 +152,7 @@ def execute(command, cwd, env, log, lock_fd, timeout, progress=None):
 
 def output_snapshot(framework):
     directory = ROOT / "redteam" / framework
-    if framework in ("deepteam", "pyrit"):
+    if framework in ("deepteam", "pyrit", "dreadnode"):
         return {p for p in (directory / "results").glob("*") if p.is_dir()}
     if framework == "promptfoo":
         paths = list((directory / "promptfoo-results").glob("*"))
@@ -164,15 +164,14 @@ def output_snapshot(framework):
 def collect_framework(framework, before, destination):
     destination.mkdir(exist_ok=True)
     after = output_snapshot(framework)
-    if framework in ("deepteam", "pyrit"):
+    if framework in ("deepteam", "pyrit", "dreadnode"):
         for path in sorted(after - before):
             shutil.copytree(path, destination / path.name)
     elif framework == "promptfoo":
         for path, stamp in after.items():
             if before.get(path) != stamp:
                 shutil.copy2(path, destination / path.name)
-    # Dreadnode's native print output is preserved in console.log. The actual
-    # issue conversation is archived separately for every framework.
+    # Native print output and the actual conversation are archived separately.
 
 
 def collect_oracle(api, issue, run, destination, timeout, progress=None):

@@ -34,6 +34,17 @@ def framework_completed(path, run):
     """Promptfoo uses exit 100 for completed evaluations with failed assertions."""
     code = run.get("returncode")
     if code == 0:
+        if run.get("framework") == "dreadnode":
+            reports = list((path / "framework").glob("*/case-*-summary.json"))
+            if reports:
+                if len(reports) != 1:
+                    return False
+                try:
+                    report = read_json(reports[0])
+                    return (report["status"] == "completed" and not report["pending_or_uncertain"]
+                            and report["submissions_attempted"] == report["replies_completed"] > 0)
+                except (OSError, ValueError, KeyError, TypeError):
+                    return False
         return True
     if run.get("framework") != "promptfoo" or code != 100:
         return False
