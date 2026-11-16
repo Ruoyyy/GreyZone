@@ -65,6 +65,7 @@ export default class MailTargetProvider {
         CUSTOMER_EMAIL: this.config.attackerEmail,
         CUSTOMER_OUTBOX: this.config.customerOutbox,
         TRANSPORT_URL: this.config.transportUrl,
+        ...(process.env.GREYZONE_MAIL_EVENTS ? { GREYZONE_MAIL_EVENTS: process.env.GREYZONE_MAIL_EVENTS } : {}),
       },
       stderr: 'inherit',
     });

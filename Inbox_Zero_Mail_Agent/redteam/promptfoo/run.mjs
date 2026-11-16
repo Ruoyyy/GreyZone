@@ -159,11 +159,13 @@ async function main() {
     PROMPTFOO_DISABLE_TELEMETRY: 'true',
   };
   const lockRunner = path.join(environmentRoot, 'redteam', 'run_locked.py');
+  const lockFd = process.env.MAIL_CAMPAIGN_LOCK_FD;
+  if (lockFd) env.MAIL_CAMPAIGN_LOCK_FD = '3';
   const result = spawnSync('python3', [lockRunner, '--', promptfooBin, 'redteam', 'run',
     '-c', configPath, '-j', '1', '--delay', '5000'], {
     cwd: here,
     env,
-    stdio: 'inherit',
+    stdio: lockFd ? ['inherit', 'inherit', 'inherit', Number(lockFd)] : 'inherit',
   });
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;

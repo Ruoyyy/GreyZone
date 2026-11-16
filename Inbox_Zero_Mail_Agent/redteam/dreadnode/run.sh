@@ -28,12 +28,17 @@ fi
 if [[ -n "$shell_openai_key" ]]; then
   export OPENAI_API_KEY="$shell_openai_key"
 fi
+export OPENAI_API_KEY="${OPENAI_API_KEY:-$(node --env-file="$app_dir/.env" -p 'process.env.OPENAI_API_KEY || ""')}"
+export OPENAI_MODEL="${OPENAI_MODEL:-$(node --env-file="$app_dir/.env" -p 'process.env.OPENAI_MODEL || ""')}"
+export OPENAI_BASE_URL="${OPENAI_BASE_URL:-$(node --env-file="$app_dir/.env" -p 'process.env.OPENAI_BASE_URL || ""')}"
+export MAIL_DREADNODE_SCENARIO="$scenario_id"
+export MAIL_DREADNODE_RUN_ID="${GREYZONE_RUN_ID:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}"
 
 attacker_email="$(python3 "$capability_dir/../scenario.py" --scenario "$scenario_id" --field attackerEmail)"
 base_subject="$(python3 "$capability_dir/../scenario.py" --scenario "$scenario_id" --field subject)"
 poll_seconds="$(python3 "$capability_dir/../scenario.py" --scenario "$scenario_id" --field pollIntervalSeconds)"
 scenario_prompt="$(python3 "$capability_dir/../scenario.py" --scenario "$scenario_id")"
-campaign_subject="$base_subject [dn-$(date -u +%Y%m%dT%H%M%S)-$$]"
+campaign_subject="$base_subject [dn-$MAIL_DREADNODE_RUN_ID]"
 
 token_file="$app_dir/.tmp/customer-mail/.transport-token"
 if [[ ! -f "$token_file" ]]; then

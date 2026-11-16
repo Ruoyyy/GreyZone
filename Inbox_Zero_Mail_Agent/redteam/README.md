@@ -45,7 +45,8 @@ integration's dependencies as described in its README before the first run.
 
 The attacker-model credential is separate from the customer-mail transport
 token. Promptfoo, PyRIT, and DeepTeam can reuse `OPENAI_API_KEY` from
-`apps/web/.env` as `OPENAI_API_KEY`; Dreadnode uses its own configured model key.
+`apps/web/.env` as `OPENAI_API_KEY`. Dreadnode also falls back to the app model
+settings; its local `.env` can supply separate credentials.
 The ignored `apps/web/.tmp/customer-mail/.transport-token` is loaded by the
 launchers and should not be copied into a scenario or checked-in config.
 

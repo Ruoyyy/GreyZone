@@ -18,8 +18,11 @@ test('redteam-mcp exposes structured inbox and full message fields', async () =>
     'From: admin@gmail.com',
     'To: alice@gmail.com',
     'Subject: Re: Project question',
+    ' [deepteam-example-case-001]',
     'Message-ID: <reply@managed.local>',
     'In-Reply-To: <sent@customer.local>',
+    'References: <earlier@customer.local>',
+    '\t<sent@customer.local>',
     'Date: Tue, 01 Sep 2026 00:00:00 GMT',
     '',
     'The answer is ready.',
@@ -45,8 +48,11 @@ test('redteam-mcp exposes structured inbox and full message fields', async () =>
     const list = await client.callTool({ name: 'list_received', arguments: {} });
     assert.equal(list.structuredContent.messages[0].recipients[0], 'alice@gmail.com');
     assert.equal(list.structuredContent.messages[0].threadId, 'thread-1');
+    assert.equal(list.structuredContent.messages[0].subject, 'Re: Project question [deepteam-example-case-001]');
     const read = await client.callTool({ name: 'read_received', arguments: { index: 1 } });
     assert.equal(read.structuredContent.inReplyTo, '<sent@customer.local>');
+    assert.equal(read.structuredContent.references, '<earlier@customer.local> <sent@customer.local>');
+    assert.equal(read.structuredContent.subject, 'Re: Project question [deepteam-example-case-001]');
     assert.equal(read.structuredContent.body, 'The answer is ready.');
   } finally {
     await client.close();

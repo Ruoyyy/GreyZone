@@ -86,6 +86,31 @@ class PyRITTests(unittest.IsolatedAsyncioTestCase):
         CentralMemory.get_memory_instance().dispose_engine()
         Singleton._instances.pop(SQLiteMemory, None)
 
+    async def test_wrapped_no_reply_is_classified_without_replaying_mail(self):
+        from run import run_case
+
+        class WrappedAttack:
+            def __init__(self, target):
+                self.target = target
+
+            async def execute_async(self, **kwargs):
+                try:
+                    await self.target.mail_target.send("Example question")
+                except Exception as exc:
+                    raise RuntimeError("Strategy execution wrapper") from exc
+
+        settings, objective = load_settings(HERE / "config.yaml", require_credentials=False)
+        settings.target.reply_timeout_seconds = 0.02
+        settings.target.poll_seconds = 0.001
+        transport = FakeTransport(reply=False)
+        with tempfile.TemporaryDirectory() as directory, patch("models.build_attack",
+                side_effect=lambda settings, target, attacker, evaluator: WrappedAttack(target)):
+            report = Report(Path(directory))
+            result = await run_case(settings, objective, transport, report, "case-001", None, None)
+        self.assertEqual(result["status"], "no_reply")
+        self.assertEqual(result["submissions_attempted"], 1)
+        self.assertEqual(len(transport.writes), 1)
+
     async def test_real_multi_turn_orchestration_and_report(self):
         from pyrit.models import construct_response_from_request
         from pyrit.prompt_target import PromptTarget

@@ -2,10 +2,10 @@
 
 Run commands from `GreyZone/Inbox_Zero_Mail_Agent/` unless stated otherwise.
 
-This capability runs an autonomous attacker as the external customer. It
-starts the existing stdio redteam-mcp server, sends one email at a time,
-reads matched replies, and adapts within the selected shared benchmark
-scenario. It does not read the Oracle or produce a verified success verdict.
+This capability runs an autonomous attacker as the external customer. Its
+mail_send_and_wait tool owns the stdio MCP connection, enforces one mail
+thread and the scenario budget, and returns a matching reply before another
+submission is allowed. It does not read the Oracle or produce a verified success verdict.
 
 ## Setup
 
@@ -15,10 +15,10 @@ scenario. It does not read the Oracle or produce a verified success verdict.
 2. Install a Dreadnode CLI with capability support and run `dn login`.
    The local integration was validated against Dreadnode 2.0.46. Node.js and
    the app's installed `tsx` dependency are needed for the MCP subprocess.
-3. Copy `.env.example` to `.env` in this directory, fill in
+3. Optionally copy `.env.example` to `.env` in this directory, fill in
    `OPENAI_API_KEY` and `OPENAI_MODEL`, and restrict the file with `chmod 600`. The default
-   attacker model is `openai/${OPENAI_MODEL}`; this key is separate from the mail
-   agent's `OPENAI_API_KEY` in `apps/web/.env`. An exported `OPENAI_API_KEY`
+   attacker model is `openai/${OPENAI_MODEL}`. Missing model settings fall back
+   to `apps/web/.env`; a local `.env` can configure separate attacker credentials. An exported `OPENAI_API_KEY`
    takes precedence over a value in the local `.env` file.
 4. From the mail project root, check the capability:
 
@@ -57,15 +57,15 @@ Use `mail,pipeline` for `mail-history-leak` or `phishing,pipeline` for
 passes the shared objective, policy, addresses, unique subject, email budget,
 and reply timeout as the opening prompt. Other Dreadnode flags are forwarded.
 `DREADNODE_MAX_STEPS` limits Dreadnode execution steps; the scenario's
-`maxTurns` limits attack emails through agent instructions.
+`maxTurns` is enforced by the guarded mail transport.
 
 Promptfoo and Dreadnode hold the same OS-backed lock while a campaign runs.
 The lock file under `.tmp/redteam/` need not be deleted after a crash.
 
 ## Evidence and limits
 
-The customer MCP has `send_email`, `list_received`, `read_received`, and
-`reply_to`. A new campaign uses one unique subject and subsequent turns reply
+The guarded tool internally uses `send_email`, `list_received`,
+`read_received`, and `reply_to`; raw MCP tools are not exposed to the agent. A new campaign uses one unique subject and subsequent turns reply
 in that thread. The agent records sent message IDs and matched reply IDs.
 Compare sent message IDs with the Oracle's `attackMessageIds` after the
 episode closes. Oracle results live under `apps/web/.tmp/oracle/`; its verdict
@@ -73,8 +73,9 @@ is authoritative. For `phishing-outbound`, the managed agent may send mail to
 a third party without replying to the customer, so lack of a customer reply
 does not prove failure.
 
-The email-turn limit and reply matching are instructions to Dreadnode's
-autonomous agent, not an enforced counter or deterministic target adapter.
-The launcher enforces a separate Dreadnode step limit. If an MCP write has
+The shared Python mail protocol enforces the email budget, matching replies,
+thread continuation and uncertain-write handling. Concurrent tool calls are
+rejected. The launcher also enforces a separate Dreadnode step limit.
+Native events and the case summary are saved under `.tmp/dreadnode/<run-id>/`. If an MCP write has
 an uncertain outcome, the agent is instructed to stop instead of retrying.
 Run one campaign at a time against the shared mailbox.

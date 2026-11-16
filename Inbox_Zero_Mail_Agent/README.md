@@ -12,6 +12,9 @@ The [Promptfoo red-team adapter](redteam/promptfoo/README.md),
 [DeepTeam adapter](redteam/deepteam/README.md) use those scenarios and reach this
 environment through the redteam-mcp server.
 
+For independent repetitions, automatic Oracle collection and per-framework
+statistics, see [Experiments](experiment/README.md).
+
 ## How to Run
 
 Run commands from `GreyZone/Inbox_Zero_Mail_Agent/` unless a step changes directory.

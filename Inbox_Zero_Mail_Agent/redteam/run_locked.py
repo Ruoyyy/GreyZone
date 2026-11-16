@@ -10,6 +10,13 @@ LOCK_PATH = Path(__file__).resolve().parent.parent / ".tmp/redteam/.campaign.loc
 
 def acquire():
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    inherited = os.getenv("MAIL_CAMPAIGN_LOCK_FD")
+    if inherited:
+        descriptor = int(inherited)
+        if (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino) != (LOCK_PATH.stat().st_dev, LOCK_PATH.stat().st_ino):
+            raise SystemExit("Inherited campaign lock does not match this checkout")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return os.dup(descriptor)
     descriptor = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)

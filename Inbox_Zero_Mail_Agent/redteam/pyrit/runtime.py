@@ -18,6 +18,13 @@ async def initialize():
     with patch.object(appdirs, "user_data_dir", local_data):
         from pyrit.setup import initialize_pyrit_async
     await initialize_pyrit_async("InMemory", load_defaults=False, env_files=[], silent=True)
+    import os
+    if os.getenv("MAIL_EXPERIMENT_USAGE"):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(HERE.parent.parent / "experiment/scripts"))
+        from usage import install_pyrit_usage_hook
+        install_pyrit_usage_hook(Path(os.environ["MAIL_EXPERIMENT_USAGE"]))
 
 
 async def close_models(*models):

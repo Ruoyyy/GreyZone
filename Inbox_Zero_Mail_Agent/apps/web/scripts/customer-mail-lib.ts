@@ -4,7 +4,7 @@
  * share one implementation.
  */
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
 
 export const DEFAULT_CUSTOMER_EMAIL =
@@ -53,25 +53,47 @@ export async function deliver({
   transportUrl?: string;
   transportToken: string;
 }): Promise<{ deliveryId: string; messageId: string }> {
-  const response = await fetch(
-    `${transportUrl.replace(/\/+$/, "")}/transport/inbound`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${transportToken}`,
+  const journal = process.env.GREYZONE_MAIL_EVENTS;
+  const attemptId = randomUUID();
+  const record = async (data: Record<string, unknown>) => {
+    if (journal)
+      await appendFile(
+        journal,
+        JSON.stringify({ at: new Date().toISOString(), attemptId, ...data }) +
+          "\n",
+        { mode: 0o600 },
+      );
+  };
+  await record({ event: "submit_intent", from, recipients, eml });
+  try {
+    const response = await fetch(
+      `${transportUrl.replace(/\/+$/, "")}/transport/inbound`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${transportToken}`,
+        },
+        body: JSON.stringify({
+          envelope: { from, recipients },
+          raw: Buffer.from(eml).toString("base64"),
+        }),
       },
-      body: JSON.stringify({
-        envelope: { from, recipients },
-        raw: Buffer.from(eml).toString("base64"),
-      }),
-    },
-  );
-  const body = await response.text();
-  if (!response.ok) {
-    throw new Error(`delivery rejected (${response.status}): ${body}`);
+    );
+    const body = await response.text();
+    if (!response.ok) {
+      throw new Error(`delivery rejected (${response.status}): ${body}`);
+    }
+    const result = JSON.parse(body) as {
+      deliveryId: string;
+      messageId: string;
+    };
+    await record({ event: "submitted", ...result });
+    return result;
+  } catch (error) {
+    await record({ event: "write_outcome_unknown" });
+    throw error;
   }
-  return JSON.parse(body) as { deliveryId: string; messageId: string };
 }
 
 export type ParsedEml = {
@@ -88,7 +110,10 @@ export type ParsedEml = {
 export function parseEml(raw: string): ParsedEml {
   const [headerBlock, ...bodyParts] = raw.split(/\r?\n\r?\n/);
   const headers: Record<string, string> = {};
-  for (const line of headerBlock.split(/\r?\n/)) {
+  // A long Subject or References header may continue on whitespace-prefixed
+  // lines. Unfold headers only; body whitespace must remain untouched.
+  const unfoldedHeaders = headerBlock.replace(/\r?\n[ \t]+/g, " ");
+  for (const line of unfoldedHeaders.split(/\r?\n/)) {
     const m = line.match(/^([A-Za-z-]+):\s*(.*)$/);
     if (m) headers[m[1].toLowerCase()] = m[2].trim();
   }

@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from settings import HERE, load_settings
-from mail_transport import NoReply, TargetError, WriteOutcomeUnknown, connect
+from mail_transport import NoReply, TargetError, WriteOutcomeUnknown, connect, target_error
 from reporting import Report, now
 from runtime import initialize, close_models
 
@@ -47,7 +47,11 @@ async def run_case(settings, objective, transport, report, case_id, attacker, ev
         result.update(status="interrupted", error="Interrupted; a mail turn may still be running")
         raise
     except Exception as exc:
-        result.update(status="error", error=f"{type(exc).__name__}: {exc}")
+        failure = target_error(exc)
+        status = ("no_reply" if isinstance(failure, NoReply) else
+                  "write_outcome_unknown" if isinstance(failure, WriteOutcomeUnknown) else
+                  "execution_error" if isinstance(failure, TargetError) else "error")
+        result.update(status=status, error=f"{type(failure or exc).__name__}: {failure or exc}")
     finally:
         result.update(finished_at=now(), sent_message_ids=state.sent_message_ids,
                       last_reply_index=state.last_reply_index,
