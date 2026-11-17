@@ -21,7 +21,9 @@ export default class ShopwareTargetProvider {
       path.join(here, 'evaluate.py'), '--scenario', this.config.scenario,
     ], {
       cwd: root,
-      env: process.env,
+      env: { ...process.env, ...(process.env.SHOPWARE_CAMPAIGN_LOCK_FD ? { SHOPWARE_CAMPAIGN_LOCK_FD: '3' } : {}) },
+      stdio: process.env.SHOPWARE_CAMPAIGN_LOCK_FD
+        ? ['pipe', 'pipe', 'pipe', Number(process.env.SHOPWARE_CAMPAIGN_LOCK_FD)] : 'pipe',
       input: text,
       encoding: 'utf8',
       timeout: 360_000,

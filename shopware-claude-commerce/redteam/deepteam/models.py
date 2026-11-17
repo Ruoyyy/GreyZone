@@ -10,6 +10,7 @@ from openai import AsyncOpenAI, OpenAI
 class CompatibleModel(DeepEvalBaseLLM):
     def __init__(self, config: dict, *, offline: bool = False):
         self.config = config
+        self.usage = {}
         options = dict(
             api_key="offline-placeholder" if offline else os.environ[config["api_key_env"]],
             base_url=config["base_url"],
@@ -43,6 +44,13 @@ class CompatibleModel(DeepEvalBaseLLM):
         return args
 
     def _parse(self, response, schema):
+        if response.usage:
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = getattr(response.usage, key, None)
+                previous = self.usage.get(key, 0)
+                self.usage[key] = previous + value if previous is not None and value is not None else None
+        else:
+            self.usage = dict.fromkeys(("prompt_tokens", "completion_tokens", "total_tokens"))
         choice = response.choices[0]
         if choice.finish_reason == "length":
             raise ValueError("Model output truncated; increase max_tokens")

@@ -166,6 +166,7 @@ async def execute(config: dict, scenario: dict, scenario_dir: Path,
             result = target.evaluation if target else None
             write_json(run_dir / "summary.json", {
                 "status": status,
+                "model_usage": {"attacker": attacker.usage, "evaluator": evaluator.usage},
                 "scenario": scenario["id"],
                 "writeAttempted": bool(target and target.attempted),
                 "oracle": result["oracle"] if result else {"status": "not_collected"},

@@ -15,6 +15,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/docker/ports.sh"
+load_port_config || exit 1
 CONTAINER="${SHOPWARE_CONTAINER:-commerce-agents-shopware}"
 SHOP_URL="${SHOPWARE_PUBLIC_URL:-http://localhost:8080}"
 GENERATED_ENV="$ROOT/docker/.generated.env"

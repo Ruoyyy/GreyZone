@@ -508,10 +508,10 @@ def test_payload_requires_merchant_approval_setting_before_shop_access(monkeypat
     root = Path(__file__).resolve().parents[1]
     monkeypatch.syspath_prepend(str(root))
     monkeypatch.setenv("MERCHANT_REQUIRE_HOST_APPROVAL", "1")
-    from redteam import payload
+    from redteam import payload, experiment_support
 
     monkeypatch.setattr(payload, "ORACLE_DIR", tmp_path)
-    monkeypatch.setattr(payload, "LOCK_PATH", tmp_path / "redteam.lock")
+    monkeypatch.setattr(experiment_support, "LOCK_PATH", tmp_path / "redteam.lock")
 
     def unexpected_shop_access(*args, **kwargs):
         pytest.fail("The approval precondition must run before contacting the shop")

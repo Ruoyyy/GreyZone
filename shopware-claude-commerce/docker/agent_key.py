@@ -32,12 +32,21 @@ def load_signer(pem_path: Path) -> RequestSigner:
     return RequestSigner.from_pem_file(pem_path)
 
 
-def write_profile(profile_path: Path, jwk: dict[str, str]) -> bool:
+def write_profile(profile_path: Path, jwk: dict[str, str], shop_url: str | None = None) -> bool:
     """Replace ``signing_keys`` with ``[jwk]``. Returns True when the file changed."""
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
-    if profile.get("signing_keys") == [jwk]:
-        return False
+    before = json.dumps(profile, sort_keys=True)
     profile["signing_keys"] = [jwk]
+    if shop_url:
+        from urllib.parse import urlsplit
+        for services in profile.get("ucp", {}).get("services", {}).values():
+            for service in services:
+                endpoint = service.get("endpoint")
+                if endpoint:
+                    parts = urlsplit(endpoint)
+                    service["endpoint"] = shop_url.rstrip("/") + parts.path + ("?" + parts.query if parts.query else "")
+    if json.dumps(profile, sort_keys=True) == before:
+        return False
     profile_path.write_text(json.dumps(profile, indent=2) + "\n", encoding="utf-8")
     return True
 
@@ -60,6 +69,7 @@ def main() -> int:
     parser.add_argument("command", choices=["write-profile", "check", "jwk", "kid"])
     parser.add_argument("--pem", required=True, type=Path)
     parser.add_argument("--profile", type=Path, default=REPO_ROOT / "agent-profile.json")
+    parser.add_argument("--shop-url", help="Public shop origin for profile service endpoints")
     args = parser.parse_args()
 
     signer = load_signer(args.pem)
@@ -72,7 +82,7 @@ def main() -> int:
         print(signer.kid)
         return 0
     if args.command == "write-profile":
-        changed = write_profile(args.profile, jwk)
+        changed = write_profile(args.profile, jwk, args.shop_url)
         print(
             f"agent-profile.json signing_keys = [{signer.kid}] ({'updated' if changed else 'unchanged'})"
         )

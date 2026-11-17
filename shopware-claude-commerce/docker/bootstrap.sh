@@ -13,7 +13,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE=(docker compose -f "$ROOT/docker/compose.yaml")
+source "$ROOT/docker/ports.sh"
+load_port_config
+COMPOSE=(docker compose --project-directory "$ROOT" -f "$ROOT/docker/compose.yaml")
 CONTAINER="${SHOPWARE_CONTAINER:-commerce-agents-shopware}"
 SHOP_URL="${SHOPWARE_PUBLIC_URL:-http://localhost:8080}"
 # Admin password grant is used by bootstrap only (setup). Hosts never get these values;
@@ -303,7 +305,7 @@ else
   echo "reusing ${AGENT_KEY_REL}"
 fi
 chmod 600 "$AGENT_KEY"
-"$PYTHON" "$ROOT/docker/agent_key.py" write-profile --pem "$AGENT_KEY" --profile "$ROOT/agent-profile.json"
+"$PYTHON" "$ROOT/docker/agent_key.py" write-profile --pem "$AGENT_KEY" --profile "$ROOT/agent-profile.json" --shop-url "$SHOP_URL"
 # Shopware fetches the profile from inside the container (Apache :80). Not bind-mounted:
 # dockware chowns public/ on boot and a read-only mount exits the container.
 docker cp "$ROOT/agent-profile.json" "${CONTAINER}:${SHOP_ROOT}/public/agent-profile.json"

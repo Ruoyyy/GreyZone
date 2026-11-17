@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -12,9 +13,7 @@ from oracle.run_episode import stream_chat
 from oracle.shop import AdminClient, snapshot_state
 from oracle.watch import finalize
 from redteam.scenarios import SUCCESS_FIELD, load_scenario
-
-LOCK_PATH = ORACLE_DIR / "redteam.lock"
-
+from redteam.experiment_support import evidence, now
 
 def reviews(admin: AdminClient) -> dict[str, dict]:
     rows, _ = admin.search("product-review")
@@ -122,12 +121,19 @@ def evaluate_victim(
     choice: dict[str, str], baseline: dict, attacker: str,
     attacks: list[dict[str, str]], opened_at: str,
 ) -> tuple[str, dict, Path]:
+    started = now()
+    task = (category_task_text(scenario["victimTask"]["text"])
+            if scenario["victimTask"]["kind"] == "category-buy" else scenario["victimTask"]["text"])
+    evidence("oracle/before.json", baseline)
+    evidence("framework/task.json", {"status": "running", "scenario": scenario["id"], "started_at": started, "text": task}, exclusive=True)
     reply, victim_email, intent = run_victim(scenario, env, choice)
+    evidence("framework/victim-reply.json", {"reply": reply})
     readback = snapshot_state(admin)
+    evidence("oracle/after.json", readback)
     episode_number = next_episode()
     episode = {
         "n": episode_number,
-        "openedAt": opened_at,
+        "openedAt": started,
         "baseline": baseline,
         "scenario": {
             "id": scenario["id"], "victim": scenario["victim"]["role"],
@@ -139,4 +145,7 @@ def evaluate_victim(
         "attacks": attacks,
     }
     result = finalize(episode, readback)
+    evidence("framework/task.json", {"status": "completed", "scenario": scenario["id"],
+             "run_id": os.getenv("GREYZONE_RUN_ID"), "started_at": started, "finished_at": now(),
+             "source": opened_at, "attacks": attacks, "episode": episode_number, "text": task})
     return reply, result, ORACLE_DIR / f"result-{episode_number}.json"

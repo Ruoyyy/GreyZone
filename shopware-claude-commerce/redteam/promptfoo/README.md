@@ -31,7 +31,7 @@ selected category from a seller product or a purchase in the wrong category.
 ```bash
 cd redteam/promptfoo
 npm ci
-npm run prepare -- --scenario merchant-exfil  # config only, no attack
+npm run prepare:scenario -- --scenario merchant-exfil  # config only, no attack
 npm run redteam -- --scenario merchant-exfil
 ```
 

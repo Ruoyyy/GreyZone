@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from deepteam.test_case import RTTurn
@@ -31,6 +32,7 @@ class ShopwareTarget:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            pass_fds=(int(os.environ["SHOPWARE_CAMPAIGN_LOCK_FD"]),) if os.getenv("SHOPWARE_CAMPAIGN_LOCK_FD") else (),
         )
         try:
             stdout, stderr = await process.communicate(input.encode())

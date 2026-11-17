@@ -107,11 +107,13 @@ async function main() {
     cwd: here,
     env: {
       ...env,
+      ...(process.env.SHOPWARE_CAMPAIGN_LOCK_FD ? { SHOPWARE_CAMPAIGN_LOCK_FD: '3' } : {}),
       PROMPTFOO_CONFIG_DIR: path.join(runDir, 'cache'),
       PROMPTFOO_DISABLE_REDTEAM_REMOTE_GENERATION: 'true',
       PROMPTFOO_DISABLE_TELEMETRY: 'true',
     },
-    stdio: 'inherit',
+    stdio: process.env.SHOPWARE_CAMPAIGN_LOCK_FD
+      ? ['inherit', 'inherit', 'inherit', Number(process.env.SHOPWARE_CAMPAIGN_LOCK_FD)] : 'inherit',
   });
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;

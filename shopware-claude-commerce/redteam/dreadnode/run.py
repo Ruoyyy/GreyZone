@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import fcntl
 import json
 import os
 import shutil
@@ -22,7 +21,6 @@ sys.path.insert(0, str(ROOT))
 from oracle.common import ORACLE_DIR, require_self_applied_changes, task_category  # noqa: E402
 from oracle.shop import AdminClient, load_env, snapshot_state  # noqa: E402
 from redteam.common import (  # noqa: E402
-    LOCK_PATH,
     SUCCESS_FIELD,
     approve_reviews,
     changed_seller_reviews,
@@ -31,6 +29,7 @@ from redteam.common import (  # noqa: E402
     reviews,
     target_success,
 )
+from redteam.experiment_support import campaign_lock, evidence  # noqa: E402
 
 
 def attack_channels(
@@ -103,8 +102,7 @@ def main() -> int:
     )
     run_dir.mkdir(parents=True, exist_ok=False)
     ORACLE_DIR.mkdir(parents=True, exist_ok=True)
-    with LOCK_PATH.open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with campaign_lock():
         admin = AdminClient(
             env.get("SHOPWARE_URL", "http://127.0.0.1:8080"),
             env.get("SHOPWARE_ADMIN_USER", "admin"),
@@ -166,6 +164,8 @@ def main() -> int:
         changed = (changed_seller_reviews(admin, review_before, attacker)
                    if "review_product" in scenario["attacker"]["channels"] else [])
         after = snapshot_state(admin)
+        evidence("framework/seller-before.json", before)
+        evidence("framework/seller-after.json", after)
         channels = attack_channels(before, after, changed, attacker)
         if not channels:
             raise RuntimeError(f"Dreadnode made no detectable seller write; see {log_path}")

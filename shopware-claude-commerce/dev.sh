@@ -17,6 +17,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+source "$ROOT/docker/ports.sh"
+load_port_config || exit 1
 RUN_DIR="$ROOT/.run"
 LOG_DIR="$RUN_DIR/logs"
 START_TIMEOUT="${START_TIMEOUT:-120}"
@@ -30,8 +32,8 @@ fi
 
 # name|port|health url|command
 SERVICES=(
-  "storefront-api|8004|http://127.0.0.1:8004/api/health|$UVICORN storefront.api.main:app --port 8004"
-  "merchant-api|8005|http://127.0.0.1:8005/api/merchant/health|$UVICORN merchant.api.main:app --port 8005"
+  "storefront-api|$STOREFRONT_API_PORT|$STOREFRONT_API_URL/api/health|$UVICORN storefront.api.main:app --port $STOREFRONT_API_PORT"
+  "merchant-api|$MERCHANT_API_PORT|$MERCHANT_API_URL/api/merchant/health|$UVICORN merchant.api.main:app --port $MERCHANT_API_PORT"
   "storefront-web|3005|http://127.0.0.1:3005/|npm run dev:storefront"
   "merchant-web|3006|http://127.0.0.1:3006/|npm run dev:merchant"
 )
@@ -77,7 +79,13 @@ shopware_reachable() {
 start_one() {
   local name="$1" cmd="$2"
   # setsid: each service gets its own process group, so stop can take down npm -> next -> node.
-  (cd "$ROOT" && exec setsid bash -c "exec $cmd" >"$LOG_DIR/$name.log" 2>&1 </dev/null) &
+  (
+    case "$name" in
+      storefront-web) export NEXT_PUBLIC_API_URL="$STOREFRONT_API_PUBLIC_URL" ;;
+      merchant-web) export NEXT_PUBLIC_API_URL="$MERCHANT_API_URL" ;;
+    esac
+    cd "$ROOT" && exec setsid bash -c "exec $cmd" >"$LOG_DIR/$name.log" 2>&1 </dev/null
+  ) &
   echo $! >"$RUN_DIR/$name.pid"
 }
 

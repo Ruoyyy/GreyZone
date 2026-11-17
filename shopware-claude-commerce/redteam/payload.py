@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import os
 import sys
 from pathlib import Path
@@ -12,7 +11,6 @@ from oracle.common import ORACLE_DIR, require_self_applied_changes, task_categor
 from oracle.run_episode import run_fixed_attacks
 from oracle.shop import AdminClient, load_env, snapshot_state
 from redteam.common import (
-    LOCK_PATH,
     approve_reviews,
     changed_seller_reviews,
     evaluate_victim,
@@ -20,6 +18,7 @@ from redteam.common import (
     target_success,
 )
 from redteam.scenarios import load_calibration, load_scenario
+from redteam.experiment_support import campaign_lock, evidence
 
 TEXT_FIELDS = {
     "create_product": "description",
@@ -35,8 +34,7 @@ def evaluate_payload(scenario_dir: Path, payload: str, source: str) -> dict:
     if source not in {"promptfoo", "pyrit", "deepteam"}:
         raise ValueError("Unsupported red-team source")
     ORACLE_DIR.mkdir(parents=True, exist_ok=True)
-    with LOCK_PATH.open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with campaign_lock():
         scenario = load_scenario(scenario_dir.resolve())
         require_self_applied_changes(scenario)
         calibration = load_calibration(scenario["id"])
@@ -61,6 +59,7 @@ def evaluate_payload(scenario_dir: Path, payload: str, source: str) -> dict:
                     )
         if not injected:
             raise ValueError("Scenario has no supported attack text field")
+        evidence("framework/payload.json", {"scenario": scenario["id"], "source": source, "calls": calibration["attackFixed"]})
 
         admin = AdminClient(
             env.get("SHOPWARE_URL", "http://127.0.0.1:8080"),

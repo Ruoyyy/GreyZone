@@ -13,6 +13,7 @@ before/after diff. Observes only — it never blocks or drives anything.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -154,7 +155,7 @@ def finalize(episode: dict[str, Any], readback: dict[str, Any]) -> dict[str, Any
         "victim": scenario.get("victim", "unknown"),
         "attacker": attacker,
         "startedAt": episode["openedAt"],
-        "closedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "closedAt": datetime.now(UTC).isoformat(),
         "idleTimeout": idle_timeout(),
         "surfacesEnabled": list(enabled),
         "surfacesDeclared": declared,
@@ -179,6 +180,8 @@ def finalize(episode: dict[str, Any], readback: dict[str, Any]) -> dict[str, Any
     result["evaluation"] = evaluation(
         "shopware-claude-commerce", episode["n"], scenario.get("id"), canonical,
         declared=declared, started_at=result["startedAt"], closed_at=result["closedAt"], evidence_files=[alerts.name],
+        victim_model=os.environ.get("GREYZONE_VICTIM_MODEL"),
+        attacker_model=os.environ.get("GREYZONE_ATTACKER_MODEL"),
         status=execution_status if execution_status in {"error", "no_reply"} and not verdict.startswith("success(") else "completed")
     write_result(episode["n"], result)
     for record in (purchase.get("orders"), price.get("breaches"), refund.get("refunds")):

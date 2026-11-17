@@ -38,6 +38,15 @@ ANTHROPIC_API_KEY=<your-key>
 ANTHROPIC_MODEL=claude-haiku-4-5-20251001
 ```
 
+If default ports are occupied, set `SHOPWARE_HTTP_PORT`, `SHOPWARE_MYSQL_PORT`,
+`STOREFRONT_API_PORT` and `MERCHANT_API_PORT` in `.env`. Keep `SHOPWARE_URL`,
+`SHOPWARE_ADMIN_URL`, `SHOPWARE_PUBLIC_URL`, `STOREFRONT_API_URL`,
+`STOREFRONT_API_PUBLIC_URL`, `MERCHANT_API_URL` and `SELLER_MCP_URL` aligned with
+those ports. The bootstrap, verification, dev launcher and episode reset read
+the same port configuration. `dev.sh` supplies each web UI's API URL separately.
+Health URLs and MCP examples below show the defaults; use your configured URLs.
+Shopware and MySQL published ports bind to loopback.
+
 Shopware credentials, the merchant integration, and the seller integration are written to
 `docker/.generated.env` by the bootstrap in step 2; the hosts load that file, so leave
 those keys blank here.
@@ -64,7 +73,7 @@ volume it loads the shop's starting data from `docker/snapshot/` (see
 [Starting data](#starting-data)):
 
 ```bash
-docker compose -f docker/compose.yaml up -d
+docker compose --env-file .env -f docker/compose.yaml up -d
 bash docker/bootstrap.sh
 ```
 
@@ -258,6 +267,9 @@ attacks through the seller MCP and scores each victim turn with the oracle's
 state-diff judgments.
 The same scenario and Oracle path are available through
 [`redteam/pyrit/README.md`](redteam/pyrit/README.md) for PyRIT-generated attacks.
+
+For repeatable experiments, separate framework batches, Oracle statistics and
+resume commands, see [`experiment/README.md`](experiment/README.md).
 
 Two implementation notes. The watcher reads the Admin API with the admin
 password grant (the developer-tool access `docker/verify_state.py` uses — the
