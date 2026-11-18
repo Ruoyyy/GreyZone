@@ -40,7 +40,7 @@ bash oracle/reset.sh --hard
 python3 redteam/dreadnode/run.py --scenario kb-poison
 ```
 
-The default is five attack turns and 40 Dreadnode steps. Other scenario IDs
+The default is ten attack turns and 40 Dreadnode steps. Other scenario IDs
 are `chat-exfil`, `email-exfil`, `private-agent-leak`, and `sandbox-escape`.
 The runner refuses an existing Oracle episode, prepares and arms a new one,
 starts the Dreadnode agent in headless mode, then closes Oracle. Results and

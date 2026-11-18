@@ -50,9 +50,14 @@ export function configureGenerated(generated, episode) {
 }
 
 function command(name, args, env) {
-  const result = spawnSync(name, args, { cwd: root, env, stdio: 'inherit' });
+  const result = spawnSync(name, args, { cwd: root, env, stdio: 'inherit',
+    timeout: args.includes('oracle.watch') ? Number(env.CLAWITH_ORACLE_TIMEOUT || 1200) * 1000 : undefined });
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${name} ${args.join(' ')} exited ${result.status}`);
+  if (result.status !== 0) {
+    const error = new Error(`${name} ${args.join(' ')} exited ${result.status}`);
+    error.exitCode = result.status;
+    throw error;
+  }
 }
 
 async function main() {
@@ -95,6 +100,12 @@ async function main() {
     PROMPTFOO_DISABLE_TELEMETRY: 'true',
   };
   configureOpenAIModels(config, env);
+  for (const key of ['CLAWITH_MAX_TURNS', 'CLAWITH_REPLY_TIMEOUT', 'CLAWITH_ORACLE_TIMEOUT', 'CLAWITH_SETTLE_TIMEOUT']) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
+  config.redteam.strategies.find((s) => s.id === 'crescendo').config.maxTurns = Number(env.CLAWITH_MAX_TURNS || 10);
+  config.targets[0].config.maxTurns = Number(env.CLAWITH_MAX_TURNS || 10);
+  config.targets[0].config.replyTimeoutSeconds = Number(env.CLAWITH_REPLY_TIMEOUT || 300);
   await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
   if (!env.OPENAI_API_KEY || !env.MCP_API_KEY) {
     throw new Error('Clawith/.env needs OPENAI_API_KEY and MCP_API_KEY');
@@ -109,33 +120,54 @@ async function main() {
   command(path.join(here, 'node_modules/.bin/promptfoo'),
     ['redteam', 'generate', '-c', configPath, '-o', generatedPath], env);
   const generated = configureGenerated(YAML.parse(await readFile(generatedPath, 'utf8')), 0);
-  command('uv', ['run', '--with', 'httpx', '--with', 'websockets', 'python', '-m', 'oracle.run_episode', '--prepare'], env);
-  command('uv', ['run', '--with', 'httpx', 'python', '-m', 'oracle.run_episode', '--arm'], env);
+  command('uv', ['run', '--with-requirements', 'oracle/requirements.txt', 'python', '-m', 'oracle.run_episode', '--prepare'], env);
+  command('uv', ['run', '--with-requirements', 'oracle/requirements.txt', 'python', '-m', 'oracle.run_episode', '--arm'], env);
   const episode = JSON.parse(await readFile(path.join(root, '.run/oracle/episode.json'), 'utf8'));
   config.targets[0].config.episode = episode.n;
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
   generated.targets[0].config.episode = episode.n;
   await writeFile(generatedPath, YAML.stringify(generated));
   let runError;
+  let oracleError;
   try {
     command(path.join(here, 'node_modules/.bin/promptfoo'),
       ['eval', '-c', generatedPath, '-j', '1', '--delay', '5000'], env);
   } catch (error) {
     runError = error;
   } finally {
-    command('uv', ['run', '--with', 'httpx', 'python', '-m', 'oracle.watch', '--close'], env);
+    const marker = { run_id: env.GREYZONE_RUN_ID, scenario: id, episode: episode.n,
+      framework_status: !runError || runError.exitCode === 100 ? 'completed' : 'error' };
+    const markerPath = path.join(runDir, 'completion.json');
+    await writeFile(markerPath, JSON.stringify(marker, null, 2) + '\n', { mode: 0o600 });
+    try {
+      command('uv', ['run', '--with-requirements', 'oracle/requirements.txt', 'python', '-m', 'oracle.watch', '--close'], env);
+      marker.oracle_status = 'completed';
+    } catch (error) {
+      oracleError = error;
+      marker.oracle_status = 'error';
+      marker.oracle_error = String(error);
+    }
+    await writeFile(markerPath, JSON.stringify(marker, null, 2) + '\n', { mode: 0o600 });
   }
-  const result = JSON.parse(await readFile(path.join(root, `.run/oracle/result-${episode.n}.json`), 'utf8'));
+  const raw = await readFile(path.join(root, `.run/oracle/result-${episode.n}.json`), 'utf8').catch(() => '{"verdict":"unavailable"}');
+  const result = JSON.parse(raw);
   await writeFile(path.join(runDir, 'oracle-result.json'), `${JSON.stringify(result, null, 2)}\n`);
   console.log(`Promptfoo: ${config.outputPath}`);
   console.log(`Oracle: ${path.join(runDir, 'oracle-result.json')}`);
   console.log(`Oracle verdict: ${result.verdict}`);
   if (runError) throw runError;
+  if (oracleError) throw oracleError;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  if (!process.env.CLAWITH_CAMPAIGN_LOCK_FD && !process.argv.includes('--config-only')) {
+    const guarded = spawnSync('python3', [path.join(root, 'redteam/campaign.py'),
+      process.execPath, ...process.argv.slice(1)], { stdio: 'inherit' });
+    if (guarded.error) throw guarded.error;
+    process.exit(guarded.status ?? 1);
+  }
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+    process.exitCode = error.exitCode ?? 1;
   });
 }

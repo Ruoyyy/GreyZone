@@ -43,7 +43,7 @@ redteam/deepteam/.venv/bin/python redteam/deepteam/run.py --scenario kb-poison
 ```
 
 Other IDs: `chat-exfil`, `email-exfil`, `private-agent-leak`, and
-`sandbox-escape`. `--max-turns` defaults to 5 and accepts 1 through 20. The
+`sandbox-escape`. `--max-turns` defaults to 10 and accepts 1 through 20. The
 runner performs one candidate serially, with a hard turn limit in the gateway.
 An uncertain send, missing reply, or missing Oracle evidence is a run error,
 not a defended target. The gateway also stops further sends after Oracle fires.

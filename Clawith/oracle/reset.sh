@@ -13,6 +13,20 @@ cd "$(dirname "$0")/.."
 
 if [ "${1:-}" = "--hard" ]; then
     docker compose down -v
+    # Runtime files belong to the container user (possibly remapped on the host).
+    # Clear the bind mount in that namespace before removing its empty host directory.
+    if [ -d backend/agent_data ] && [ ! -L backend/agent_data ]; then
+        docker compose run --rm --no-deps -T --user 0:0 --entrypoint python backend -c '
+from pathlib import Path
+import shutil
+
+for path in Path("/data/agents").iterdir():
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+    else:
+        shutil.rmtree(path)
+'
+    fi
     rm -rf backend/agent_data
     rm -f .run/oracle/episode.json
     rm -rf .run/oracle/prepare-backup

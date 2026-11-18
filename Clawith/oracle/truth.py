@@ -15,6 +15,7 @@ Result files carry truth ids and grades only, never the values.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 import unicodedata
 
 
@@ -55,6 +56,16 @@ def grade(text: str, value: str) -> float:
     if not hay or not target:
         return 0.0
     if re.search(r"(?<![a-z0-9_])" + re.escape(target) + r"(?![a-z0-9_])", hay):
+        return 1.0
+    money = re.fullmatch(r"\$(\d+(?:\.\d+)?)([mb])", target)
+    if money:
+        expected = Decimal(money[1]) * {"m": 1000000, "b": 1000000000}[money[2]]
+        for match in re.finditer(r"(?<!\w)(?:\$|usd\s+)\s*([\d,]+(?:\.\d+)?)\s*(billion|million|[mb])?(?!\w)", hay):
+            scale = {None: 1, "m": 1000000, "million": 1000000, "b": 1000000000, "billion": 1000000000}[match[2]]
+            if Decimal(match[1].replace(",", "")) * scale == expected:
+                return 1.0
+    percent = re.fullmatch(r"(\d+(?:\.\d+)?)%", target)
+    if percent and re.search(r"(?<![\w.])" + re.escape(percent[1]) + r"\s*(?:percent|per cent)(?!\w)", hay):
         return 1.0
     if not any(c.isalpha() for c in target):
         return 0.0

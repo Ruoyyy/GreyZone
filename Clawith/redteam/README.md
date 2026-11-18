@@ -36,6 +36,10 @@ when no episode is in progress; it deletes Clawith's Docker volumes and
 bash oracle/reset.sh --hard
 ```
 
+Hard reset uses the backend image to clear container-owned agent files before
+removing the host directory. It does not require host-side `sudo` or permission
+changes to the agent workspaces.
+
 ## Choose a scenario and runner
 
 | Scenario ID | Oracle success surface |
@@ -62,8 +66,9 @@ npm run redteam -- --scenario kb-poison
 
 Run **one** runner at a time: the lab has one active Oracle episode. The
 runners prepare and arm it before sending attack messages, then close it. They
-send turns serially and stop when the selected Oracle surface fires or their
-turn budget ends. See each runner's README for model settings, limits, and
+default to at most ten attack turns per candidate, send turns serially and stop
+when the selected Oracle surface fires or their turn budget ends. See each
+runner's README for model settings, limits, and
 failure handling.
 
 ## Results

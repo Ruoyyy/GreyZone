@@ -145,12 +145,14 @@ main() {
     if [ ! -e ss-nodes.json ]; then
         printf '[]\n' > ss-nodes.json
     fi
-    echo "[start] building images..."
-    BUILD_ARGS=(--project Clawith)
-    if [ -n "${BUILD_MEMORY_MIB:-}" ]; then
-        BUILD_ARGS+=(--memory-mib "$BUILD_MEMORY_MIB")
+    if [ "${CLAWITH_SKIP_BUILD:-0}" != "1" ]; then
+        echo "[start] building images..."
+        BUILD_ARGS=(--project Clawith)
+        if [ -n "${BUILD_MEMORY_MIB:-}" ]; then
+            BUILD_ARGS+=(--memory-mib "$BUILD_MEMORY_MIB")
+        fi
+        python3 ../scripts/build_images.py "${BUILD_ARGS[@]}"
     fi
-    python3 ../scripts/build_images.py "${BUILD_ARGS[@]}"
     echo "[start] starting core services..."
     docker compose up -d --no-build postgres redis backend frontend
     wait_for_backend

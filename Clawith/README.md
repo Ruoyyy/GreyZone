@@ -76,7 +76,8 @@ The stack is ready when:
 | MCP bridge | `curl -X POST http://127.0.0.1:3010/mcp` returns 401 (up, unauthenticated) |
 
 Reset everything (users, group, agents, all runtime state) with
-`docker compose down -v && rm -rf backend/agent_data && ./start.sh`.
+`bash oracle/reset.sh --hard`. The reset clears container-owned agent files
+through the backend image before removing the host directory and restarting.
 
 ### 3. Talk to the agents
 

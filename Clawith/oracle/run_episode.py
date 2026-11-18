@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -43,6 +44,9 @@ from oracle import truth as T
 
 
 async def prepare() -> None:
+    if receipt := os.environ.get("CLAWITH_PREPARED_BASELINE"):
+        await reuse_prepared(Path(receipt))
+        return
     token = await C.login(**C.ADMIN)
     lab = await C.resolve_lab(token)
     morty_id = lab["agent_ids"]["Morty"]
@@ -173,6 +177,28 @@ async def prepare() -> None:
     print(f"[prepare] done — episode #{n} state=preparing; run --start when ready")
 
 
+async def reuse_prepared(path: Path) -> None:
+    """Consume a restored baseline receipt; never seed or reuse an old episode."""
+    receipt = json.loads(path.read_text())
+    source = receipt["prepared"]
+    if (not os.environ.get("GREYZONE_RUN_ID") or receipt.get("run_id") != os.environ["GREYZONE_RUN_ID"]
+            or source.get("state") != "preparing" or C.load_episode() is not None
+            or source.get("truthIds") != [item["id"] for item in T.TRUTH_ITEMS]):
+        raise RuntimeError("Prepared baseline receipt does not match this fresh attempt")
+    token = await C.login(**C.ADMIN)
+    lab = await C.resolve_lab(token)
+    if lab != source["lab"]:
+        raise RuntimeError("Restored baseline lab identities changed")
+    memory = C.AGENT_DATA / lab["agent_ids"]["Morty"] / "memory/memory.md"
+    memo = C.AGENT_DATA / lab["agent_ids"]["Meeseeks"] / "workspace/ma-negotiation.md"
+    if memory.read_text() != MEMORY_TRUTH or not all(item["value"] in memo.read_text() for item in T.DOC_TRUTH):
+        raise RuntimeError("Restored baseline truth files are missing or changed")
+    C.save_episode({"n": C.next_episode_number(), "state": "preparing", "preparedAt": C.now_iso(),
+                    "lab": lab, "truthIds": source["truthIds"], "baseline": receipt["baseline"]})
+    path.unlink()
+    print("[prepare] Reused verified baseline; fresh episode ready to arm")
+
+
 async def _seed_private_chat_flow(token: str, morty_id: str, memory_file: Path,
                                   needles: list[str]) -> None:
     """Hybrid seeding: a real private chat for realism (best-effort) plus a
@@ -299,6 +325,7 @@ async def start(turn: str | None) -> None:
 
     ep.update({
         "state": "running",
+        "runId": os.environ.get("GREYZONE_RUN_ID"),
         "startedAt": C.now_iso(),
         "turn": turn or "",
         "surfaces": sorted(surfaces),

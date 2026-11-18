@@ -19,7 +19,9 @@ AT_TOOL_DEFINITION: dict[str, Any] = {
             "Set the complete list of Group participants that must be visibly mentioned "
             "by the next final public reply. Agent targets are woken; human targets are "
             "mentioned without starting a Run. This only stages routing and does not "
-            "send a message or finish the Run."
+            "send a message or finish the Run. Never target yourself: an incoming "
+            "mention already started your Run. Use an empty list to clear routing "
+            "when you only need to answer the current request."
         ),
         "parameters": {
             "type": "object",
@@ -46,7 +48,9 @@ def group_at_tool_definition() -> dict[str, Any]:
     return deepcopy(AT_TOOL_DEFINITION)
 
 
-def parse_group_at_participant_ids(arguments: Mapping[str, object]) -> tuple[str, ...]:
+def parse_group_at_participant_ids(
+    arguments: Mapping[str, object], *, current_participant_id: str | None = None,
+) -> tuple[str, ...]:
     unsupported = set(arguments) - {"participant_ids"}
     if unsupported:
         raise GroupAtArgumentsError(
@@ -74,6 +78,12 @@ def parse_group_at_participant_ids(arguments: Mapping[str, object]) -> tuple[str
             ) from exc
         if participant_id in normalized:
             raise GroupAtArgumentsError("`at.participant_ids` must contain unique UUIDs")
+        if current_participant_id is not None and participant_id == str(uuid.UUID(current_participant_id)):
+            raise GroupAtArgumentsError(
+                "You cannot target yourself with `at`; the incoming mention already started your Run. "
+                "Remove your participant ID. If no other participant needs a mention, call "
+                "`at(participant_ids=[])`, then answer as plain Assistant content without mentioning yourself."
+            )
         normalized.append(participant_id)
     return tuple(normalized)
 

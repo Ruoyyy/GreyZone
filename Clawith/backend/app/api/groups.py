@@ -201,6 +201,9 @@ class GroupRunStateOut(BaseModel):
     run_id: uuid.UUID
     status: str
     can_cancel: bool
+    source_message_id: str | None = None
+    reply_message_ids: list[str] = Field(default_factory=list)
+    delivery_status: str | None = None
     agent_id: uuid.UUID | None = None
     system_role: str | None = None
     correlation_id: str | None = None
@@ -1293,9 +1296,17 @@ async def get_group_run_state(
         tenant_id=tenant_id,
         runs=[run] if execution_status == "waiting_user" else [],
     )
+    deliveries = (await db.execute(select(AgentRunEvent).where(
+        AgentRunEvent.run_id == run.id, AgentRunEvent.event_type == "delivery_succeeded",
+    ))).scalars().all()
+    reply_ids = list(dict.fromkeys(str(event.payload["message_id"]) for event in deliveries
+                                  if isinstance(event.payload, dict) and event.payload.get("message_id")))
     return GroupRunStateOut(
         run_id=run.id,
         status=execution_status,
+        source_message_id=run.source_id,
+        reply_message_ids=reply_ids,
+        delivery_status=run.delivery_status,
         can_cancel=execution_status not in {"completed", "failed", "cancelled"},
         agent_id=run.agent_id,
         system_role=run.system_role,

@@ -2,7 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { configureGenerated, validateScenario } from '../run.mjs';
-import { parseProbe, targetTurnResult, toolData } from '../target_provider.mjs';
+import { parseProbe, runtimeError, stateQueryError, targetTurnResult, toolData } from '../target_provider.mjs';
+
+test('state query failures retain HTTP conflict details and subprocess errors', () => {
+  const detail = stateQueryError({ stdout: JSON.stringify({ error: {
+    http_status: 409, detail: 'inconsistent_checkpoint', attempt: 6, retry: false } }) });
+  assert.equal(detail.code, 'target_state_unavailable');
+  assert.equal(detail.http_status, 409);
+  assert.equal(detail.detail, 'inconsistent_checkpoint');
+  assert.equal(detail.attempt, 6);
+  assert.equal(stateQueryError({ stdout: '', error: new Error('timed out') }).process_error, 'timed out');
+});
+
+test('target execution errors cannot be reported as Oracle success', () => {
+  const error = runtimeError('Done', [{ run_id: 'run', status: 'failed' }]);
+  assert.equal(error.code, 'target_failed');
+  const result = targetTurnResult('Done', { success: true }, 's', 30, error);
+  assert.match(result.error, /target_failed/);
+  assert.equal(result.conversationEnded, undefined);
+});
 
 const scenario = {
   schemaVersion: 1, id: 'chat-exfil', environment: 'clawith',

@@ -37,7 +37,7 @@ redteam/pyrit/.venv/bin/python redteam/pyrit/run.py --scenario kb-poison
 ```
 
 Other scenario IDs are `chat-exfil`, `email-exfil`, `private-agent-leak`, and
-`sandbox-escape`. `--max-turns` defaults to 5 and accepts 1 through 20. The
+`sandbox-escape`. `--max-turns` defaults to 10 and accepts 1 through 20. The
 scenario's `attackerTurn` is the exact first message; PyRIT generates later
 messages from Morty's replies and the Oracle score. Each run uses one Oracle
 episode, one candidate, and serial turns. The gateway enforces the turn budget

@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from redteam.dreadnode.run import env_value, run_command, scenario_data  # noqa: E402
+from redteam.campaign import locked
 
 OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 PYRIT_VERSION = "1.1.0"
@@ -63,6 +64,8 @@ async def execute(args: argparse.Namespace) -> int:
 
     await initialize_pyrit_async(memory_db_type=IN_MEMORY, initializers=[],
                                  load_defaults=False, env_files=[], silent=True)
+    from redteam.usage import install_usage_hook
+    install_usage_hook()
     adversarial = OpenAIChatTarget(endpoint=endpoint, api_key=attacker_key,
                                    model_name=model)
     env = {**os.environ, "MCP_API_KEY": bridge_key,
@@ -78,6 +81,7 @@ async def execute(args: argparse.Namespace) -> int:
                                       "stopped": False}))
     attack_result = None
     run_error = None
+    oracle_error = None
     try:
         os.environ.update({
             "MCP_API_KEY": bridge_key,
@@ -106,20 +110,24 @@ async def execute(args: argparse.Namespace) -> int:
     except Exception as exc:
         run_error = f"{type(exc).__name__}: {exc}"
     finally:
-        run_command([python, "-m", "oracle.watch", "--close"], env)
+        from redteam.finalize import close
+        oracle_error = close([python, "-m", "oracle.watch", "--close"], env, run_dir, args.scenario,
+                             episode["n"], run_error is None and attack_result is not None
+                             and attack_result.outcome.value not in {"error", "undetermined"})
 
     if attack_result is not None and attack_result.outcome.value in {"error", "undetermined"}:
         run_error = run_error or (attack_result.error_message or
                                   f"PyRIT outcome: {attack_result.outcome.value}")
 
-    oracle = json.loads((ROOT / ".run/oracle" / f"result-{episode['n']}.json").read_text())
+    oracle_file = ROOT / ".run/oracle" / f"result-{episode['n']}.json"
+    oracle = json.loads(oracle_file.read_text()) if oracle_file.exists() else {"verdict": "unavailable"}
     (run_dir / "oracle-result.json").write_text(json.dumps(oracle, indent=2) + "\n")
     state = json.loads(state_file.read_text())
     summary = {"scenario": args.scenario, "episode": episode["n"],
                "turns": state["turns"], "oracleVerdict": oracle["verdict"],
                "runStatus": "error" if run_error else
                             ("invalid-zero-turn" if state["turns"] == 0 else "completed"),
-               "error": run_error}
+               "error": run_error, "oracle_error": oracle_error}
     if attack_result is not None:
         summary["pyritOutcome"] = attack_result.outcome.value
         (run_dir / "pyrit-result.json").write_text(
@@ -133,14 +141,15 @@ async def execute(args: argparse.Namespace) -> int:
     print(f"[pyrit] Oracle: {oracle['verdict']}; turns: {state['turns']}; run: {summary['runStatus']}")
     if run_error:
         print(f"[pyrit] {run_error}", file=sys.stderr)
-    return 1 if run_error or state["turns"] == 0 else 0
+    return 1 if run_error or oracle_error or state["turns"] == 0 else 0
 
 
+@locked
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", default="kb-poison")
     parser.add_argument("--model", default=env_value("OPENAI_MODEL"))
-    parser.add_argument("--max-turns", type=int, default=5)
+    parser.add_argument("--max-turns", type=int, default=int(os.environ.get("CLAWITH_MAX_TURNS", "10")))
     args = parser.parse_args()
     if not 1 <= args.max_turns <= 20:
         parser.error("max-turns must be 1..20")

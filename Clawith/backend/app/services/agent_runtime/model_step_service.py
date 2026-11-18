@@ -141,6 +141,8 @@ def _visible_mention_names(content: str, member_names: Sequence[str]) -> tuple[s
                 break
             end = index + len(marker)
             start = end
+            if index > 0 and (visible_text[index-1].isalnum() or visible_text[index-1] in {"_", "@"}):
+                continue
             if end < len(visible_text) and (
                 visible_text[end].isalnum() or visible_text[end] in {"_", "-"}
             ):
@@ -151,15 +153,15 @@ def _visible_mention_names(content: str, member_names: Sequence[str]) -> tuple[s
     return tuple(dict.fromkeys(name for _, _, name in sorted(matches)))
 
 
-async def _group_mention_mismatches(
+async def _resolve_group_mentions(
     db: AsyncSession,
     *,
     state: RuntimeGraphState,
     content: str,
     mention_participant_ids: tuple[str, ...],
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     if "@" not in content and not mention_participant_ids:
-        return (), ()
+        return content, mention_participant_ids, (), ()
     initial_input = state["snapshots"].initial_input
     raw_group_id = initial_input.get("group_id")
     if raw_group_id is None:
@@ -175,7 +177,7 @@ async def _group_mention_mismatches(
         ) from exc
 
     result = await db.execute(
-        select(Participant.id, Participant.display_name)
+        select(Participant.id, Participant.display_name, Participant.type)
         .join(GroupMember, GroupMember.participant_id == Participant.id)
         .where(
             GroupMember.group_id == group_id,
@@ -184,13 +186,33 @@ async def _group_mention_mismatches(
     )
     participants_by_name: dict[str, set[str]] = {}
     participant_names: dict[str, str] = {}
-    for participant_id, display_name in result.all():
+    human_ids: set[str] = set()
+    for participant_id, display_name, participant_type in result.all():
         normalized_id = str(participant_id)
         participants_by_name.setdefault(display_name, set()).add(normalized_id)
         participant_names[normalized_id] = display_name
+        if participant_type == "user":
+            human_ids.add(normalized_id)
 
-    provided_ids = set(mention_participant_ids)
     visible_names = _visible_mention_names(content, tuple(participants_by_name))
+    resolved_ids = list(mention_participant_ids)
+    # Human mentions never dispatch Runs. Resolve only unique current members;
+    # Agent routing and ambiguous names still require explicit stable IDs.
+    for name in visible_names:
+        ids = participants_by_name[name]
+        if len(ids) == 1 and ids <= human_ids:
+            participant_id = next(iter(ids))
+            if participant_id not in resolved_ids:
+                resolved_ids.append(participant_id)
+    prefixes = tuple(dict.fromkeys(
+        participant_names[value] for value in resolved_ids
+        if value in human_ids and participant_names[value] not in visible_names
+    ))
+    if prefixes:
+        content = " ".join(f"@{name}" for name in prefixes) + " " + content
+        visible_names = _visible_mention_names(content, tuple(participants_by_name))
+    mention_participant_ids = tuple(resolved_ids)
+    provided_ids = set(mention_participant_ids)
     missing_structured = tuple(
         name
         for name in visible_names
@@ -205,7 +227,7 @@ async def _group_mention_mismatches(
             and participant_names[participant_id] not in visible_name_set
         )
     )
-    return missing_structured, missing_visible
+    return content, mention_participant_ids, missing_structured, missing_visible
 
 
 def _pending_group_at_participant_ids(
@@ -271,21 +293,13 @@ _RUNTIME_WAIT_TOOL_DEFINITION: dict = {
                 },
             },
             "required": ["waiting_type", "reason"],
-            "allOf": [
-                {
-                    "if": {
-                        "properties": {"waiting_type": {"const": "user"}},
-                        "required": ["waiting_type"],
-                    },
-                    "then": {"required": ["question"]},
-                }
-            ],
             "additionalProperties": False,
         },
     },
 }
 _GROUP_RUNTIME_INSTRUCTION = """
 Current Run is executing inside a native Clawith group. Follow these platform rules:
+- You are the Agent identified by group_context.agent. An incoming @mention of you already started this Run; it is not an outgoing routing target. Never stage your own participant ID through `at` or mention yourself in the final response. Answer the current request directly as plain Assistant content unless another participant genuinely needs to be mentioned.
 - Answer only from this group, this group session, the injected Agent context, and data returned by enabled tools.
 - Group scope is not a closed Tool allowlist. Normal Agent tools, the Agent's own Workspace, and global A2A remain available whenever they are present in the current Tool Schema.
 - File tools that expose `workspace_scope` can access both workspaces during Group Runs. Use `group` for every path in `group_context.workspace_index` and `agent` only for the Agent's private Workspace. Tools without that parameter retain their original scope. Never infer that a path is absent from one scope because it is missing from the other.
@@ -295,11 +309,11 @@ Current Run is executing inside a native Clawith group. Follow these platform ru
 - Query members or files with the current-group tools when the bounded snapshot is insufficient.
 - An `@` mention addresses a current Group participant. Mentioning an Agent wakes it to reply publicly in this same group session. Mentioning a human is visible but does not start a Run or imply that they have replied.
 - Use `@` for an Agent only when that specific Agent must produce a new public reply now. In every other case, regardless of topic, wording, tone, or intent, write the Agent's display name without `@` and omit its ID from `at.participant_ids`.
-- Use `@` for a human only when the public reply directly addresses that person or explicitly needs their attention. A human mention never wakes a Run or proves that the person has seen or answered the message.
+- Use `@` for a human only when the public reply directly addresses that person or explicitly needs their attention. The platform resolves unique human mentions within this group without waking a Run. If you explicitly stage a human through `at`, the platform ensures the matching mention is visible. A human mention never proves that the person has seen or answered the message.
 - Before mentioning an Agent, ask: "Must this Agent answer this message in the group for the conversation or task to proceed?" If no, do not use `@`. Non-waking references include, but are not limited to, greetings, thanks, acknowledgments, introductions, compliments, status statements, summaries, historical references, and descriptions of future collaboration.
 - The final plain Assistant response is the public group message. Write only the business-facing words that group members should actually read. Never expose or explain Tool Schema, tool names, `participant_id`, Runtime behavior, child Runs, routing, or capability verification in that content.
 - When mentioning another Agent, write each target as the literal `@display name` in the final response and state the concrete question, request, or responsibility that target must answer in the group. The structured participant ID wakes the Agent; the matching literal `@display name` makes the mention visible to people.
-- There is no separate current-group send-message tool. To mention one or more Group participants, first call `group_query_members`, then call `at` with the complete stable participant ID set. After the `at` Tool Result, produce the final public response as normal Assistant content. Agent targets are woken; human targets are only visibly mentioned. Do not put public content in `at`.
+- There is no separate current-group send-message tool. To wake one or more Group Agents, first call `group_query_members`, then call `at` with the complete stable participant ID set. After the `at` Tool Result, produce the final public response as normal Assistant content. Human targets are only visibly mentioned; use explicit IDs when a human display name is ambiguous. Do not put public content in `at`.
 - After `group_query_members` returns the IDs you need, do not print participant IDs in Assistant text. Call `at`, wait for its Tool Result, and then write the final public response with every matching literal `@display name`.
 - Plain Assistant text such as "I will @ them now" does not stage routing. If Runtime reports a mismatch, correct the target set with `at` or correct the final visible mentions.
 - For a chained request such as "wake A and ask A to wake B", this Run should mention A only and give A the concrete instruction to wake B. Do not wake B from this Run unless the user also asked you to contact B directly.
@@ -307,7 +321,7 @@ Current Run is executing inside a native Clawith group. Follow these platform ru
 - `send_message_to_agent` is private A2A. Use it only when you need private advice or facts and the target does not need to reply publicly in the group. It is never a substitute for `at` when the user asks you to `@` an Agent or have them respond in the group.
 - A planned group transition must remain in this group session. When `group_context.planning_hint` assigns a later responsibility to another current-group Agent, never call `send_message_to_agent` for that transition under any `msg_type`; publish your completed part as final Assistant content, stage that Agent through `at`, and state exactly what they must do and reply with publicly.
 - Do not perform another Agent's assigned responsibility, wait for its private delegated result, merge that private result into your answer, or claim that Agent completed work on your behalf. A private A2A result is not that Agent's public group reply.
-- A textual `@name` is only visible text and never routes or wakes an Agent. Never infer participant IDs from display names. If no other Agent needs to join and reply publicly, do not call `at`, or clear a previously staged set with `at(participant_ids=[])`.
+- A textual Agent `@name` alone never wakes an Agent; its stable ID must be staged through `at`. Never infer participant IDs from display names. If no other Agent needs to join and reply publicly, do not call `at`, or clear a previously staged set with `at(participant_ids=[])`.
 - If this Run was started because another Agent mentioned you, answer only the part addressed to you in `current_responsibility`, using your own role and voice, and normally finish without mentioning anyone. Do not repeat the source Agent's message, answer on behalf of other mentioned participants, describe its mention operation as your own action, or mention the source/co-mentioned Agents merely to reciprocate a greeting or acknowledgment. Mention another Agent only for a new concrete question, request, or responsibility that genuinely requires another public reply.
 - When several Agents were already woken by the same source message, each has its own Run. Address them by plain display name if useful, but do not `@` them just to make them greet or acknowledge one another again.
 - You may update only your own group memory. Mention any reusable group workspace file path in the final group reply.
@@ -2248,12 +2262,16 @@ class RuntimeModelStepService:
                         legacy_participant_ids or staged_participant_ids
                     )
                     async with self._session_factory() as db:
-                        missing_structured, missing_visible = await _group_mention_mismatches(
+                        content, mention_participant_ids, missing_structured, missing_visible = await _resolve_group_mentions(
                             db,
                             state=state,
                             content=result.finish_content or "",
                             mention_participant_ids=mention_participant_ids,
                         )
+                        result = replace(result, finish_content=content,
+                            finish_mention_participant_ids=mention_participant_ids,
+                            assistant_message=({**result.assistant_message, "content": content}
+                                               if result.assistant_message is not None else None))
                         if missing_structured:
                             names = ", ".join(f"@{name}" for name in missing_structured)
                             result = _repair(
@@ -2261,7 +2279,7 @@ class RuntimeModelStepService:
                                 context,
                                 step,
                                 (
-                                    "The public group reply contains visible Agent "
+                                    "The public group reply contains visible participant "
                                     f"mention(s) without structured routing: {names}. "
                                     "No public message was created. Query Group members "
                                     "if needed, call `at` with every matching stable "
@@ -2278,8 +2296,10 @@ class RuntimeModelStepService:
                                 (
                                     "The staged `at` target(s) are missing from the visible "
                                     f"public reply: {names}. No public message was created. "
-                                    "Add every matching visible @mention, or call `at` again "
-                                    "with the complete intended target set."
+                                    "If a staged target is yourself or no other participant needs "
+                                    "attention, clear routing with `at(participant_ids=[])` and "
+                                    "answer directly without that mention. Otherwise add every "
+                                    "matching visible @mention or replace `at` with the complete intended target set."
                                 ),
                                 repair_code="invalid_group_at",
                             )

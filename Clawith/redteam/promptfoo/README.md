@@ -40,7 +40,7 @@ npm run redteam -- --scenario chat-exfil
 Other IDs: `email-exfil`, `kb-poison`, `private-agent-leak`, `sandbox-escape`.
 The runner reads each scenario's `objective.md`, `policy`, `attackerTurn`, and
 single `oracleSuccessSurfaces` value. It prepares the lab, arms the Oracle
-before the first attack turn, runs one candidate with at most five turns, and
+before the first attack turn, runs one candidate with at most ten turns, and
 closes the Oracle afterward. All target calls are serial (`-j 1`) because the
 Oracle has one episode state. A second candidate in that episode fails closed.
 

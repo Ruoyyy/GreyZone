@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { appendFile, readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -8,6 +8,11 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '../..');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function record(event) {
+  if (process.env.CLAWITH_EXPERIMENT_EVENTS) {
+    await appendFile(process.env.CLAWITH_EXPERIMENT_EVENTS, JSON.stringify(event) + '\n');
+  }
+}
 
 export function toolData(result, name) {
   const message = result.content?.filter((part) => part.type === 'text').map((part) => part.text).join(' ');
@@ -24,12 +29,31 @@ export function parseProbe(stdout, surface) {
   return { success: judgment.fired === true, judgment, verdict: probe.verdict };
 }
 
-export function targetTurnResult(reply, oracle, sessionId, timeoutSeconds) {
+export function runtimeError(reply, states) {
+  const match = /^\u4efb\u52a1(?:\u6267\u884c|\u89c4\u5212)\u672a\u5b8c\u6210\u3002\n\u9519\u8bef\uff1a[\s\S]*\n\u9519\u8bef\u7801\uff1a([A-Za-z0-9_.-]+)\nRun ID\uff1a([0-9a-fA-F-]{36})\s*$/.exec(reply ?? '');
+  if (match && states.some((run) => run.run_id === match[2] && ['failed', 'cancelled'].includes(run.status))) {
+    return { code: match[1], run_id: match[2] };
+  }
+  const failed = states.find((run) => ['failed', 'cancelled'].includes(run.status));
+  return failed ? { code: `target_${failed.status}`, run_id: failed.run_id } : null;
+}
+
+export function stateQueryError(result) {
+  let detail;
+  try { detail = JSON.parse(result.stdout || '{}').error; } catch { /* Keep process errors below. */ }
+  return { code: 'target_state_unavailable', ...detail,
+    ...(result.error ? { process_error: result.error.message } : {}),
+    ...(result.stderr ? { stderr: result.stderr.slice(-2000) } : {}) };
+}
+
+export function targetTurnResult(reply, oracle, sessionId, timeoutSeconds, targetError = null) {
   const result = {
     output: reply ?? `[Morty did not reply within ${timeoutSeconds} seconds]`,
     sessionId,
     metadata: { oracle, replied: reply !== null },
   };
+  if (targetError) return { ...result, error: `Target Run failed: ${targetError.code}`,
+    metadata: { ...result.metadata, targetError } };
   if (oracle.success) {
     result.conversationEnded = true;
     result.conversationEndReason = 'oracle-success';
@@ -43,6 +67,7 @@ export default class ClawithTargetProvider {
     this.client = null;
     this.sessionId = null;
     this.oracleSucceeded = false;
+    this.turns = 0;
   }
 
   id() { return 'clawith-alice-mcp'; }
@@ -73,8 +98,8 @@ export default class ClawithTargetProvider {
   }
 
   probe() {
-    const result = spawnSync('uv', ['run', '--with', 'httpx', 'python', '-m', 'oracle.watch', '--probe'], {
-      cwd: root, env: process.env, encoding: 'utf8', timeout: 120_000,
+    const result = spawnSync('uv', ['run', '--with-requirements', 'oracle/requirements.txt', 'python', '-m', 'oracle.watch', '--probe'], {
+      cwd: root, env: process.env, encoding: 'utf8', timeout: Number(process.env.CLAWITH_ORACLE_TIMEOUT || 1200) * 1000,
     });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`Oracle probe failed: ${result.stderr || result.stdout}`);
@@ -82,6 +107,7 @@ export default class ClawithTargetProvider {
   }
 
   async callApi(prompt, context = {}) {
+    if (this.failed) return { error: 'Previous target turn failed; reset before another attack' };
     const sessionId = String(context.vars?.sessionId || '');
     if (!sessionId) return { error: 'Promptfoo sessionId is required' };
     if (this.sessionId && this.sessionId !== sessionId) {
@@ -92,6 +118,9 @@ export default class ClawithTargetProvider {
       return { output: '', sessionId, conversationEnded: true,
         conversationEndReason: 'oracle-success' };
     }
+    if (this.turns >= Number(this.config.maxTurns || 10)) {
+      return { error: 'Physical attack turn budget exhausted', sessionId };
+    }
     const content = String(prompt || '').trim();
     if (!content) return { error: 'Attack message is empty', sessionId };
     const ep = JSON.parse(await readFile(path.join(root, '.run/oracle/episode.json'), 'utf8'));
@@ -99,32 +128,72 @@ export default class ClawithTargetProvider {
       return { error: 'Oracle episode is not the armed episode', sessionId };
     }
     const lab = ep.lab;
-    const args = { group_id: lab.group_id, session_id: lab.session_id };
-    const baseline = await this.callTool('list_group_messages', { ...args, limit: 1 });
-    let cursor = baseline.at(-1)?.cursor;
-    await this.callTool('send_group_message', {
-      ...args, content, mention_participant_ids: [lab.participants.Morty],
-    });
-
     const timeout = Number(this.config.replyTimeoutSeconds);
     const interval = Number(this.config.pollIntervalSeconds);
     if (!(timeout > 0 && timeout <= 600 && interval > 0 && interval <= timeout)) {
       throw new Error('Invalid reply timeout or poll interval');
     }
+    const args = { group_id: lab.group_id, session_id: lab.session_id };
+    const baseline = await this.callTool('list_group_messages', { ...args, limit: 1 });
+    let cursor = baseline.at(-1)?.cursor;
+    await record({ kind: 'intent', episode: ep.n, message: content,
+      group_id: lab.group_id, session_id: lab.session_id });
+    this.failed = true; // A failed send may already have reached the backend.
+    this.turns += 1;
+    const intake = await this.callTool('send_group_message', {
+      ...args, content, mention_participant_ids: [lab.participants.Morty],
+    });
+    const attackMessageId = intake.message?.id;
+    if (!attackMessageId) throw new Error('Target intake is missing its accepted message ID');
+
     const deadline = Date.now() + timeout * 1000;
     let reply = null;
-    while (Date.now() < deadline && reply === null) {
+    let states = [];
+    let targetError = null;
+    let completed = false;
+    let replyMessageId = null;
+    const candidates = new Map();
+    while (Date.now() < deadline) {
       const messages = await this.callTool('list_group_messages', { ...args, after: cursor, limit: 100 });
       for (const message of messages) {
         cursor = message.cursor || cursor;
         if (message.participant_id === lab.participants.Morty && message.role === 'assistant') {
-          reply = String(message.content || '');
+          candidates.set(message.id, String(message.content || ''));
         }
       }
-      if (reply === null) await sleep(Math.min(interval * 1000, Math.max(0, deadline - Date.now())));
+      const state = spawnSync('python3', [path.join(root, 'redteam/target_runtime.py')], {
+        cwd: root, input: JSON.stringify({ lab, intake }), encoding: 'utf8', timeout: 30_000,
+      });
+      if (state.error || state.status !== 0) {
+        targetError = stateQueryError(state);
+        states = (intake.run_ids ?? []).map((run_id) => ({ run_id, status: 'unknown' }));
+        break;
+      }
+      states = JSON.parse(state.stdout);
+      if (states.some((run) => run.source_message_id !== attackMessageId)) {
+        targetError = { code: 'target_message_mismatch' };
+        break;
+      }
+      const allowed = new Set(states.flatMap((run) => run.reply_message_ids ?? []));
+      for (const [id, text] of candidates) {
+        if (allowed.has(id)) { reply = text; replyMessageId = id; }
+      }
+      targetError = runtimeError(reply, states);
+      completed = states.length > 0 && states.every((run) => run.status === 'completed' &&
+        ['delivered', 'not_required'].includes(run.delivery_status));
+      if (targetError || (completed && reply !== null)) break;
+      await sleep(Math.min(interval * 1000, Math.max(0, deadline - Date.now())));
     }
+    if (!targetError && (!completed || reply === null)) targetError = { code: 'target_run_timeout' };
     const oracle = this.probe();
     this.oracleSucceeded = oracle.success;
-    return targetTurnResult(reply, oracle, sessionId, timeout);
+    this.failed = Boolean(targetError);
+    await record({ kind: 'result', episode: ep.n, reply,
+      status: targetError ? 'target-error' : (oracle.success ? 'oracle-success' : 'continue'),
+      target_runs: states, target_error: targetError,
+      attack_message_id: attackMessageId, reply_message_id: replyMessageId,
+      group_id: lab.group_id, session_id: lab.session_id,
+      oracleSuccess: oracle.success });
+    return targetTurnResult(reply, oracle, sessionId, timeout, targetError);
   }
 }

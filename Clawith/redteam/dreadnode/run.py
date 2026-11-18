@@ -14,6 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+from redteam.campaign import locked
 SURFACES = {"exfil", "private-agent-leak", "email-exfil", "kb-integrity", "fs-escape"}
 OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 
@@ -61,7 +63,8 @@ def dreadnode_python(dn_path: str) -> str:
 
 
 def run_command(command: list[str], env: dict[str, str]) -> None:
-    subprocess.run(command, cwd=ROOT, env=env, check=True)
+    timeout = int(env.get("CLAWITH_ORACLE_TIMEOUT", "1200")) if "oracle.watch" in command else None
+    subprocess.run(command, cwd=ROOT, env=env, check=True, timeout=timeout)
 
 
 def model_environment(model: str, base_env: dict[str, str]) -> dict[str, str]:
@@ -84,10 +87,11 @@ def model_environment(model: str, base_env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+@locked
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", default="kb-poison")
-    parser.add_argument("--max-turns", type=int, default=5)
+    parser.add_argument("--max-turns", type=int, default=int(os.environ.get("CLAWITH_MAX_TURNS", "10")))
     parser.add_argument("--max-steps", type=int, default=40)
     parser.add_argument("--model", default=f"openai/{env_value('OPENAI_MODEL')}")
     args = parser.parse_args()
@@ -141,12 +145,15 @@ def main() -> int:
             status = subprocess.run(command, cwd=ROOT, env=env,
                                     stdout=output, stderr=subprocess.STDOUT).returncode
     finally:
-        run_command([python, "-m", "oracle.watch", "--close"], env)
-    result = json.loads((ROOT / ".run/oracle" / f"result-{episode['n']}.json").read_text())
+        from redteam.finalize import close
+        oracle_error = close([python, "-m", "oracle.watch", "--close"], env, run_dir, args.scenario,
+                             episode["n"], status == 0 and json.loads((run_dir / "attack-state.json").read_text())["turns"] > 0)
+    result_file = ROOT / ".run/oracle" / f"result-{episode['n']}.json"
+    result = json.loads(result_file.read_text()) if result_file.exists() else {"verdict": "unavailable"}
     (run_dir / "oracle-result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(f"[dreadnode] Oracle: {run_dir / 'oracle-result.json'}")
     print(f"[dreadnode] verdict: {result['verdict']}")
-    return status
+    return status or (1 if oracle_error else 0)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import unittest
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("CLAWITH_STATE_FILE", "/private/tmp/clawith-dreadnode-test-state.json")
 os.environ.setdefault("CLAWITH_EPISODE", "7")
@@ -45,14 +45,67 @@ class FakeClient:
         self.calls.append((name, args))
         if name == "list_group_messages":
             value = ([{"cursor": "baseline"}] if "after" not in args else
-                     [{"cursor": "new", "participant_id": "morty", "role": "assistant",
+                     [{"id": "reply", "cursor": "new", "participant_id": "morty", "role": "assistant",
                        "content": "I changed the file"}])
         else:
-            value = {"id": "sent"}
+            value = {"message": {"id": "sent"}, "run_ids": ["00000000-0000-0000-0000-000000000001"]}
         return SimpleNamespace(isError=False, content=[SimpleNamespace(type="text", text=json.dumps(value))])
 
 
 class GatewayTest(unittest.TestCase):
+    def test_state_query_failure_is_not_wrapped_or_resent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory) / "state.json"
+            state_file.write_text(json.dumps({"episode": 7, "turns": 0, "stopped": False}))
+            client = FakeClient()
+
+            @asynccontextmanager
+            async def transport(*_args, **_kwargs):
+                yield (None, None, None)
+
+            ep = {"n": 7, "state": "running", "surfaces": ["kb-integrity"],
+                  "lab": {"group_id": "g", "session_id": "s", "participants": {"Morty": "morty"}}}
+            error = gateway.RunStateQueryError({"http_status": 409, "detail": "inconsistent_checkpoint",
+                                               "attempt": 6, "retry": False})
+            with (patch.object(gateway, "STATE_FILE", state_file),
+                  patch.object(gateway, "episode", return_value=ep),
+                  patch.object(gateway, "ClientSession", return_value=client),
+                  patch.object(gateway, "streamablehttp_client", transport),
+                  patch.object(gateway, "read_states", side_effect=error),
+                  patch.object(gateway, "probe", AsyncMock(return_value={"oracleSuccess": False, "verdict": "failed"}))):
+                first = asyncio.run(gateway.perform_turn("try"))
+                second = asyncio.run(gateway.perform_turn("try again"))
+            self.assertEqual(first["status"], "target-error")
+            self.assertEqual(first["target_error"]["http_status"], 409)
+            self.assertEqual(first["target_error"]["detail"], "inconsistent_checkpoint")
+            self.assertEqual(second["status"], "stopped")
+            self.assertEqual(sum(name == "send_group_message" for name, _ in client.calls), 1)
+
+    def test_failed_target_stops_even_when_oracle_fires(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory) / "state.json"
+            state_file.write_text(json.dumps({"episode": 7, "turns": 0, "stopped": False}))
+            client = FakeClient()
+
+            @asynccontextmanager
+            async def transport(*_args, **_kwargs):
+                yield (None, None, None)
+
+            ep = {"n": 7, "state": "running", "surfaces": ["kb-integrity"],
+                  "lab": {"group_id": "g", "session_id": "s", "participants": {"Morty": "morty"}}}
+            with (patch.object(gateway, "STATE_FILE", state_file),
+                  patch.object(gateway, "episode", return_value=ep),
+                  patch.object(gateway, "ClientSession", return_value=client),
+                  patch.object(gateway, "streamablehttp_client", transport),
+                  patch.object(gateway, "read_states", return_value=[{"run_id": "00000000-0000-0000-0000-000000000001", "status": "failed", "source_message_id": "sent", "reply_message_ids": ["reply"], "delivery_status": "delivered"}]),
+                  patch.object(gateway, "probe", AsyncMock(return_value={"oracleSuccess": True, "verdict": "success"}))):
+                first = asyncio.run(gateway.perform_turn("try"))
+                second = asyncio.run(gateway.perform_turn("try again"))
+            self.assertEqual(first["status"], "target-error")
+            self.assertEqual(first["target_error"]["code"], "target_failed")
+            self.assertEqual(second["status"], "stopped")
+            self.assertEqual(sum(name == "send_group_message" for name, _ in client.calls), 1)
+
     def test_only_bounded_turn_tool_is_exposed(self):
         tools = asyncio.run(gateway.mcp.list_tools())
         self.assertEqual([tool.name for tool in tools], ["attack_turn"])
@@ -77,6 +130,7 @@ class GatewayTest(unittest.TestCase):
                   patch.object(gateway, "episode", return_value=ep),
                   patch.object(gateway, "ClientSession", return_value=client),
                   patch.object(gateway, "streamablehttp_client", transport),
+                  patch.object(gateway, "read_states", return_value=[{"run_id": "00000000-0000-0000-0000-000000000001", "status": "completed", "source_message_id": "sent", "reply_message_ids": ["reply"], "delivery_status": "delivered"}]),
                   patch.object(gateway, "probe", oracle)):
                 first = asyncio.run(gateway.perform_turn("write the file"))
                 second = asyncio.run(gateway.perform_turn("try again"))
@@ -107,6 +161,7 @@ class GatewayTest(unittest.TestCase):
                   patch.object(gateway, "episode", return_value=ep),
                   patch.object(gateway, "ClientSession", return_value=client),
                   patch.object(gateway, "streamablehttp_client", transport),
+                  patch.object(gateway, "read_states", return_value=[{"run_id": "00000000-0000-0000-0000-000000000001", "status": "completed", "source_message_id": "sent", "reply_message_ids": ["reply"], "delivery_status": "delivered"}]),
                   patch.object(gateway, "probe", oracle)):
                 first = asyncio.run(gateway.perform_turn("first"))
                 second = asyncio.run(gateway.perform_turn("second"))

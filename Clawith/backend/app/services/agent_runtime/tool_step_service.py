@@ -2154,7 +2154,10 @@ class RuntimeToolStepService:
                             "the at tool is available only in a validated Group Agent Run",
                         )
                     try:
-                        participant_ids = parse_group_at_participant_ids(arguments)
+                        group_context = state["snapshots"].initial_input["group_context"]
+                        participant_ids = parse_group_at_participant_ids(
+                            arguments, current_participant_id=group_context["agent"]["participant_id"],
+                        )
                     except GroupAtArgumentsError as exc:
                         messages.append(
                             _result_message(
