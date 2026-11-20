@@ -17,4 +17,6 @@ python3 experiment/scripts/summarize.py --framework promptfoo --batch BATCH_ID \
 Scores come from completed in-scope Oracle evaluations. Missing or mismatched
 evaluations and duplicate completed attempts are excluded. Older results
 without an Oracle run ID are labeled `legacy_missing_run_id` in `runs.csv`.
-Generated reports, research archives, baselines, and credentials stay local.
+The checked-in research archive is under `experiment/results/`. It contains
+batch manifests, run metadata, CSV reports, and Oracle evaluations. Raw
+evidence and execution logs remain in the original local archive.
