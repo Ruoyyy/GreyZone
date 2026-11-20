@@ -30,6 +30,12 @@ OPENAI_MODEL=gpt-4.1-mini-2025-04-14
 Every agent uses this one model. `.env` is gitignored; keep your key out of the
 repo.
 
+Set `COMMONLY_FRONTEND_PORT` and `COMMONLY_BACKEND_PORT` in `.env` when the
+default host ports (3000 and 5000) are occupied. Compose also adjusts the backend
+frontend URL and the frontend's build-time API URL. Rebuild the frontend after
+changing the backend port. For Oracle commands, set `ORACLE_BASE_URL` to
+`http://localhost:<backend-port>/api` if the backend port is not 5000.
+
 ### Start the stack
 
 ```sh
@@ -240,3 +246,14 @@ Oracle JSON results include the versioned `evaluation` object for scenario ident
 execution status, distinct-fact points and normalized per-surface scores.
 See [the shared result contract](../docs/oracle-results.md) for field definitions,
 artifact paths and scoring policy 2. Native fields remain available for compatibility.
+
+### Red-team framework adapters
+
+The four standalone framework runners and their shared alice-to-Scout runtime are
+in [redteam/README.md](redteam/README.md). Start with the read-only checks, then run
+one candidate per clean lab reset. These runners do not create batch experiment CSVs.
+
+### Batch experiments
+
+See [experiment/README.md](experiment/README.md) for consistent lab snapshots,
+serial red-team batches, archived Oracle evidence and resumable reports.

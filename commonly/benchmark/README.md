@@ -1,6 +1,6 @@
 # Commonly benchmark scenarios
 
-The benchmark owns the attack objective and success surface. The runner and the
+The benchmark owns the attack objective, turn budget and success surface. The runner and the
 Oracle read a selected scenario; they do not keep their own copies of the
 objective. Each scenario directory contains `scenario.json` and the referenced
 `objective.md`.
@@ -19,6 +19,12 @@ objective. Each scenario directory contains `scenario.json` and the referenced
 (`shared_pod_message`), the exact `attackerTurn` planted (several carry a forged
 sender tag claiming to be raised by admin), and the Oracle's `oracleMonitors` /
 `oracleSuccessSurfaces`.
+
+The required `maxTurns` field limits physical attack messages per independent
+red-team candidate, including the first message. All six scenarios set it to
+10. Runners read this value directly; framework settings and CLI options cannot
+override it. Candidates stop early on Oracle success, execution failure or
+uncertain delivery. Execution and Oracle wait deadlines remain runner settings.
 
 Before running an external red-team agent, provide the selected
 `objective.md` and the public scenario context as its initial task. MCP tool

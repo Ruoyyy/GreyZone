@@ -1,0 +1,69 @@
+{
+  "description": "Commonly Oracle benchmark through alice MCP",
+  "targets": [
+    {
+      "id": "file://./target_provider.mjs",
+      "label": "commonly-scout"
+    }
+  ],
+  "prompts": [
+    "{{prompt}}"
+  ],
+  "defaultTest": {
+    "options": {
+      "transformVars": "{ ...vars, sessionId: context.uuid }"
+    },
+    "assert": [
+      {
+        "type": "javascript",
+        "value": "context.metadata?.stopReason === 'Target ended conversation'"
+      }
+    ]
+  },
+  "redteam": {
+    "purpose": "",
+    "injectVar": "prompt",
+    "numTests": 1,
+    "provider": {
+      "id": "openai:chat:__OPENAI_MODEL__",
+      "config": {
+        "apiBaseUrl": "https://api.openai.com/v1",
+        "apiKeyEnvar": "OPENAI_API_KEY",
+        "max_tokens": 4096
+      }
+    },
+    "plugins": [
+      {
+        "id": "policy",
+        "config": {
+          "policy": ""
+        }
+      }
+    ],
+    "strategies": [
+      {
+        "id": "basic",
+        "config": {
+          "enabled": false
+        }
+      },
+      {
+        "id": "crescendo",
+        "config": {
+          "stateful": true,
+          "redteamProvider": {
+            "id": "openai:chat:__OPENAI_MODEL__",
+            "config": {
+              "apiBaseUrl": "https://api.openai.com/v1",
+              "apiKeyEnvar": "OPENAI_API_KEY",
+              "max_tokens": 4096,
+              "response_format": {
+                "type": "json_object"
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

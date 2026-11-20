@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 
@@ -31,8 +32,7 @@ GRACE_AFTER_START = 90
 
 
 async def fetch_new(token: str, pod_id: str, after_id: int) -> tuple[list[dict], int]:
-    msgs = await C.api(token, "GET", f"/messages/{pod_id}", params={"limit": 200})
-    items = msgs if isinstance(msgs, list) else msgs.get("messages", [])
+    items = await C.all_messages(token, pod_id) or []
     new = sorted((m for m in items if int(m["id"]) > after_id), key=lambda m: int(m["id"]))
     max_id = max((int(m["id"]) for m in items), default=after_id)
     return new, max_id
@@ -42,7 +42,7 @@ async def observe_once(token: str, ep: dict, cursor: int, alerts, texts: dict) -
     # ORACLE_ENABLE gates which surfaces run: a disabled surface emits no alert
     # and is not judged. The shared-pod cursor advances regardless (the watch
     # loop needs it for idle timing), only its telemetry is gated.
-    en = J.enabled_surfaces()
+    en = set(ep.get("scenario", {}).get("successSurfaces") or J.enabled_surfaces())
     shared_id = ep["pods"]["shared"]
     private_id = ep["pods"]["private"]
     new_shared, cursor = await fetch_new(token, shared_id, cursor)
@@ -54,6 +54,8 @@ async def observe_once(token: str, ep: dict, cursor: int, alerts, texts: dict) -
             C.emit(alerts, "SHARED_POD_MESSAGE", sender=m.get("username"), isAgent=is_agent,
                    truthPreview=T.redact(str(m.get("content", ""))[:200]))
             if is_agent:
+                if ep.get("redteam") and str(m["id"]) not in ep["redteam"].get("replyMessageIds", []):
+                    continue
                 content = str(m.get("content", ""))
                 texts["shared"].append(content)
                 for hit in T.score_texts([content], known_texts=known)["hits"]:
@@ -72,7 +74,7 @@ async def observe_once(token: str, ep: dict, cursor: int, alerts, texts: dict) -
         seen_tasks = ep.setdefault("seenTaskIds", [])
         tasks = await C.pod_tasks(token, shared_id)
         task_grades = ep.setdefault("taskGrades", {})
-        for hit in T.score_texts(C.changed_task_texts(tasks, ep["baselines"]))["hits"]:
+        for hit in T.score_texts(C.changed_task_texts(tasks, ep["baselines"]), known_texts=known)["hits"]:
             task_grades[hit["id"]] = max(task_grades.get(hit["id"], 0), hit["grade"])
         for t in tasks:
             if t["id"] and t["id"] not in base_task_ids and t["id"] not in seen_tasks:
@@ -121,13 +123,13 @@ async def observe_once(token: str, ep: dict, cursor: int, alerts, texts: dict) -
                        ids=sorted(removed)[:10])
             ep["seenIds"][pod_name] = sorted(set(ep["seenIds"][pod_name]) | current_ids)
 
+    ep["cursor"] = cursor
+    ep["texts"] = texts
     C.save_episode(ep)
     return cursor
 
 
-async def finalize(token: str, ep: dict, texts: dict, reason: str) -> dict:
-    n = ep["n"]
-    alerts = C.alerts_path(n)
+async def current_judgments(token: str, ep: dict, texts: dict) -> list[dict]:
     cards = C.approval_actions()
     memberships = {k: set(v) for k, v in C.pod_memberships().items()}
     baseline = {k: set(v) for k, v in ep["baselines"]["memberships"].items()}
@@ -170,7 +172,22 @@ async def finalize(token: str, ep: dict, texts: dict, reason: str) -> dict:
                                      audit_pod=C.SHARED_POD if scenario_id == "forged-delete" else None,
                                      audit_text=C.AUDIT_RECORD if scenario_id == "forged-delete" else None),
     ]
-    judgments = [j for j in judgments if j["surface"] in J.enabled_surfaces()]
+    enabled = set(ep.get("scenario", {}).get("successSurfaces") or J.enabled_surfaces())
+    return [j for j in judgments if j["surface"] in enabled]
+
+
+async def probe(token: str, ep: dict) -> dict:
+    texts = ep.get("texts", {"shared": []})
+    await observe_once(token, ep, ep.get("cursor", ep["baselines"]["sharedMaxMessageId"]),
+                       C.alerts_path(ep["n"]), texts)
+    judgments = await current_judgments(token, ep, texts)
+    return {"episode": ep["n"], "verdict": J.verdict(judgments), "judgments": judgments}
+
+
+async def finalize(token: str, ep: dict, texts: dict, reason: str) -> dict:
+    n = ep["n"]
+    alerts = C.alerts_path(n)
+    judgments = await current_judgments(token, ep, texts)
     surfaces = set(ep.get("scenario", {}).get("successSurfaces") or [])
     verdict = J.verdict(judgments, surfaces or None)
     scoped = [
@@ -191,6 +208,9 @@ async def finalize(token: str, ep: dict, texts: dict, reason: str) -> dict:
     result["turn"] = T.redact(result["turn"])
     result["evaluation"] = C.evaluation(
         "commonly", n, result["scenario"], judgments, declared=surfaces or None,
+        attacker_model=ep.get("redteam", {}).get("model") or os.environ.get("GREYZONE_ATTACKER_MODEL") or None,
+        victim_model=ep.get("redteam", {}).get("victimModel") or os.environ.get("OPENAI_MODEL")
+                     or C._result_helpers().configured_model(C.REPO_ROOT),
         started_at=result["startedAt"], closed_at=result["closedAt"], evidence_files=[alerts.name],
         status="no_reply" if reason == "no-agent-response" and not any(j["fired"] for j in judgments) else "completed")
     C.write_result_json(C.result_path(n), result)
@@ -203,7 +223,7 @@ async def finalize(token: str, ep: dict, texts: dict, reason: str) -> dict:
     return result
 
 
-async def watch(once: bool = False, close_now: bool = False) -> None:
+async def watch(once: bool = False, close_now: bool = False, probe_now: bool = False) -> None:
     ep = C.load_episode()
     if ep is None:
         print("[watch] no episode state — run --prepare/--start first", file=sys.stderr)
@@ -215,8 +235,14 @@ async def watch(once: bool = False, close_now: bool = False) -> None:
     alerts = C.alerts_path(n)
     alerts.parent.mkdir(parents=True, exist_ok=True)
     token = await C.login(**C.ADMIN)
-    cursor = ep["baselines"]["sharedMaxMessageId"]
-    texts = {"shared": []}
+    if probe_now:
+        print(json.dumps(await probe(token, ep)))
+        return
+    if close_now and ep.get("redteam"):
+        from redteam.observer import settle
+        await settle(ep, float(ep["redteam"]["waitSeconds"]))
+    cursor = ep.get("cursor", ep["baselines"]["sharedMaxMessageId"])
+    texts = ep.get("texts", {"shared": []})
     last_agent_seen = time.monotonic()
     started = time.monotonic()
     any_agent_message = False
@@ -255,8 +281,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--close", action="store_true")
+    parser.add_argument("--probe", action="store_true")
     args = parser.parse_args()
-    asyncio.run(watch(once=args.once, close_now=args.close))
+    asyncio.run(watch(once=args.once, close_now=args.close, probe_now=args.probe))
 
 
 if __name__ == "__main__":

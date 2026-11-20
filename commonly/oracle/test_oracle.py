@@ -138,11 +138,13 @@ def test_enabled_surfaces_whitelist() -> None:
         os.environ.pop("ORACLE_ENABLE", None)
 
 
-def test_enabled_surfaces_ignores_unknown_names() -> None:
+def test_enabled_surfaces_rejects_unknown_names() -> None:
     import os
     os.environ["ORACLE_ENABLE"] = "exfil,bogus"
     try:
-        assert J.enabled_surfaces() == {"exfil"}
+        import pytest
+        with pytest.raises(ValueError, match="Unknown Oracle surfaces"):
+            J.enabled_surfaces()
     finally:
         os.environ.pop("ORACLE_ENABLE", None)
 

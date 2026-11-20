@@ -162,26 +162,43 @@ def scout_memory_hash() -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+async def all_messages(token: str, pod_id: str) -> list[dict] | None:
+    """Read the complete history; only a confirmed deleted pod is absent."""
+    items, before = [], None
+    while True:
+        params = {"limit": 200}
+        if before:
+            params["before"] = before
+        try:
+            response = await api(token, "GET", f"/messages/{pod_id}", params=params)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {401, 403, 404}:
+                exists = mongo_json("print(db.pods.countDocuments({_id: ObjectId("
+                                    + json.dumps(pod_id) + ")}))").strip()
+                if exists == "0":
+                    return None
+            raise
+        page = response if isinstance(response, list) else response.get("messages", [])
+        items.extend(page)
+        if len(page) < 200:
+            return items
+        next_before = min(str(m.get("created_at") or m.get("createdAt") or "") for m in page)
+        if not next_before or next_before == before:
+            raise RuntimeError("message pagination did not advance")
+        before = next_before
+
+
 async def message_ids(token: str, pod_id: str) -> set[str] | None:
-    """Ids of the newest 200 messages in a pod; None when the pod is gone."""
-    import httpx
-    try:
-        msgs = await api(token, "GET", f"/messages/{pod_id}", params={"limit": 200})
-    except httpx.HTTPError:
-        return None
-    items = msgs if isinstance(msgs, list) else msgs.get("messages", [])
-    return {str(m["id"]) for m in items}
+    items = await all_messages(token, pod_id)
+    return None if items is None else {str(m["id"]) for m in items}
 
 
 async def message_snapshot(token: str, pod_id: str) -> dict[str, dict] | None:
     """id -> {t: message_type, x: excerpt} for the newest 200 messages;
     None when the pod is gone. Excerpts stay bounded for episode state."""
-    import httpx
-    try:
-        msgs = await api(token, "GET", f"/messages/{pod_id}", params={"limit": 200})
-    except httpx.HTTPError:
+    items = await all_messages(token, pod_id)
+    if items is None:
         return None
-    items = msgs if isinstance(msgs, list) else msgs.get("messages", [])
     return {
         str(m["id"]): {
             "t": str(m.get("message_type") or m.get("messageType") or "text"),
@@ -201,8 +218,10 @@ async def pod_tasks(token: str, pod_id: str) -> list[dict]:
     import httpx
     try:
         res = await api(token, "GET", f"/v1/tasks/{pod_id}")
-    except httpx.HTTPError:
-        return []
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {401, 403, 404} and await message_ids(token, pod_id) is None:
+            return []
+        raise
     items = res if isinstance(res, list) else (res.get("tasks") or [])
     out = []
     for t in items:
@@ -242,8 +261,11 @@ def load_episode() -> dict | None:
 
 
 def save_episode(ep: dict) -> None:
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
-    (RUN_DIR / "episode.json").write_text(json.dumps(ep, ensure_ascii=False, indent=2))
+    RUN_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = RUN_DIR / "episode.json.tmp"
+    temporary.write_text(json.dumps(ep, ensure_ascii=False, indent=2))
+    temporary.chmod(0o600)
+    temporary.replace(RUN_DIR / "episode.json")
 
 
 def next_episode_number() -> int:
@@ -275,6 +297,7 @@ def evaluation(*args, **kwargs):
     from pathlib import Path as ResultPath
     helpers = _result_helpers()
     kwargs.setdefault("victim_model", helpers.configured_model(ResultPath(__file__).resolve().parents[1]))
+    kwargs.setdefault("attacker_model", os.environ.get("GREYZONE_ATTACKER_MODEL") or None)
     return helpers.build_evaluation(*args, **kwargs)
 
 

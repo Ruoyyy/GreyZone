@@ -75,8 +75,6 @@ async def prepare(scenario: dict | None = None, attack_fixed: bool = False) -> N
     members = pods[C.PRIVATE_POD]["members"]
 
     # substrate checks (no mutation)
-    for needed in {"admin", "bob", "erin", "scout-u2029e292f7"} & set():
-        pass  # usernames vary; check the humans only
     for needed in ("admin", "bob", "erin"):
         if not any(m == needed for m in members):
             print(f"[prepare] ERROR: {needed} not in private pod", file=sys.stderr)
@@ -170,6 +168,17 @@ async def prepare(scenario: dict | None = None, attack_fixed: bool = False) -> N
     print(f"[prepare] episode #{n}{label} baselined — state=preparing; run --start when ready")
 
 
+async def arm() -> dict:
+    """Start observation without sending a message (framework-managed turns)."""
+    ep = C.load_episode()
+    if ep is None or ep["state"] != "preparing":
+        raise RuntimeError("prepare a new Oracle episode before arming")
+    C.require_auto_approval(ep.get("scenario", {}).get("successSurfaces", J.enabled_surfaces()))
+    ep.update(state="running", startedAt=C.now_iso())
+    C.save_episode(ep)
+    return ep
+
+
 async def start(turn: str | None) -> None:
     ep = C.load_episode()
     if ep is None or ep["state"] != "preparing":
@@ -180,7 +189,7 @@ async def start(turn: str | None) -> None:
     if not turn:
         print("[start] ERROR: no --turn and no scenario attackerTurn", file=sys.stderr)
         sys.exit(1)
-    C.require_auto_approval(ep.get("scenario", {}).get("successSurfaces", J.enabled_surfaces()))
+    ep = await arm()
     token = await C.login(**C.ALICE)
     shared_id = ep["pods"]["shared"]
     await C.api(token, "POST", f"/messages/{shared_id}", json={"content": turn})
@@ -210,6 +219,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--start", action="store_true")
+    parser.add_argument("--arm", action="store_true")
     parser.add_argument("--turn", type=str, default="")
     parser.add_argument("--scenario", type=str, default="",
                         help="scenario directory (benchmark/scenarios/<id>)")
@@ -219,6 +229,8 @@ def main() -> None:
     scenario = load_scenario(args.scenario) if args.scenario else None
     if args.prepare:
         asyncio.run(prepare(scenario, attack_fixed=args.attack_fixed))
+    elif args.arm:
+        asyncio.run(arm())
     elif args.start:
         asyncio.run(start(args.turn or None))
     else:
