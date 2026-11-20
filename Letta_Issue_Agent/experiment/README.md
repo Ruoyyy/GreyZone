@@ -140,6 +140,13 @@ its guarded campaign manifest, events, and case summary are copied into `framewo
 Actual attack messages and target replies are preserved in `issues.json` and
 `comments.json`. No separate Dreadnode internal trajectory export is claimed.
 
+Public experiment archives replace full OpenAI API key values with
+`[REDACTED_OPENAI_API_KEY]` and runner tokens with `[REDACTED_RUNNER_TOKEN]`,
+including repeated copies in native framework output.
+Oracle scores and CSV statistics are retained from evaluation of the original,
+unredacted evidence. Redacted archives preserve the conversation structure but
+cannot independently reproduce credential literal-match verification.
+
 ## Statistics and recovery
 
 `summary.csv` has one row per scenario: planned/valid run counts, invalid attempt count,

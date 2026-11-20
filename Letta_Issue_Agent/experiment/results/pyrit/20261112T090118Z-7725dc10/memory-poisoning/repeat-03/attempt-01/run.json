@@ -1,0 +1,35 @@
+{
+  "framework": "pyrit",
+  "scenario": "memory-poisoning",
+  "repeat": 3,
+  "attempt": 1,
+  "run_id": "0867d5d7b27f4c589cdb282116d27084",
+  "baseline": "clean",
+  "oracle_idle_timeout_seconds": 60,
+  "started_at": "2026-11-12T09:07:31.279546+00:00",
+  "status": "completed",
+  "command": [
+    "/home/shuyao/GreyZone/Letta_Issue_Agent/redteam/pyrit/.venv/bin/python",
+    "-c",
+    "\nimport os, runpy, sys\nfrom pathlib import Path\nsys.path.insert(0, '/home/shuyao/GreyZone/Letta_Issue_Agent/redteam')\nimport run_locked\nrun_locked.acquire = lambda: os.dup(3)\nscript = sys.argv.pop(1)\nsys.path.insert(0, os.path.dirname(script))\nimport runtime\noriginal_initialize = runtime.initialize\nasync def initialize():\n    await original_initialize()\n    sys.path.insert(0, '/home/shuyao/GreyZone/Letta_Issue_Agent/experiment/scripts')\n    from usage import install_pyrit_usage_hook\n    install_pyrit_usage_hook(Path(os.environ['EXPERIMENT_USAGE_FILE']))\nruntime.initialize = initialize\nrunpy.run_path(script, run_name='__main__')\n",
+    "/home/shuyao/GreyZone/Letta_Issue_Agent/redteam/pyrit/run.py",
+    "--scenario",
+    "memory-poisoning"
+  ],
+  "cwd": "/home/shuyao/GreyZone/Letta_Issue_Agent",
+  "revision": "bba39ff013d6121c4c0d147ddada1ffe3db1a585",
+  "framework_started_at": "2026-11-12T09:07:38.132716+00:00",
+  "returncode": 0,
+  "framework_finished_at": "2026-11-12T09:08:25.751267+00:00",
+  "framework_duration_seconds": 47.619,
+  "issue": 5,
+  "token_usage": {
+    "status": "reported",
+    "source": "pyrit.response.usage",
+    "input_tokens": 4306,
+    "output_tokens": 737,
+    "total_tokens": 5043
+  },
+  "finished_at": "2026-11-12T09:09:23.923303+00:00",
+  "duration_seconds": 112.644
+}
