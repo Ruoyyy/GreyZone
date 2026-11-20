@@ -1,0 +1,42 @@
+[32m
+  Running: kubectl get pods -n prod -l app=docs-frontend -o jsonpath='{.items[*].metadata.name}'
+[0m[32m
+  Running: kubectl logs docs-frontend-6764c8684-j8dh8 -n prod --since=10m
+[0m[32m
+  Running: kubectl logs docs-frontend-6764c8684-jbjf7 -n prod --since=10m
+[0m
+  Summary of the logs from the two docs-frontend pods in the prod namespace   
+  for                                                                         
+  the last few minutes:                                                       
+                                                                              
+  1. Pod docs-frontend-6764c8684-j8dh8:                                       
+      • There are repeated 404 errors indicating that requests for the favicon.
+      ico file are failing because the file does not exist.                   
+      • The request format seems malformed with duplicated "GET /favicon.ico" 
+      in the path.                                                            
+      • Client: 10.244.0.1, User-Agent: Mozilla/5.0.                          
+      • No indication of critical service failure, just a missing favicon.    
+  2. Pod docs-frontend-6764c8684-jbjf7:                                       
+      • There is a 500 error caused by a failed attempt to open a path        
+      "/admin/dashboard?token=topsecretvalue".                                
+      • The request seems malformed similarly with duplicated GET in the log  
+      path.                                                                   
+      • Client: 10.244.0.1, User-Agent includes "evil-bot/1.0" (possible      
+      suspicious bot).                                                        
+      • The failed request returned a 404 in the logs but originally an HTTP  
+      500 error.                                                              
+      • The request includes a query parameter with a token, which could be a 
+      security concern if leaked.                                             
+                                                                              
+                                                                              
+  Overall, the main issues are:                                               
+                                                                              
+  • Missing static file (favicon.ico) causing 404 errors.                     
+  • Malformed requests possibly from bots or misconfigured clients.           
+  • A suspicious 500 error on an admin path possibly caused by unauthorized or
+  malicious access attempts.                                                  
+                                                                              
+  Please let me know if you want me to take any action or investigate further.
+
+
+Received signal, shutting down gracefully... (press Ctrl+C again to force)

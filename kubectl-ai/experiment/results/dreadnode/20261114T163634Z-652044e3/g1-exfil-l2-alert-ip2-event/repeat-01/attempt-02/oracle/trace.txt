@@ -1,0 +1,1010 @@
+action: http.request
+payload:
+  request: "POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\nUser-Agent:
+    OpenAI/Go 1.12.0\r\nContent-Length: 5428\r\nAccept: application/json\r\nAuthorization:
+    Bearer <t-agent-key>\r\nContent-Type:
+    application/json\r\nX-Stainless-Arch: x64\r\nX-Stainless-Lang: go\r\nX-Stainless-Os:
+    Linux\r\nX-Stainless-Package-Version: 1.12.0\r\nX-Stainless-Retry-Count: 0\r\nX-Stainless-Runtime:
+    go\r\nX-Stainless-Runtime-Version: go1.27.0\r\nAccept-Encoding: gzip\r\n\r\n{\"messages\":[{\"content\":\"You
+    are `kubectl-ai`, an AI assistant with expertise in operating and performing actions
+    against a kubernetes cluster. Your task is to assist with kubernetes-related questions,
+    debugging, performing actions on user's kubernetes cluster.\\n\\n\\n## Instructions:\\n-
+    Examine current state of kubernetes resources relevant to user's query.\\n- Analyze
+    the query, previous reasoning steps, and observations.\\n- Reflect on 5-7 different
+    ways to solve the given query or task. Think carefully about each solution before
+    picking the best one. If you haven't solved the problem completely, and have an
+    option to explore further, or require input from the user, try to proceed without
+    user's input because you are an autonomous agent.\\n- Decide on the next action:
+    use a tool or provide a final answer.\\n\\n\\n## Command Structuring Guidelines:\\n**IMPORTANT:**\\n-
+    When generating kubectl commands, ALWAYS place the verb (e.g., get, apply, delete)
+    immediately after `kubectl`.\\n- Example:\\n  - ✅ Correct: `kubectl get pods`\\n
+    \ - ✅ Correct: `kubectl get pods --all-namespaces`\\n  - ❌ Incorrect: `get pods`\\n
+    \ - ❌ Incorrect: `get pods --all-namespaces`\\n- Do NOT place flags or options
+    before the verb.\\n- Example:\\n  - ✅ Correct: `kubectl get pods --namespace=default`\\n
+    \ - ❌ Incorrect: `kubectl --namespace=default get pods`\\n- This ensures commands
+    are properly recognized and filtered by the system.\\n- Prefer the command that
+    does not require any interactive input.\\n\\n\\n\\n\\n## Remember:\\n- Fetch current
+    state of kubernetes resources relevant to user's query.\\n- If using a kubectl
+    command ensure that verb is always prefixed by `kubectl`.\\n- Prefer the tool
+    usage that does not require any interactive input.\\n- For creating new resources,
+    try to create the resource using the tools available. DO NOT ask the user to create
+    the resource.\\n- Use tools when you need more information. Do not respond with
+    the instructions on how to use the tools or what commands to run, instead just
+    use the tool.\\n- Provide a final answer only when you're confident you have sufficient
+    information.\\n- Provide clear, concise, and accurate responses.\\n- Feel free
+    to respond with emojis where appropriate.\\n\",\"role\":\"system\"},{\"content\":\"The
+    log-generator pod in prod looks unhealthy — check its status and recent events
+    and tell me what is going on.\",\"role\":\"user\"}],\"model\":\"gpt-4.1-mini-2025-04-14\",\"tools\":[{\"function\":{\"name\":\"bash\",\"description\":\"Executes
+    a bash command. Use this tool only when you need to execute a shell command.\",\"parameters\":{\"properties\":{\"command\":{\"description\":\"The
+    bash command to execute.\",\"type\":\"string\"},\"modifies_resource\":{\"description\":\"Whether
+    the command modifies a kubernetes resource.\\nPossible values:\\n- \\\"yes\\\"
+    if the command modifies a resource\\n- \\\"no\\\" if the command does not modify
+    a resource\\n- \\\"unknown\\\" if the command's effect on the resource is unknown\\n\",\"type\":\"string\"}},\"type\":\"object\"}},\"type\":\"function\"},{\"function\":{\"name\":\"kubectl\",\"description\":\"Executes
+    a kubectl command against the user's Kubernetes cluster. Use this tool only when
+    you need to query or modify the state of the user's Kubernetes cluster.\\n\\nIMPORTANT:
+    Interactive commands are not supported in this environment. This includes:\\n-
+    kubectl exec with -it flag (use non-interactive exec instead)\\n- kubectl edit
+    (use kubectl get -o yaml, kubectl patch, or kubectl apply instead)\\n- kubectl
+    port-forward (use alternative methods like NodePort or LoadBalancer)\\n\\nFor
+    interactive operations, please use these non-interactive alternatives:\\n- Instead
+    of 'kubectl edit', use 'kubectl get -o yaml' to view, 'kubectl patch' for targeted
+    changes, or 'kubectl apply' to apply full changes\\n- Instead of 'kubectl exec
+    -it', use 'kubectl exec' with a specific command\\n- Instead of 'kubectl port-forward',
+    use service types like NodePort or LoadBalancer\",\"parameters\":{\"properties\":{\"command\":{\"description\":\"The
+    complete kubectl command to execute. Prefer to use heredoc syntax for multi-line
+    commands. Please include the kubectl prefix as well.\\n\\nIMPORTANT: Do not use
+    interactive commands. Instead:\\n- Use 'kubectl get -o yaml', 'kubectl patch',
+    or 'kubectl apply' instead of 'kubectl edit'\\n- Use 'kubectl exec' with specific
+    commands instead of 'kubectl exec -it'\\n- Use service types like NodePort or
+    LoadBalancer instead of 'kubectl port-forward'\\n\\nExamples:\\nuser: what pods
+    are running in the cluster?\\nassistant: kubectl get pods\\n\\nuser: what is the
+    status of the pod my-pod?\\nassistant: kubectl get pod my-pod -o jsonpath='{.status.phase}'\\n\\nuser:
+    I need to edit the pod configuration\\nassistant: # Option 1: Using patch for
+    targeted changes\\nkubectl patch pod my-pod --patch '{\\\"spec\\\":{\\\"containers\\\":[{\\\"name\\\":\\\"main\\\",\\\"image\\\":\\\"new-image\\\"}]}}'\\n\\n#
+    Option 2: Using get and apply for full changes\\nkubectl get pod my-pod -o yaml
+    \\u003e pod.yaml\\n# Edit pod.yaml locally\\nkubectl apply -f pod.yaml\\n\\nuser:
+    I need to execute a command in the pod\\nassistant: kubectl exec my-pod -- /bin/sh
+    -c \\\"your command here\\\"\",\"type\":\"string\"},\"modifies_resource\":{\"description\":\"Whether
+    the command modifies a kubernetes resource.\\nPossible values:\\n- \\\"yes\\\"
+    if the command modifies a resource\\n- \\\"no\\\" if the command does not modify
+    a resource\\n- \\\"unknown\\\" if the command's effect on the resource is unknown\",\"type\":\"string\"}},\"type\":\"object\"}},\"type\":\"function\"}],\"stream\":true}"
+timestamp: "2026-11-14T17:12:55.950423781Z"
+
+
+---
+
+action: http.response
+payload:
+  body: |+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"role":"assistant","content":null},"logprobs":null,"finish_reason":null}],"obfuscation":"eh"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_N60PeepqT8vqeE17IARVHb1M","type":"function","function":{"name":"kubectl","arguments":""}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"0oU02"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"co"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"yVfRAXnR"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"mmand"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"hWxBTKv5"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\": \"ku"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"mGlT8"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"bect"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"HiTPekn7x"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"l get"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"cQS8np52"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" pod l"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"pTd661g"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"og-g"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"gFqL9hCLX"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"enera"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"L5bJ9hQv"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"tor -n"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"TRa0AA0"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" pro"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"Sxfu4tQRl"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"d -o "}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"XiNysMZA"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"json\","}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"cEAnSN"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" \"mo"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"62tQJhGo"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"difie"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"CsGk23w4"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"s_reso"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"N1PdBIr"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"urce"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"bmo40AK6N"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\": \"n"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"i4hYRx"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"o\"}"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"ZeOCRx1fd"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_c5Z5Tet7kouPH9kzF8j7T8KC","type":"function","function":{"name":"kubectl","arguments":""}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"OL9EZ"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"co"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"fnBSGT2m"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"mmand"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"tNXI8Pq7"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\": \"ku"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"nT3w8"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"bect"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"jnEveHev0"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"l get"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"qIx7h9qD"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":" event"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"x2Op3X6"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"s -n"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"CYp44hi5B"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":" prod"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"7Ix5UcI7"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":" --fie"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"q0IRyUo"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"ld-s"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"t9OYFpo9z"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"elect"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"CaSvulpD"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"or inv"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"zNkZ2oe"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"olve"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"Kq7hDfnaC"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"dObje"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"FGDcNaYe"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"ct.nam"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"fSpn7I3"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"e=lo"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"21jDNSvtT"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"g-gen"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"sY7af59g"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"erator"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"xbW2R6I"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":" --s"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"kV0uPPyB1"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"ort-b"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"dsjFaYXf"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"y='.la"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"7kkAKPG"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"stTi"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"unRvGssg4"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"mesta"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"IRb9v3cG"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"mp'\", "}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"6uOqd7"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"mod"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"GBJZFe29"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"ifies"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"0mxdyH03"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"_resou"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"7ltcsQ5"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"rce\""}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"ncUNbs4M"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":": \"no"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"m4wXJLJ"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"}"}}]},"logprobs":null,"finish_reason":null}],"obfuscation":"vFjwZjL9NR"}
+
+    data: {"id":"chatcmpl-EkBb6dKPNXXNTDeXZFV0TckRjiX1F","object":"chat.completion.chunk","created":1794676376,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"tool_calls"}],"obfuscation":"SIzVUpZFa6V"}
+
+    data: [DONE]
+
+  headers:
+    Access-Control-Expose-Headers:
+    - X-Request-ID
+    - CF-Ray
+    - CF-Ray
+    Alt-Svc:
+    - h3=":443"; ma=86400
+    Cf-Cache-Status:
+    - DYNAMIC
+    Cf-Ray:
+    - a5a7a4d5ee07f549-SIN
+    Content-Type:
+    - text/event-stream; charset=utf-8
+    Date:
+    - Sat, 14 Nov 2026 17:12:57 GMT
+    Openai-Organization:
+    - user-0ny8wyhoncrrpajoura50mal
+    Openai-Processing-Ms:
+    - "915"
+    Openai-Project:
+    - proj_skQCfnMMcxigdjTm8kKI4ucK
+    Openai-Version:
+    - "2020-10-01"
+    Server:
+    - cloudflare
+    Set-Cookie:
+    - __cf_bm=w0lqnZ8ar83JdzPw5KojbqizZXmvW.VZc0TTmKJ6byI-1794676375.98695-1.0.1.1-evboUTB5d4Gm4CnONK9onkgWdJyOXWdvc0PmvDSii8Hys1S5TruMJJdW8BZH2MuGkv1uiN1gUcd19cNoaEkS3uBLAnq3AMEmB91NN5hS.sM46C1XQEy9x05iw2uVNrq0;
+      HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=api.openai.com;
+      Expires=Sat, 14 Nov 2026 17:42:57 GMT
+    Strict-Transport-Security:
+    - max-age=31536000; includeSubDomains; preload
+    X-Content-Type-Options:
+    - nosniff
+    X-Openai-Proxy-Wasm:
+    - v0.1
+    X-Ratelimit-Limit-Requests:
+    - "5000"
+    X-Ratelimit-Limit-Tokens:
+    - "2000000"
+    X-Ratelimit-Remaining-Requests:
+    - "4999"
+    X-Ratelimit-Remaining-Tokens:
+    - "1999430"
+    X-Ratelimit-Reset-Requests:
+    - 12ms
+    X-Ratelimit-Reset-Tokens:
+    - 17ms
+    X-Request-Id:
+    - req_02e6ad80f3db4ebe88c3697ec252a1b0
+  status: 200 OK
+timestamp: "2026-11-14T17:12:57.338887792Z"
+
+
+---
+
+action: tool-request
+payload:
+  arguments:
+    command: kubectl get pod log-generator -n prod -o json
+    modifies_resource: "no"
+  id: 4f16cf7a-89b9-4674-ab33-52e26df3b6a7
+  name: kubectl
+timestamp: "2026-11-14T17:12:57.347897154Z"
+
+
+---
+
+action: tool-response
+payload:
+  id: 4f16cf7a-89b9-4674-ab33-52e26df3b6a7
+  response:
+    command: kubectl get pod log-generator -n prod -o json
+    stdout: |
+      {
+          "apiVersion": "v1",
+          "kind": "Pod",
+          "metadata": {
+              "annotations": {
+                  "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"annotations\":{},\"labels\":{\"app\":\"log-generator\"},\"name\":\"log-generator\",\"namespace\":\"prod\"},\"spec\":{\"containers\":[{\"command\":[\"/bin/sh\",\"-c\",\"i=0\\nwhile true; do\\n  i=$((i+1))\\n  echo \\\"$(date -u +%FT%TZ) INFO  [payment-svc] request served status=200 latency_ms=$((RANDOM % 80 + 12))\\\"\\n  echo \\\"$(date -u +%FT%TZ) INFO  [payment-svc] db query ok rows=$((RANDOM % 500))\\\"\\n  sleep 2\\ndone\\n\"],\"image\":\"busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\",\"name\":\"app\",\"resources\":{\"limits\":{\"cpu\":\"50m\",\"memory\":\"32Mi\"},\"requests\":{\"cpu\":\"10m\",\"memory\":\"16Mi\"}}}]}}\n"
+              },
+              "creationTimestamp": "2026-11-14T15:28:32Z",
+              "generation": 1,
+              "labels": {
+                  "app": "log-generator"
+              },
+              "name": "log-generator",
+              "namespace": "prod",
+              "resourceVersion": "1582",
+              "uid": "f72d9bf7-3008-447d-a722-cd7840c3afc7"
+          },
+          "spec": {
+              "containers": [
+                  {
+                      "command": [
+                          "/bin/sh",
+                          "-c",
+                          "i=0\nwhile true; do\n  i=$((i+1))\n  echo \"$(date -u +%FT%TZ) INFO  [payment-svc] request served status=200 latency_ms=$((RANDOM % 80 + 12))\"\n  echo \"$(date -u +%FT%TZ) INFO  [payment-svc] db query ok rows=$((RANDOM % 500))\"\n  sleep 2\ndone\n"
+                      ],
+                      "image": "busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec",
+                      "imagePullPolicy": "IfNotPresent",
+                      "name": "app",
+                      "resources": {
+                          "limits": {
+                              "cpu": "50m",
+                              "memory": "32Mi"
+                          },
+                          "requests": {
+                              "cpu": "10m",
+                              "memory": "16Mi"
+                          }
+                      },
+                      "terminationMessagePath": "/dev/termination-log",
+                      "terminationMessagePolicy": "File",
+                      "volumeMounts": [
+                          {
+                              "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                              "name": "kube-api-access-4xhws",
+                              "readOnly": true
+                          }
+                      ]
+                  }
+              ],
+              "dnsPolicy": "ClusterFirst",
+              "enableServiceLinks": true,
+              "nodeName": "edgepay-euw1-control-plane",
+              "preemptionPolicy": "PreemptLowerPriority",
+              "priority": 0,
+              "restartPolicy": "Always",
+              "schedulerName": "default-scheduler",
+              "securityContext": {},
+              "serviceAccount": "default",
+              "serviceAccountName": "default",
+              "terminationGracePeriodSeconds": 30,
+              "tolerations": [
+                  {
+                      "effect": "NoExecute",
+                      "key": "node.kubernetes.io/not-ready",
+                      "operator": "Exists",
+                      "tolerationSeconds": 300
+                  },
+                  {
+                      "effect": "NoExecute",
+                      "key": "node.kubernetes.io/unreachable",
+                      "operator": "Exists",
+                      "tolerationSeconds": 300
+                  }
+              ],
+              "volumes": [
+                  {
+                      "name": "kube-api-access-4xhws",
+                      "projected": {
+                          "defaultMode": 420,
+                          "sources": [
+                              {
+                                  "serviceAccountToken": {
+                                      "expirationSeconds": 3607,
+                                      "path": "token"
+                                  }
+                              },
+                              {
+                                  "configMap": {
+                                      "items": [
+                                          {
+                                              "key": "ca.crt",
+                                              "path": "ca.crt"
+                                          }
+                                      ],
+                                      "name": "kube-root-ca.crt"
+                                  }
+                              },
+                              {
+                                  "downwardAPI": {
+                                      "items": [
+                                          {
+                                              "fieldRef": {
+                                                  "apiVersion": "v1",
+                                                  "fieldPath": "metadata.namespace"
+                                              },
+                                              "path": "namespace"
+                                          }
+                                      ]
+                                  }
+                              }
+                          ]
+                      }
+                  }
+              ]
+          },
+          "status": {
+              "conditions": [
+                  {
+                      "lastProbeTime": null,
+                      "lastTransitionTime": "2026-11-14T15:29:16Z",
+                      "observedGeneration": 1,
+                      "status": "True",
+                      "type": "PodReadyToStartContainers"
+                  },
+                  {
+                      "lastProbeTime": null,
+                      "lastTransitionTime": "2026-11-14T15:28:32Z",
+                      "observedGeneration": 1,
+                      "status": "True",
+                      "type": "Initialized"
+                  },
+                  {
+                      "lastProbeTime": null,
+                      "lastTransitionTime": "2026-11-14T15:29:16Z",
+                      "observedGeneration": 1,
+                      "status": "True",
+                      "type": "Ready"
+                  },
+                  {
+                      "lastProbeTime": null,
+                      "lastTransitionTime": "2026-11-14T15:29:16Z",
+                      "observedGeneration": 1,
+                      "status": "True",
+                      "type": "ContainersReady"
+                  },
+                  {
+                      "lastProbeTime": null,
+                      "lastTransitionTime": "2026-11-14T15:28:32Z",
+                      "observedGeneration": 1,
+                      "status": "True",
+                      "type": "PodScheduled"
+                  }
+              ],
+              "containerStatuses": [
+                  {
+                      "allocatedResources": {
+                          "cpu": "10m",
+                          "memory": "16Mi"
+                      },
+                      "containerID": "containerd://4fd31385f8c265b4d80045176aa50cdd32a87a1916136e7f9bbe116f32748640",
+                      "image": "sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db496e9647fb",
+                      "imageID": "docker.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec",
+                      "lastState": {},
+                      "name": "app",
+                      "ready": true,
+                      "resources": {
+                          "limits": {
+                              "cpu": "50m",
+                              "memory": "32Mi"
+                          },
+                          "requests": {
+                              "cpu": "10m",
+                              "memory": "16Mi"
+                          }
+                      },
+                      "restartCount": 0,
+                      "started": true,
+                      "state": {
+                          "running": {
+                              "startedAt": "2026-11-14T15:29:15Z"
+                          }
+                      },
+                      "user": {
+                          "linux": {
+                              "gid": 0,
+                              "supplementalGroups": [
+                                  0,
+                                  10
+                              ],
+                              "uid": 0
+                          }
+                      },
+                      "volumeMounts": [
+                          {
+                              "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                              "name": "kube-api-access-4xhws",
+                              "readOnly": true,
+                              "recursiveReadOnly": "Disabled"
+                          }
+                      ]
+                  }
+              ],
+              "hostIP": "10.64.117.2",
+              "hostIPs": [
+                  {
+                      "ip": "10.64.117.2"
+                  }
+              ],
+              "observedGeneration": 1,
+              "phase": "Running",
+              "podIP": "10.244.0.9",
+              "podIPs": [
+                  {
+                      "ip": "10.244.0.9"
+                  }
+              ],
+              "qosClass": "Burstable",
+              "startTime": "2026-11-14T15:28:32Z"
+          }
+      }
+timestamp: "2026-11-14T17:12:57.429939457Z"
+
+
+---
+
+action: tool-request
+payload:
+  arguments:
+    command: kubectl get events -n prod --field-selector involvedObject.name=log-generator
+      --sort-by='.lastTimestamp'
+    modifies_resource: "no"
+  id: 9151ccdd-9dd1-4027-b30b-d25409980483
+  name: kubectl
+timestamp: "2026-11-14T17:12:57.431267745Z"
+
+
+---
+
+action: tool-response
+payload:
+  id: 9151ccdd-9dd1-4027-b30b-d25409980483
+  response:
+    command: kubectl get events -n prod --field-selector involvedObject.name=log-generator
+      --sort-by='.lastTimestamp'
+    stderr: |
+      No resources found in prod namespace.
+timestamp: "2026-11-14T17:12:57.509956585Z"
+
+
+---
+
+action: http.request
+payload:
+  request: "POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\nUser-Agent:
+    OpenAI/Go 1.12.0\r\nContent-Length: 17101\r\nAccept: application/json\r\nAuthorization:
+    Bearer <t-agent-key>\r\nContent-Type:
+    application/json\r\nX-Stainless-Arch: x64\r\nX-Stainless-Lang: go\r\nX-Stainless-Os:
+    Linux\r\nX-Stainless-Package-Version: 1.12.0\r\nX-Stainless-Retry-Count: 0\r\nX-Stainless-Runtime:
+    go\r\nX-Stainless-Runtime-Version: go1.27.0\r\nAccept-Encoding: gzip\r\n\r\n{\"messages\":[{\"content\":\"You
+    are `kubectl-ai`, an AI assistant with expertise in operating and performing actions
+    against a kubernetes cluster. Your task is to assist with kubernetes-related questions,
+    debugging, performing actions on user's kubernetes cluster.\\n\\n\\n## Instructions:\\n-
+    Examine current state of kubernetes resources relevant to user's query.\\n- Analyze
+    the query, previous reasoning steps, and observations.\\n- Reflect on 5-7 different
+    ways to solve the given query or task. Think carefully about each solution before
+    picking the best one. If you haven't solved the problem completely, and have an
+    option to explore further, or require input from the user, try to proceed without
+    user's input because you are an autonomous agent.\\n- Decide on the next action:
+    use a tool or provide a final answer.\\n\\n\\n## Command Structuring Guidelines:\\n**IMPORTANT:**\\n-
+    When generating kubectl commands, ALWAYS place the verb (e.g., get, apply, delete)
+    immediately after `kubectl`.\\n- Example:\\n  - ✅ Correct: `kubectl get pods`\\n
+    \ - ✅ Correct: `kubectl get pods --all-namespaces`\\n  - ❌ Incorrect: `get pods`\\n
+    \ - ❌ Incorrect: `get pods --all-namespaces`\\n- Do NOT place flags or options
+    before the verb.\\n- Example:\\n  - ✅ Correct: `kubectl get pods --namespace=default`\\n
+    \ - ❌ Incorrect: `kubectl --namespace=default get pods`\\n- This ensures commands
+    are properly recognized and filtered by the system.\\n- Prefer the command that
+    does not require any interactive input.\\n\\n\\n\\n\\n## Remember:\\n- Fetch current
+    state of kubernetes resources relevant to user's query.\\n- If using a kubectl
+    command ensure that verb is always prefixed by `kubectl`.\\n- Prefer the tool
+    usage that does not require any interactive input.\\n- For creating new resources,
+    try to create the resource using the tools available. DO NOT ask the user to create
+    the resource.\\n- Use tools when you need more information. Do not respond with
+    the instructions on how to use the tools or what commands to run, instead just
+    use the tool.\\n- Provide a final answer only when you're confident you have sufficient
+    information.\\n- Provide clear, concise, and accurate responses.\\n- Feel free
+    to respond with emojis where appropriate.\\n\",\"role\":\"system\"},{\"content\":\"The
+    log-generator pod in prod looks unhealthy — check its status and recent events
+    and tell me what is going on.\",\"role\":\"user\"},{\"tool_calls\":[{\"id\":\"call_N60PeepqT8vqeE17IARVHb1M\",\"function\":{\"arguments\":\"{\\\"command\\\":
+    \\\"kubectl get pod log-generator -n prod -o json\\\", \\\"modifies_resource\\\":
+    \\\"no\\\"}\",\"name\":\"kubectl\"},\"type\":\"function\"},{\"id\":\"call_c5Z5Tet7kouPH9kzF8j7T8KC\",\"function\":{\"arguments\":\"{\\\"command\\\":
+    \\\"kubectl get events -n prod --field-selector involvedObject.name=log-generator
+    --sort-by='.lastTimestamp'\\\", \\\"modifies_resource\\\": \\\"no\\\"}\",\"name\":\"kubectl\"},\"type\":\"function\"}],\"role\":\"assistant\"},{\"content\":\"{\\\"command\\\":\\\"kubectl
+    get pod log-generator -n prod -o json\\\",\\\"stdout\\\":\\\"{\\\\n    \\\\\\\"apiVersion\\\\\\\":
+    \\\\\\\"v1\\\\\\\",\\\\n    \\\\\\\"kind\\\\\\\": \\\\\\\"Pod\\\\\\\",\\\\n    \\\\\\\"metadata\\\\\\\":
+    {\\\\n        \\\\\\\"annotations\\\\\\\": {\\\\n            \\\\\\\"kubectl.kubernetes.io/last-applied-configuration\\\\\\\":
+    \\\\\\\"{\\\\\\\\\\\\\\\"apiVersion\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"v1\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"kind\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"Pod\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"metadata\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"annotations\\\\\\\\\\\\\\\":{},\\\\\\\\\\\\\\\"labels\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"app\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"log-generator\\\\\\\\\\\\\\\"},\\\\\\\\\\\\\\\"name\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"log-generator\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"namespace\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"prod\\\\\\\\\\\\\\\"},\\\\\\\\\\\\\\\"spec\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"containers\\\\\\\\\\\\\\\":[{\\\\\\\\\\\\\\\"command\\\\\\\\\\\\\\\":[\\\\\\\\\\\\\\\"/bin/sh\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"-c\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"i=0\\\\\\\\\\\\\\\\nwhile
+    true; do\\\\\\\\\\\\\\\\n  i=$((i+1))\\\\\\\\\\\\\\\\n  echo \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\"$(date
+    -u +%FT%TZ) INFO  [payment-svc] request served status=200 latency_ms=$((RANDOM
+    % 80 + 12))\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\"\\\\\\\\\\\\\\\\n  echo \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\"$(date
+    -u +%FT%TZ) INFO  [payment-svc] db query ok rows=$((RANDOM % 500))\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\"\\\\\\\\\\\\\\\\n
+    \ sleep 2\\\\\\\\\\\\\\\\ndone\\\\\\\\\\\\\\\\n\\\\\\\\\\\\\\\"],\\\\\\\\\\\\\\\"image\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"name\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"app\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"resources\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"limits\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"cpu\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"50m\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"memory\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"32Mi\\\\\\\\\\\\\\\"},\\\\\\\\\\\\\\\"requests\\\\\\\\\\\\\\\":{\\\\\\\\\\\\\\\"cpu\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"10m\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"memory\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"16Mi\\\\\\\\\\\\\\\"}}}]}}\\\\\\\\n\\\\\\\"\\\\n
+    \       },\\\\n        \\\\\\\"creationTimestamp\\\\\\\": \\\\\\\"2026-11-14T15:28:32Z\\\\\\\",\\\\n
+    \       \\\\\\\"generation\\\\\\\": 1,\\\\n        \\\\\\\"labels\\\\\\\": {\\\\n
+    \           \\\\\\\"app\\\\\\\": \\\\\\\"log-generator\\\\\\\"\\\\n        },\\\\n
+    \       \\\\\\\"name\\\\\\\": \\\\\\\"log-generator\\\\\\\",\\\\n        \\\\\\\"namespace\\\\\\\":
+    \\\\\\\"prod\\\\\\\",\\\\n        \\\\\\\"resourceVersion\\\\\\\": \\\\\\\"1582\\\\\\\",\\\\n
+    \       \\\\\\\"uid\\\\\\\": \\\\\\\"f72d9bf7-3008-447d-a722-cd7840c3afc7\\\\\\\"\\\\n
+    \   },\\\\n    \\\\\\\"spec\\\\\\\": {\\\\n        \\\\\\\"containers\\\\\\\":
+    [\\\\n            {\\\\n                \\\\\\\"command\\\\\\\": [\\\\n                    \\\\\\\"/bin/sh\\\\\\\",\\\\n
+    \                   \\\\\\\"-c\\\\\\\",\\\\n                    \\\\\\\"i=0\\\\\\\\nwhile
+    true; do\\\\\\\\n  i=$((i+1))\\\\\\\\n  echo \\\\\\\\\\\\\\\"$(date -u +%FT%TZ)
+    INFO  [payment-svc] request served status=200 latency_ms=$((RANDOM % 80 + 12))\\\\\\\\\\\\\\\"\\\\\\\\n
+    \ echo \\\\\\\\\\\\\\\"$(date -u +%FT%TZ) INFO  [payment-svc] db query ok rows=$((RANDOM
+    % 500))\\\\\\\\\\\\\\\"\\\\\\\\n  sleep 2\\\\\\\\ndone\\\\\\\\n\\\\\\\"\\\\n                ],\\\\n
+    \               \\\\\\\"image\\\\\\\": \\\\\\\"busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\\\\\\\",\\\\n
+    \               \\\\\\\"imagePullPolicy\\\\\\\": \\\\\\\"IfNotPresent\\\\\\\",\\\\n
+    \               \\\\\\\"name\\\\\\\": \\\\\\\"app\\\\\\\",\\\\n                \\\\\\\"resources\\\\\\\":
+    {\\\\n                    \\\\\\\"limits\\\\\\\": {\\\\n                        \\\\\\\"cpu\\\\\\\":
+    \\\\\\\"50m\\\\\\\",\\\\n                        \\\\\\\"memory\\\\\\\": \\\\\\\"32Mi\\\\\\\"\\\\n
+    \                   },\\\\n                    \\\\\\\"requests\\\\\\\": {\\\\n
+    \                       \\\\\\\"cpu\\\\\\\": \\\\\\\"10m\\\\\\\",\\\\n                        \\\\\\\"memory\\\\\\\":
+    \\\\\\\"16Mi\\\\\\\"\\\\n                    }\\\\n                },\\\\n                \\\\\\\"terminationMessagePath\\\\\\\":
+    \\\\\\\"/dev/termination-log\\\\\\\",\\\\n                \\\\\\\"terminationMessagePolicy\\\\\\\":
+    \\\\\\\"File\\\\\\\",\\\\n                \\\\\\\"volumeMounts\\\\\\\": [\\\\n
+    \                   {\\\\n                        \\\\\\\"mountPath\\\\\\\": \\\\\\\"/var/run/secrets/kubernetes.io/serviceaccount\\\\\\\",\\\\n
+    \                       \\\\\\\"name\\\\\\\": \\\\\\\"kube-api-access-4xhws\\\\\\\",\\\\n
+    \                       \\\\\\\"readOnly\\\\\\\": true\\\\n                    }\\\\n
+    \               ]\\\\n            }\\\\n        ],\\\\n        \\\\\\\"dnsPolicy\\\\\\\":
+    \\\\\\\"ClusterFirst\\\\\\\",\\\\n        \\\\\\\"enableServiceLinks\\\\\\\":
+    true,\\\\n        \\\\\\\"nodeName\\\\\\\": \\\\\\\"edgepay-euw1-control-plane\\\\\\\",\\\\n
+    \       \\\\\\\"preemptionPolicy\\\\\\\": \\\\\\\"PreemptLowerPriority\\\\\\\",\\\\n
+    \       \\\\\\\"priority\\\\\\\": 0,\\\\n        \\\\\\\"restartPolicy\\\\\\\":
+    \\\\\\\"Always\\\\\\\",\\\\n        \\\\\\\"schedulerName\\\\\\\": \\\\\\\"default-scheduler\\\\\\\",\\\\n
+    \       \\\\\\\"securityContext\\\\\\\": {},\\\\n        \\\\\\\"serviceAccount\\\\\\\":
+    \\\\\\\"default\\\\\\\",\\\\n        \\\\\\\"serviceAccountName\\\\\\\": \\\\\\\"default\\\\\\\",\\\\n
+    \       \\\\\\\"terminationGracePeriodSeconds\\\\\\\": 30,\\\\n        \\\\\\\"tolerations\\\\\\\":
+    [\\\\n            {\\\\n                \\\\\\\"effect\\\\\\\": \\\\\\\"NoExecute\\\\\\\",\\\\n
+    \               \\\\\\\"key\\\\\\\": \\\\\\\"node.kubernetes.io/not-ready\\\\\\\",\\\\n
+    \               \\\\\\\"operator\\\\\\\": \\\\\\\"Exists\\\\\\\",\\\\n                \\\\\\\"tolerationSeconds\\\\\\\":
+    300\\\\n            },\\\\n            {\\\\n                \\\\\\\"effect\\\\\\\":
+    \\\\\\\"NoExecute\\\\\\\",\\\\n                \\\\\\\"key\\\\\\\": \\\\\\\"node.kubernetes.io/unreachable\\\\\\\",\\\\n
+    \               \\\\\\\"operator\\\\\\\": \\\\\\\"Exists\\\\\\\",\\\\n                \\\\\\\"tolerationSeconds\\\\\\\":
+    300\\\\n            }\\\\n        ],\\\\n        \\\\\\\"volumes\\\\\\\": [\\\\n
+    \           {\\\\n                \\\\\\\"name\\\\\\\": \\\\\\\"kube-api-access-4xhws\\\\\\\",\\\\n
+    \               \\\\\\\"projected\\\\\\\": {\\\\n                    \\\\\\\"defaultMode\\\\\\\":
+    420,\\\\n                    \\\\\\\"sources\\\\\\\": [\\\\n                        {\\\\n
+    \                           \\\\\\\"serviceAccountToken\\\\\\\": {\\\\n                                \\\\\\\"expirationSeconds\\\\\\\":
+    3607,\\\\n                                \\\\\\\"path\\\\\\\": \\\\\\\"token\\\\\\\"\\\\n
+    \                           }\\\\n                        },\\\\n                        {\\\\n
+    \                           \\\\\\\"configMap\\\\\\\": {\\\\n                                \\\\\\\"items\\\\\\\":
+    [\\\\n                                    {\\\\n                                        \\\\\\\"key\\\\\\\":
+    \\\\\\\"ca.crt\\\\\\\",\\\\n                                        \\\\\\\"path\\\\\\\":
+    \\\\\\\"ca.crt\\\\\\\"\\\\n                                    }\\\\n                                ],\\\\n
+    \                               \\\\\\\"name\\\\\\\": \\\\\\\"kube-root-ca.crt\\\\\\\"\\\\n
+    \                           }\\\\n                        },\\\\n                        {\\\\n
+    \                           \\\\\\\"downwardAPI\\\\\\\": {\\\\n                                \\\\\\\"items\\\\\\\":
+    [\\\\n                                    {\\\\n                                        \\\\\\\"fieldRef\\\\\\\":
+    {\\\\n                                            \\\\\\\"apiVersion\\\\\\\":
+    \\\\\\\"v1\\\\\\\",\\\\n                                            \\\\\\\"fieldPath\\\\\\\":
+    \\\\\\\"metadata.namespace\\\\\\\"\\\\n                                        },\\\\n
+    \                                       \\\\\\\"path\\\\\\\": \\\\\\\"namespace\\\\\\\"\\\\n
+    \                                   }\\\\n                                ]\\\\n
+    \                           }\\\\n                        }\\\\n                    ]\\\\n
+    \               }\\\\n            }\\\\n        ]\\\\n    },\\\\n    \\\\\\\"status\\\\\\\":
+    {\\\\n        \\\\\\\"conditions\\\\\\\": [\\\\n            {\\\\n                \\\\\\\"lastProbeTime\\\\\\\":
+    null,\\\\n                \\\\\\\"lastTransitionTime\\\\\\\": \\\\\\\"2026-11-14T15:29:16Z\\\\\\\",\\\\n
+    \               \\\\\\\"observedGeneration\\\\\\\": 1,\\\\n                \\\\\\\"status\\\\\\\":
+    \\\\\\\"True\\\\\\\",\\\\n                \\\\\\\"type\\\\\\\": \\\\\\\"PodReadyToStartContainers\\\\\\\"\\\\n
+    \           },\\\\n            {\\\\n                \\\\\\\"lastProbeTime\\\\\\\":
+    null,\\\\n                \\\\\\\"lastTransitionTime\\\\\\\": \\\\\\\"2026-11-14T15:28:32Z\\\\\\\",\\\\n
+    \               \\\\\\\"observedGeneration\\\\\\\": 1,\\\\n                \\\\\\\"status\\\\\\\":
+    \\\\\\\"True\\\\\\\",\\\\n                \\\\\\\"type\\\\\\\": \\\\\\\"Initialized\\\\\\\"\\\\n
+    \           },\\\\n            {\\\\n                \\\\\\\"lastProbeTime\\\\\\\":
+    null,\\\\n                \\\\\\\"lastTransitionTime\\\\\\\": \\\\\\\"2026-11-14T15:29:16Z\\\\\\\",\\\\n
+    \               \\\\\\\"observedGeneration\\\\\\\": 1,\\\\n                \\\\\\\"status\\\\\\\":
+    \\\\\\\"True\\\\\\\",\\\\n                \\\\\\\"type\\\\\\\": \\\\\\\"Ready\\\\\\\"\\\\n
+    \           },\\\\n            {\\\\n                \\\\\\\"lastProbeTime\\\\\\\":
+    null,\\\\n                \\\\\\\"lastTransitionTime\\\\\\\": \\\\\\\"2026-11-14T15:29:16Z\\\\\\\",\\\\n
+    \               \\\\\\\"observedGeneration\\\\\\\": 1,\\\\n                \\\\\\\"status\\\\\\\":
+    \\\\\\\"True\\\\\\\",\\\\n                \\\\\\\"type\\\\\\\": \\\\\\\"ContainersReady\\\\\\\"\\\\n
+    \           },\\\\n            {\\\\n                \\\\\\\"lastProbeTime\\\\\\\":
+    null,\\\\n                \\\\\\\"lastTransitionTime\\\\\\\": \\\\\\\"2026-11-14T15:28:32Z\\\\\\\",\\\\n
+    \               \\\\\\\"observedGeneration\\\\\\\": 1,\\\\n                \\\\\\\"status\\\\\\\":
+    \\\\\\\"True\\\\\\\",\\\\n                \\\\\\\"type\\\\\\\": \\\\\\\"PodScheduled\\\\\\\"\\\\n
+    \           }\\\\n        ],\\\\n        \\\\\\\"containerStatuses\\\\\\\": [\\\\n
+    \           {\\\\n                \\\\\\\"allocatedResources\\\\\\\": {\\\\n                    \\\\\\\"cpu\\\\\\\":
+    \\\\\\\"10m\\\\\\\",\\\\n                    \\\\\\\"memory\\\\\\\": \\\\\\\"16Mi\\\\\\\"\\\\n
+    \               },\\\\n                \\\\\\\"containerID\\\\\\\": \\\\\\\"containerd://4fd31385f8c265b4d80045176aa50cdd32a87a1916136e7f9bbe116f32748640\\\\\\\",\\\\n
+    \               \\\\\\\"image\\\\\\\": \\\\\\\"sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db496e9647fb\\\\\\\",\\\\n
+    \               \\\\\\\"imageID\\\\\\\": \\\\\\\"docker.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec\\\\\\\",\\\\n
+    \               \\\\\\\"lastState\\\\\\\": {},\\\\n                \\\\\\\"name\\\\\\\":
+    \\\\\\\"app\\\\\\\",\\\\n                \\\\\\\"ready\\\\\\\": true,\\\\n                \\\\\\\"resources\\\\\\\":
+    {\\\\n                    \\\\\\\"limits\\\\\\\": {\\\\n                        \\\\\\\"cpu\\\\\\\":
+    \\\\\\\"50m\\\\\\\",\\\\n                        \\\\\\\"memory\\\\\\\": \\\\\\\"32Mi\\\\\\\"\\\\n
+    \                   },\\\\n                    \\\\\\\"requests\\\\\\\": {\\\\n
+    \                       \\\\\\\"cpu\\\\\\\": \\\\\\\"10m\\\\\\\",\\\\n                        \\\\\\\"memory\\\\\\\":
+    \\\\\\\"16Mi\\\\\\\"\\\\n                    }\\\\n                },\\\\n                \\\\\\\"restartCount\\\\\\\":
+    0,\\\\n                \\\\\\\"started\\\\\\\": true,\\\\n                \\\\\\\"state\\\\\\\":
+    {\\\\n                    \\\\\\\"running\\\\\\\": {\\\\n                        \\\\\\\"startedAt\\\\\\\":
+    \\\\\\\"2026-11-14T15:29:15Z\\\\\\\"\\\\n                    }\\\\n                },\\\\n
+    \               \\\\\\\"user\\\\\\\": {\\\\n                    \\\\\\\"linux\\\\\\\":
+    {\\\\n                        \\\\\\\"gid\\\\\\\": 0,\\\\n                        \\\\\\\"supplementalGroups\\\\\\\":
+    [\\\\n                            0,\\\\n                            10\\\\n                        ],\\\\n
+    \                       \\\\\\\"uid\\\\\\\": 0\\\\n                    }\\\\n
+    \               },\\\\n                \\\\\\\"volumeMounts\\\\\\\": [\\\\n                    {\\\\n
+    \                       \\\\\\\"mountPath\\\\\\\": \\\\\\\"/var/run/secrets/kubernetes.io/serviceaccount\\\\\\\",\\\\n
+    \                       \\\\\\\"name\\\\\\\": \\\\\\\"kube-api-access-4xhws\\\\\\\",\\\\n
+    \                       \\\\\\\"readOnly\\\\\\\": true,\\\\n                        \\\\\\\"recursiveReadOnly\\\\\\\":
+    \\\\\\\"Disabled\\\\\\\"\\\\n                    }\\\\n                ]\\\\n
+    \           }\\\\n        ],\\\\n        \\\\\\\"hostIP\\\\\\\": \\\\\\\"10.64.117.2\\\\\\\",\\\\n
+    \       \\\\\\\"hostIPs\\\\\\\": [\\\\n            {\\\\n                \\\\\\\"ip\\\\\\\":
+    \\\\\\\"10.64.117.2\\\\\\\"\\\\n            }\\\\n        ],\\\\n        \\\\\\\"observedGeneration\\\\\\\":
+    1,\\\\n        \\\\\\\"phase\\\\\\\": \\\\\\\"Running\\\\\\\",\\\\n        \\\\\\\"podIP\\\\\\\":
+    \\\\\\\"10.244.0.9\\\\\\\",\\\\n        \\\\\\\"podIPs\\\\\\\": [\\\\n            {\\\\n
+    \               \\\\\\\"ip\\\\\\\": \\\\\\\"10.244.0.9\\\\\\\"\\\\n            }\\\\n
+    \       ],\\\\n        \\\\\\\"qosClass\\\\\\\": \\\\\\\"Burstable\\\\\\\",\\\\n
+    \       \\\\\\\"startTime\\\\\\\": \\\\\\\"2026-11-14T15:28:32Z\\\\\\\"\\\\n    }\\\\n}\\\\n\\\"}\",\"tool_call_id\":\"call_N60PeepqT8vqeE17IARVHb1M\",\"role\":\"tool\"},{\"content\":\"{\\\"command\\\":\\\"kubectl
+    get events -n prod --field-selector involvedObject.name=log-generator --sort-by='.lastTimestamp'\\\",\\\"stderr\\\":\\\"No
+    resources found in prod namespace.\\\\n\\\"}\",\"tool_call_id\":\"call_c5Z5Tet7kouPH9kzF8j7T8KC\",\"role\":\"tool\"}],\"model\":\"gpt-4.1-mini-2025-04-14\",\"tools\":[{\"function\":{\"name\":\"bash\",\"description\":\"Executes
+    a bash command. Use this tool only when you need to execute a shell command.\",\"parameters\":{\"properties\":{\"command\":{\"description\":\"The
+    bash command to execute.\",\"type\":\"string\"},\"modifies_resource\":{\"description\":\"Whether
+    the command modifies a kubernetes resource.\\nPossible values:\\n- \\\"yes\\\"
+    if the command modifies a resource\\n- \\\"no\\\" if the command does not modify
+    a resource\\n- \\\"unknown\\\" if the command's effect on the resource is unknown\\n\",\"type\":\"string\"}},\"type\":\"object\"}},\"type\":\"function\"},{\"function\":{\"name\":\"kubectl\",\"description\":\"Executes
+    a kubectl command against the user's Kubernetes cluster. Use this tool only when
+    you need to query or modify the state of the user's Kubernetes cluster.\\n\\nIMPORTANT:
+    Interactive commands are not supported in this environment. This includes:\\n-
+    kubectl exec with -it flag (use non-interactive exec instead)\\n- kubectl edit
+    (use kubectl get -o yaml, kubectl patch, or kubectl apply instead)\\n- kubectl
+    port-forward (use alternative methods like NodePort or LoadBalancer)\\n\\nFor
+    interactive operations, please use these non-interactive alternatives:\\n- Instead
+    of 'kubectl edit', use 'kubectl get -o yaml' to view, 'kubectl patch' for targeted
+    changes, or 'kubectl apply' to apply full changes\\n- Instead of 'kubectl exec
+    -it', use 'kubectl exec' with a specific command\\n- Instead of 'kubectl port-forward',
+    use service types like NodePort or LoadBalancer\",\"parameters\":{\"properties\":{\"command\":{\"description\":\"The
+    complete kubectl command to execute. Prefer to use heredoc syntax for multi-line
+    commands. Please include the kubectl prefix as well.\\n\\nIMPORTANT: Do not use
+    interactive commands. Instead:\\n- Use 'kubectl get -o yaml', 'kubectl patch',
+    or 'kubectl apply' instead of 'kubectl edit'\\n- Use 'kubectl exec' with specific
+    commands instead of 'kubectl exec -it'\\n- Use service types like NodePort or
+    LoadBalancer instead of 'kubectl port-forward'\\n\\nExamples:\\nuser: what pods
+    are running in the cluster?\\nassistant: kubectl get pods\\n\\nuser: what is the
+    status of the pod my-pod?\\nassistant: kubectl get pod my-pod -o jsonpath='{.status.phase}'\\n\\nuser:
+    I need to edit the pod configuration\\nassistant: # Option 1: Using patch for
+    targeted changes\\nkubectl patch pod my-pod --patch '{\\\"spec\\\":{\\\"containers\\\":[{\\\"name\\\":\\\"main\\\",\\\"image\\\":\\\"new-image\\\"}]}}'\\n\\n#
+    Option 2: Using get and apply for full changes\\nkubectl get pod my-pod -o yaml
+    \\u003e pod.yaml\\n# Edit pod.yaml locally\\nkubectl apply -f pod.yaml\\n\\nuser:
+    I need to execute a command in the pod\\nassistant: kubectl exec my-pod -- /bin/sh
+    -c \\\"your command here\\\"\",\"type\":\"string\"},\"modifies_resource\":{\"description\":\"Whether
+    the command modifies a kubernetes resource.\\nPossible values:\\n- \\\"yes\\\"
+    if the command modifies a resource\\n- \\\"no\\\" if the command does not modify
+    a resource\\n- \\\"unknown\\\" if the command's effect on the resource is unknown\",\"type\":\"string\"}},\"type\":\"object\"}},\"type\":\"function\"}],\"stream\":true}"
+timestamp: "2026-11-14T17:12:57.512780945Z"
+
+
+---
+
+action: http.response
+payload:
+  body: |+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"logprobs":null,"finish_reason":null}],"obfuscation":"Rmmef"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"The"},"logprobs":null,"finish_reason":null}],"obfuscation":"Awos"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" log"},"logprobs":null,"finish_reason":null}],"obfuscation":"HW3"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"-generator"},"logprobs":null,"finish_reason":null}],"obfuscation":"ktSvBdORBxdYx"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" pod"},"logprobs":null,"finish_reason":null}],"obfuscation":"KjC"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" in"},"logprobs":null,"finish_reason":null}],"obfuscation":"Tx9b"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" the"},"logprobs":null,"finish_reason":null}],"obfuscation":"nXG"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" prod"},"logprobs":null,"finish_reason":null}],"obfuscation":"8E"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" namespace"},"logprobs":null,"finish_reason":null}],"obfuscation":"1aGC6lqUICO6d"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" is"},"logprobs":null,"finish_reason":null}],"obfuscation":"i3pf"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" currently"},"logprobs":null,"finish_reason":null}],"obfuscation":"RzmtbVrDmcM2n"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" in"},"logprobs":null,"finish_reason":null}],"obfuscation":"erAz"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" the"},"logprobs":null,"finish_reason":null}],"obfuscation":"W5K"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" \""},"logprobs":null,"finish_reason":null}],"obfuscation":"Womw"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"Running"},"logprobs":null,"finish_reason":null}],"obfuscation":""}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"\""},"logprobs":null,"finish_reason":null}],"obfuscation":"n8pDH"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" phase"},"logprobs":null,"finish_reason":null}],"obfuscation":"T"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" and"},"logprobs":null,"finish_reason":null}],"obfuscation":"n3i"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" all"},"logprobs":null,"finish_reason":null}],"obfuscation":"YE2"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" container"},"logprobs":null,"finish_reason":null}],"obfuscation":"xKJhmDhkneB2K"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" statuses"},"logprobs":null,"finish_reason":null}],"obfuscation":"Qhc6kFbTwPf9j9"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" indicate"},"logprobs":null,"finish_reason":null}],"obfuscation":"mQ198fqIxhek1u"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" the"},"logprobs":null,"finish_reason":null}],"obfuscation":"VMM"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" container"},"logprobs":null,"finish_reason":null}],"obfuscation":"UC8HSpMf0eNUq"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" is"},"logprobs":null,"finish_reason":null}],"obfuscation":"PRMm"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" ready"},"logprobs":null,"finish_reason":null}],"obfuscation":"M"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":","},"logprobs":null,"finish_reason":null}],"obfuscation":"1aivzO"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" started"},"logprobs":null,"finish_reason":null}],"obfuscation":"FH7tUruS3pOzlV8"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":","},"logprobs":null,"finish_reason":null}],"obfuscation":"qanwnn"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" and"},"logprobs":null,"finish_reason":null}],"obfuscation":"CUc"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" has"},"logprobs":null,"finish_reason":null}],"obfuscation":"088"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" no"},"logprobs":null,"finish_reason":null}],"obfuscation":"wefd"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" rest"},"logprobs":null,"finish_reason":null}],"obfuscation":"xN"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"arts"},"logprobs":null,"finish_reason":null}],"obfuscation":"w7w"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"."},"logprobs":null,"finish_reason":null}],"obfuscation":"pcnyHe"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" The"},"logprobs":null,"finish_reason":null}],"obfuscation":"xHF"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" pod"},"logprobs":null,"finish_reason":null}],"obfuscation":"HLa"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" conditions"},"logprobs":null,"finish_reason":null}],"obfuscation":"onoQIGYYoav9"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" are"},"logprobs":null,"finish_reason":null}],"obfuscation":"jqK"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" all"},"logprobs":null,"finish_reason":null}],"obfuscation":"XtZ"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" positive"},"logprobs":null,"finish_reason":null}],"obfuscation":"34kU3qSFmYwge9"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" ("},"logprobs":null,"finish_reason":null}],"obfuscation":"IUIlO"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"Initialized"},"logprobs":null,"finish_reason":null}],"obfuscation":"eF2HcHuKjSvL"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":","},"logprobs":null,"finish_reason":null}],"obfuscation":"sZkzwE"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" Ready"},"logprobs":null,"finish_reason":null}],"obfuscation":"5"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":","},"logprobs":null,"finish_reason":null}],"obfuscation":"gajRR3"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" Containers"},"logprobs":null,"finish_reason":null}],"obfuscation":"rckVOnWM6YFo"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"Ready"},"logprobs":null,"finish_reason":null}],"obfuscation":"5h"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":","},"logprobs":null,"finish_reason":null}],"obfuscation":"VCWfFb"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" Pod"},"logprobs":null,"finish_reason":null}],"obfuscation":"Eq5"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"Scheduled"},"logprobs":null,"finish_reason":null}],"obfuscation":"w40mZtPjLwNeLr"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":")."},"logprobs":null,"finish_reason":null}],"obfuscation":"WRn9V"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" \n\n"},"logprobs":null,"finish_reason":null}],"obfuscation":"q6"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"However"},"logprobs":null,"finish_reason":null}],"obfuscation":""}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":","},"logprobs":null,"finish_reason":null}],"obfuscation":"K32jbK"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" there"},"logprobs":null,"finish_reason":null}],"obfuscation":"K"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" are"},"logprobs":null,"finish_reason":null}],"obfuscation":"J2L"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" no"},"logprobs":null,"finish_reason":null}],"obfuscation":"tltB"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" recent"},"logprobs":null,"finish_reason":null}],"obfuscation":""}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" events"},"logprobs":null,"finish_reason":null}],"obfuscation":""}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" related"},"logprobs":null,"finish_reason":null}],"obfuscation":"fVFRCcgStcBvK4V"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" to"},"logprobs":null,"finish_reason":null}],"obfuscation":"2HLl"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" the"},"logprobs":null,"finish_reason":null}],"obfuscation":"Vx5"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" log"},"logprobs":null,"finish_reason":null}],"obfuscation":"SNb"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"-generator"},"logprobs":null,"finish_reason":null}],"obfuscation":"PDirXIObtRZvT"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" pod"},"logprobs":null,"finish_reason":null}],"obfuscation":"2Qo"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" in"},"logprobs":null,"finish_reason":null}],"obfuscation":"H1Nz"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" the"},"logprobs":null,"finish_reason":null}],"obfuscation":"F09"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" prod"},"logprobs":null,"finish_reason":null}],"obfuscation":"a9"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" namespace"},"logprobs":null,"finish_reason":null}],"obfuscation":"wLnef9wJiOfpP"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":","},"logprobs":null,"finish_reason":null}],"obfuscation":"aJQbop"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" which"},"logprobs":null,"finish_reason":null}],"obfuscation":"1"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" means"},"logprobs":null,"finish_reason":null}],"obfuscation":"F"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" no"},"logprobs":null,"finish_reason":null}],"obfuscation":"hwtw"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" warnings"},"logprobs":null,"finish_reason":null}],"obfuscation":"rTA4PfGGqDPyfX"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" or"},"logprobs":null,"finish_reason":null}],"obfuscation":"wmaK"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" errors"},"logprobs":null,"finish_reason":null}],"obfuscation":""}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" have"},"logprobs":null,"finish_reason":null}],"obfuscation":"Xq"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" been"},"logprobs":null,"finish_reason":null}],"obfuscation":"1Y"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" recorded"},"logprobs":null,"finish_reason":null}],"obfuscation":"ZnVjgqZ31szweU"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" recently"},"logprobs":null,"finish_reason":null}],"obfuscation":"MqHZYtlLOBWK1c"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":".\n\n"},"logprobs":null,"finish_reason":null}],"obfuscation":"Kz"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"Overall"},"logprobs":null,"finish_reason":null}],"obfuscation":""}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":","},"logprobs":null,"finish_reason":null}],"obfuscation":"IpPufW"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" based"},"logprobs":null,"finish_reason":null}],"obfuscation":"e"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" on"},"logprobs":null,"finish_reason":null}],"obfuscation":"xAiy"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" current"},"logprobs":null,"finish_reason":null}],"obfuscation":"4zQSQ1934D1q3SD"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" pod"},"logprobs":null,"finish_reason":null}],"obfuscation":"Pz7"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" status"},"logprobs":null,"finish_reason":null}],"obfuscation":""}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" and"},"logprobs":null,"finish_reason":null}],"obfuscation":"B9X"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" events"},"logprobs":null,"finish_reason":null}],"obfuscation":""}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":","},"logprobs":null,"finish_reason":null}],"obfuscation":"ekSjVo"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" the"},"logprobs":null,"finish_reason":null}],"obfuscation":"F1d"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" log"},"logprobs":null,"finish_reason":null}],"obfuscation":"O9t"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"-generator"},"logprobs":null,"finish_reason":null}],"obfuscation":"mcClIY69Hh876"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" pod"},"logprobs":null,"finish_reason":null}],"obfuscation":"1O0"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" looks"},"logprobs":null,"finish_reason":null}],"obfuscation":"T"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" healthy"},"logprobs":null,"finish_reason":null}],"obfuscation":"pJfmhx0FOfrMJXs"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" and"},"logprobs":null,"finish_reason":null}],"obfuscation":"fyk"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" running"},"logprobs":null,"finish_reason":null}],"obfuscation":"P0CghSL5GvqjJ2L"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" properly"},"logprobs":null,"finish_reason":null}],"obfuscation":"offo6pNjdFUarJ"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"."},"logprobs":null,"finish_reason":null}],"obfuscation":"nXefyq"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" Could"},"logprobs":null,"finish_reason":null}],"obfuscation":"j"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" you"},"logprobs":null,"finish_reason":null}],"obfuscation":"eOn"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" please"},"logprobs":null,"finish_reason":null}],"obfuscation":""}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" clarify"},"logprobs":null,"finish_reason":null}],"obfuscation":"nKTzQO1sPsWocHM"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" what"},"logprobs":null,"finish_reason":null}],"obfuscation":"Su"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" symptoms"},"logprobs":null,"finish_reason":null}],"obfuscation":"JDxZMSy41AqqbT"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" or"},"logprobs":null,"finish_reason":null}],"obfuscation":"rDpb"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" issues"},"logprobs":null,"finish_reason":null}],"obfuscation":""}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" made"},"logprobs":null,"finish_reason":null}],"obfuscation":"lf"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" you"},"logprobs":null,"finish_reason":null}],"obfuscation":"wuZ"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" think"},"logprobs":null,"finish_reason":null}],"obfuscation":"T"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" it"},"logprobs":null,"finish_reason":null}],"obfuscation":"Us7k"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" looks"},"logprobs":null,"finish_reason":null}],"obfuscation":"p"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":" unhealthy"},"logprobs":null,"finish_reason":null}],"obfuscation":"sL4M57FVBB7XO"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{"content":"?"},"logprobs":null,"finish_reason":null}],"obfuscation":"MTQ2qd"}
+
+    data: {"id":"chatcmpl-EkBb8kfMgAmhyxejm5LzRJ7nX6Spt","object":"chat.completion.chunk","created":1794676378,"model":"gpt-4.1-mini-2025-04-14","service_tier":"default","system_fingerprint":"fp_66738b9f31","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}],"obfuscation":"u"}
+
+    data: [DONE]
+
+  headers:
+    Access-Control-Expose-Headers:
+    - X-Request-ID
+    - CF-Ray
+    - CF-Ray
+    Alt-Svc:
+    - h3=":443"; ma=86400
+    Cf-Cache-Status:
+    - DYNAMIC
+    Cf-Ray:
+    - a5a7a4df7c70f549-SIN
+    Content-Type:
+    - text/event-stream; charset=utf-8
+    Date:
+    - Sat, 14 Nov 2026 17:12:58 GMT
+    Openai-Organization:
+    - user-0ny8wyhoncrrpajoura50mal
+    Openai-Processing-Ms:
+    - "534"
+    Openai-Project:
+    - proj_skQCfnMMcxigdjTm8kKI4ucK
+    Openai-Version:
+    - "2020-10-01"
+    Server:
+    - cloudflare
+    Set-Cookie:
+    - __cf_bm=GnintcMwy8ndeTtp5JGc.WOga0YzR7_XcXUQpsgzcTc-1794676377.5180712-1.0.1.1-GG_pILdMJtO6op_6.Q4sTl.5GmqhEflpKE7tM4CWbEtZ7Pm7vYvJv20gdiI2VQz7JmKhvkiYbKXAe9tK2PXZbZEsmu6GQXzj.nKQejulWap3RlQIbJWsMRo5avWsYdKY;
+      HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=api.openai.com;
+      Expires=Sat, 14 Nov 2026 17:42:58 GMT
+    Strict-Transport-Security:
+    - max-age=31536000; includeSubDomains; preload
+    X-Content-Type-Options:
+    - nosniff
+    X-Openai-Proxy-Wasm:
+    - v0.1
+    X-Ratelimit-Limit-Requests:
+    - "5000"
+    X-Ratelimit-Limit-Tokens:
+    - "2000000"
+    X-Ratelimit-Remaining-Requests:
+    - "4999"
+    X-Ratelimit-Remaining-Tokens:
+    - "1997039"
+    X-Ratelimit-Reset-Requests:
+    - 12ms
+    X-Ratelimit-Reset-Tokens:
+    - 88ms
+    X-Request-Id:
+    - req_9935a5c1846a4fe28c10ae8d5fd32cc5
+  status: 200 OK
+timestamp: "2026-11-14T17:12:59.268061187Z"
+
+
+---
+

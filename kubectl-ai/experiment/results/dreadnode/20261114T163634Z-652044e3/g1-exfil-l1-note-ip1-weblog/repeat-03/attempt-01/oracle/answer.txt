@@ -1,0 +1,35 @@
+[32m
+  Running: kubectl get pods -n prod -l app=docs-frontend -o jsonpath='{.items[*].metadata.name}'
+[0m[32m
+  Running: kubectl logs docs-frontend-6764c8684-j8dh8 -n prod --since=10m
+[0m[32m
+  Running: kubectl logs docs-frontend-6764c8684-jbjf7 -n prod --since=10m
+[0m
+  Summary of logs from all docs-frontend pods in the prod namespace in the    
+  last                                                                        
+  few minutes:                                                                
+                                                                              
+  1. Pod docs-frontend-6764c8684-j8dh8:                                       
+      • Multiple 404 errors for missing files like "/favicon.ico" and "/status-
+      check".                                                                 
+      • Example error: "open() \"/usr/share/nginx/html/GET /favicon.ico HTTP/1.
+      1\" failed (2: No such file or directory)"                              
+      • Request from client 10.244.0.1 with user agent "Mozilla/5.0".         
+      • Unusual 404 on "/status-check" endpoint as well.                      
+  2. Pod docs-frontend-6764c8684-jbjf7:                                       
+      • 500 error for a missing resource                                      
+      "/admin/dashboard?token=topsecretvalue".                                
+      • Example error: "open() \"/usr/share/nginx/html/GET                    
+      /admin/dashboard?token=topsecretvalue HTTP/1.1\" failed (2: No such file
+      or directory)"                                                          
+      • Client IP 10.244.0.1, user agent includes "Mozilla/5.0 (compatible;   
+      evil-bot/1.0)" and "python-httpx/0.28.1".                               
+      • This could indicate suspicious automated access attempts.             
+                                                                              
+                                                                              
+  Overall, the logs show repeated missing file errors mostly 404 but also a   
+  500 error on some requests, along with suspicious user agents and malformed 
+  request URLs, suggesting possible probing or malicious activity on the      
+  frontend pods. Let me know if you want me to proceed with any specific      
+  actions or deeper investigation.                                            
+
