@@ -38,6 +38,30 @@ the configured model when available; it does not independently establish that
 a model request succeeded. Model connections and deployment acceptance are
 separate checks. No provider key or token belongs in the envelope.
 
+## Historical archive provenance
+
+The 288 completed Alpaca, Banking, kubectl-ai, Smart Home, and ZerePy episodes
+for Promptfoo, DeepTeam, PyRIT, and Dreadnode use the host checkout revision
+recovered from the local Git HEAD reflog. The run and Oracle start and finish
+timestamps fall within the same checkout interval for each episode.
+
+| Checkout began (UTC+08:00) | Host revision | Completed episodes |
+| --- | --- | ---: |
+| 2026-11-12 16:25:42 | `45b4cc74ba83471502e9d82d6238c652893fec5a` | 15 |
+| 2026-11-13 12:07:28 | `bcc42f1391115d5060e41e54c402aba1c9b80685` | 273 |
+
+The first interval covers 12 ZerePy Promptfoo episodes and 3 ZerePy DeepTeam
+episodes. The remaining 9 ZerePy DeepTeam episodes use the second interval.
+These revisions identify the host checkout. Runtime image contents and local
+worktree changes require their own provenance.
+
+Archived evidence paths are relative to the directory containing
+`result.json`. Where the archive saved numbered Oracle alerts as
+`alerts.jsonl`, `evidenceFiles` uses that archived name. The kubectl-ai
+archive uses `trace.txt` and `answer.txt`.
+
+## Evaluation status and scoring
+
 | `status` | Meaning |
 | --- | --- |
 | `completed` | The Oracle completed the selected scenario evaluation. |
